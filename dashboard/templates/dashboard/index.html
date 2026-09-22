@@ -75,7 +75,7 @@
             flex-direction: column;
             padding: 15px;
             z-index: 9999;
-            transition: transform 0.3s ease;
+            flex-shrink: 0;
         }
 
         .brand-header {
@@ -226,7 +226,7 @@
         }
 
         .chat-header {
-            padding: 12px 20px 12px 60px;
+            padding: 12px 20px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             display: flex;
             justify-content: center;
@@ -583,9 +583,10 @@
                 bottom: 0;
                 width: 280px;
                 box-shadow: 5px 0 25px rgba(0,0,0,0.8);
+                transition: transform 0.3s ease;
             }
             .sidebar.open {
-                left: 0;
+                transform: translateX(280px);
             }
             .sidebar-overlay.open {
                 display: block;
@@ -593,43 +594,46 @@
             .message-wrapper {
                 max-width: 90%;
             }
+            .chat-header {
+                padding-left: 60px;
+            }
         }
     </style>
 </head>
 <body>
 
-<aside class="sidebar" id="appSidebar">
-    <div class="brand-header">
-        <div class="brand-title">ASLAN PARÇASI AI</div>
-    </div>
-
-    <div class="search-box">
-        <input type="text" id="chatSearchInput" placeholder="Sohbetlerde ara..." onkeyup="filterChats()">
-    </div>
-
-    <button class="new-chat-btn" onclick="createNewChat()">+ Yeni Sohbet</button>
-
-    <div class="chat-list" id="chatList"></div>
-
-    <div class="sidebar-footer">
-        <span style="font-size: 13px; color: #94a3b8;">{{ request.user.username }}</span>
-        <a href="{% url 'logout' %}" class="logout-link">Çıkış Yap</a>
-    </div>
-</aside>
-
-<!-- MOBİL SOL ÜST MENÜ BUTONU (SİDEBAR'IN HEMEN ARKASINDA YER ALIR) -->
-<button class="mobile-menu-btn" onclick="toggleMobileSidebar()">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <line x1="3" y1="12" x2="21" y2="12"></line>
-        <line x1="3" y1="6" x2="21" y2="6"></line>
-        <line x1="3" y1="18" x2="21" y2="18"></line>
-    </svg>
-</button>
-
-<!-- MOBİL KARARTMA PERDESİ -->
-<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar()"></div>
-
 <div class="app-container">
+    <aside class="sidebar" id="appSidebar">
+        <div class="brand-header">
+            <div class="brand-title">ASLAN PARÇASI AI</div>
+        </div>
+
+        <div class="search-box">
+            <input type="text" id="chatSearchInput" placeholder="Sohbetlerde ara..." onkeyup="filterChats()">
+        </div>
+
+        <button class="new-chat-btn" onclick="createNewChat()">+ Yeni Sohbet</button>
+
+        <div class="chat-list" id="chatList"></div>
+
+        <div class="sidebar-footer">
+            <span style="font-size: 13px; color: #94a3b8;">{{ request.user.username }}</span>
+            <a href="{% url 'logout' %}" class="logout-link">Çıkış Yap</a>
+        </div>
+    </aside>
+
+    <!-- MOBİL SOL ÜST MENÜ BUTONU -->
+    <button class="mobile-menu-btn" onclick="toggleMobileSidebar()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+    </button>
+
+    <!-- MOBİL KARARTMA PERDESİ -->
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar()"></div>
+
     <main class="main-chat">
         <header class="chat-header">
             <div class="mode-selector">
