@@ -47,11 +47,13 @@
             transition: opacity 0.3s ease;
         }
 
+        /* MENÜ AÇIKKEN HAMBURGER BUTONUNU GİZLEME */
         .sidebar.open ~ .mobile-menu-btn {
             opacity: 0;
             pointer-events: none;
         }
 
+        /* MOBİL KARARTMA PERDESİ */
         .sidebar-overlay {
             display: none;
             position: fixed;
@@ -290,16 +292,22 @@
             display: flex;
             align-items: center;
             margin-bottom: 6px;
+            position: relative;
+            overflow: hidden;
+            border-radius: 20px;
+            padding: 2px 4px 2px 2px;
         }
 
-        /* ASLAN LOGO PROFİLİ - TERTEMİZ DAİRESEL YERLEŞİM */
+        /* NEON ASLAN LOGO PROFİL STİLİ - DÜZGÜN ORTALAMA */
         .lion-avatar {
-            width: 38px;
-            height: 38px;
+            width: 36px;
+            height: 36px;
             border-radius: 50%;
             background: #0b0f19;
-            border: 2px solid #00ffaa;
+            border: 1.5px solid #00ffaa;
             overflow: hidden;
+            cursor: pointer;
+            z-index: 2;
             box-shadow: 0 0 12px rgba(0, 255, 170, 0.4);
             flex-shrink: 0;
             display: flex;
@@ -312,6 +320,29 @@
             height: 100%;
             object-fit: cover;
             object-position: center;
+        }
+
+        .gold-brand-text {
+            max-width: 0;
+            opacity: 0;
+            white-space: nowrap;
+            font-weight: 800;
+            font-size: 13px;
+            letter-spacing: 1px;
+            margin-left: 0;
+            transition: max-width 0.6s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.4s ease, margin-left 0.4s ease;
+            background: linear-gradient(135deg, #fff2a3 0%, #ffd700 30%, #cca010 70%, #fff2a3 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 8px rgba(212, 175, 55, 0.3);
+            pointer-events: none;
+            user-select: none;
+        }
+
+        .ai-header-container.expanded .gold-brand-text {
+            max-width: 180px;
+            opacity: 1;
+            margin-left: 8px;
         }
 
         .message {
@@ -465,7 +496,7 @@
             transform: scale(1.05);
         }
 
-        /* MODALLER */
+        /* MODAL PENCERELERİ */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -591,6 +622,7 @@
         </div>
     </aside>
 
+    <!-- MOBİL SOL ÜST MENÜ BUTONU -->
     <button class="mobile-menu-btn" onclick="toggleMobileSidebar()">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -599,6 +631,7 @@
         </svg>
     </button>
 
+    <!-- MOBİL KARARTMA PERDESİ -->
     <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar()"></div>
 
     <main class="main-chat">
@@ -613,9 +646,10 @@
         <div class="chat-messages" id="chatMessages">
             <div class="typing-indicator-wrapper" id="typingIndicator">
                 <div class="ai-header-container">
-                    <div class="lion-avatar">
-                        <img src="{% static 'dashboard/aslan.jpg' %}?v=4.0" alt="Aslan Logo">
+                    <div class="lion-avatar" onclick="toggleBrandText(this)" title="Profil Bilgisi">
+                        <img src="{% static 'dashboard/aslan.jpg' %}?v=3.0" alt="Aslan Logo">
                     </div>
+                    <span class="gold-brand-text">ASLAN PARÇASI</span>
                 </div>
                 <div class="typing-bubble">
                     <div class="typing-dot"></div>
@@ -870,6 +904,13 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    function toggleBrandText(avatarEl) {
+        const header = avatarEl.closest('.ai-header-container');
+        if (header) {
+            header.classList.toggle('expanded');
+        }
+    }
+
     function handleKeyPress(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -1046,9 +1087,10 @@
             const aiHeader = document.createElement('div');
             aiHeader.className = 'ai-header-container';
             aiHeader.innerHTML = `
-                <div class="lion-avatar" title="Aslan Parçası AI">
-                    <img src="{% static 'dashboard/aslan.jpg' %}?v=4.0" alt="Aslan Logo">
+                <div class="lion-avatar" onclick="toggleBrandText(this)" title="Profil Bilgisi">
+                    <img src="{% static 'dashboard/aslan.jpg' %}?v=3.0" alt="Aslan Logo">
                 </div>
+                <span class="gold-brand-text">ASLAN PARÇASI</span>
             `;
             wrapper.appendChild(aiHeader);
         }
