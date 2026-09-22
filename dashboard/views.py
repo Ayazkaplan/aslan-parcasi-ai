@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
@@ -65,27 +64,17 @@ def api_chat(request):
       messages.append({"role": "user", "content": user_message})
 
       client = get_openai_client()
-      completion = None
-      last_error = None
-
-      for attempt in range(3):
-        try:
-          completion = client.chat.completions.create(
-              model="openrouter/auto",
-              messages=messages,
-              temperature=0.7,
-              max_tokens=4096,
-          )
-          if completion and completion.choices:
-            break
-        except Exception as e:
-          last_error = e
-          time.sleep(1)
-          continue
+      
+      # Tek seferde ve hızlı yanıt için optimize edildi (Gecikme yapan döngü kaldırıldı)
+      completion = client.chat.completions.create(
+          model="anthropic/claude-3.5-sonnet",  # Veya openrouter/auto yerine hızlı bir model
+          messages=messages,
+          temperature=0.7,
+          max_tokens=4096,
+      )
 
       if not completion or not completion.choices:
-        err_str = str(last_error) if last_error else "Sunucu yanıt vermedi."
-        return JsonResponse({"error": f"Model Hatası: {err_str}"}, status=500)
+        return JsonResponse({"error": "Model yanıt vermedi."}, status=500)
 
       reply_text = completion.choices[0].message.content
 

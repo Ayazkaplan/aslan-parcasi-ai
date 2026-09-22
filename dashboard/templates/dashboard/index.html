@@ -1026,9 +1026,46 @@
         }
 
         if (lastUserIdx !== -1) {
+            // Önceki mesajı ve sonrasındaki AI yanıtını kesip temizliyoruz
             currentChat.messages = currentChat.messages.slice(0, lastUserIdx);
+            currentChat.messages.push({ sender: 'user', text: newText });
             saveToStorage();
-            sendMessage(newText);
+            renderMessages();
+
+            // Şimdi normal akışta AI yanıtını tetikliyoruz
+            const previousHistory = currentChat.messages.slice(0, -1);
+            showTypingIndicator();
+
+            fetch('/api/chat/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                body: JSON.stringify({ 
+                    message: newText, 
+                    mode: currentMode,
+                    system_instruction: SYSTEM_PROMPT,
+                    history: previousHistory
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                hideTypingIndicator();
+                if (data.status === 'success') {
+                    currentChat.messages.push({ sender: 'ai', text: data.reply });
+                } else {
+                    currentChat.messages.push({ sender: 'ai', text: 'Bir hata oluştu.' });
+                }
+                saveToStorage();
+                renderMessages();
+            })
+            .catch(() => {
+                hideTypingIndicator();
+                currentChat.messages.push({ sender: 'ai', text: 'Bağlantı hatası yaşandı.' });
+                saveToStorage();
+                renderMessages();
+            });
         }
     }
 
