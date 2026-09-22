@@ -19,23 +19,7 @@ def get_openai_client():
 
 @login_required(login_url="login")
 def index(request):
-  if not request.user.email:
-    return redirect("update_email")
   return render(request, "dashboard/index.html")
-
-
-@login_required(login_url="login")
-def update_email_view(request):
-  if request.user.email:
-    return redirect("index")
-  
-  if request.method == "POST":
-    email = request.POST.get("email", "").strip()
-    if email:
-      request.user.email = email
-      request.user.save()
-      return redirect("index")
-  return render(request, "dashboard/update_email.html")
 
 
 @login_required(login_url="login")
@@ -73,11 +57,13 @@ def api_chat(request):
 
       if mode == "code":
         system_instruction += (
-            " Kod asistanı modundasın. Yazılım danışmanlığı yap."
+            " Kod asistanı modundasın. Yazılım ve kodlama sorunlarını eksiksiz,"
+            " temiz ve profesyonelce çöz."
         )
       elif mode == "fast":
         system_instruction += (
-            " Hızlı analiz modundasın. Kısa ve net yanıt ver."
+            " Hızlı analiz modundasın. Yanıtlarını en net, öz ve hızlı"
+            " okunabilir formatta sun."
         )
 
       messages = [{"role": "system", "content": system_instruction}]
