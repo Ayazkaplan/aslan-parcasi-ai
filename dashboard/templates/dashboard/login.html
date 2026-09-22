@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Giriş Yap | Aslan Parçası AI</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #0b0f19;
+            /* Arka plan şeffaf evrensel/teknolojik desenler */
+            background-image: 
+                radial-gradient(circle at 20% 20%, rgba(0, 255, 170, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 80% 80%, rgba(0, 170, 255, 0.05) 0%, transparent 40%),
+                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+            color: #ffffff;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Arka plan parlama efektleri */
+        .bg-glow-1 {
+            position: absolute;
+            top: 15%;
+            left: 20%;
+            width: 300px;
+            height: 300px;
+            background: rgba(0, 255, 170, 0.12);
+            filter: blur(120px);
+            border-radius: 50%;
+            z-index: 1;
+        }
+
+        .bg-glow-2 {
+            position: absolute;
+            bottom: 15%;
+            right: 20%;
+            width: 300px;
+            height: 300px;
+            background: rgba(0, 170, 255, 0.12);
+            filter: blur(120px);
+            border-radius: 50%;
+            z-index: 1;
+        }
+
+        .login-card {
+            position: relative;
+            z-index: 2;
+            width: 100%;
+            max-width: 420px;
+            padding: 40px 30px;
+            background: rgba(18, 24, 38, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+            text-align: center;
+        }
+
+        /* Neon Aslan Silüeti SVG */
+        .lion-icon {
+            width: 85px;
+            height: 85px;
+            margin: 0 auto 10px auto;
+            display: block;
+            filter: drop-shadow(0 0 12px rgba(0, 255, 170, 0.6)) drop-shadow(0 0 20px rgba(0, 170, 255, 0.4));
+        }
+
+        .title {
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: 1.5px;
+            color: #ffffff;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+
+        /* AI Rozeti */
+        .ai-badge {
+            display: inline-block;
+            padding: 2px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            border-radius: 20px;
+            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            color: #0b0f19;
+            margin-bottom: 8px;
+            box-shadow: 0 0 10px rgba(0, 255, 170, 0.4);
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: #a0aec0;
+            margin-bottom: 28px;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+            text-align: left;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            color: #cbd5e1;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: #ffffff;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        .form-group input:focus {
+            border-color: #00aaff;
+            box-shadow: 0 0 10px rgba(0, 170, 255, 0.3);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #00aaff, #0066ff);
+            color: #ffffff;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 10px;
+            box-shadow: 0 4px 15px rgba(0, 170, 255, 0.3);
+        }
+
+        .btn-submit:hover {
+            background: linear-gradient(135deg, #00c3ff, #0052cc);
+            box-shadow: 0 6px 20px rgba(0, 170, 255, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .footer-text {
+            margin-top: 22px;
+            font-size: 13px;
+            color: #94a3b8;
+        }
+
+        .footer-text a {
+            color: #00aaff;
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.2s;
+        }
+
+        .footer-text a:hover {
+            color: #00ffaa;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="bg-glow-1"></div>
+    <div class="bg-glow-2"></div>
+
+    <div class="login-card">
+        <!-- Neon Yeşil-Mavi Aslan Silüeti SVG -->
+        <svg class="lion-icon" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="lionGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#00ffaa" />
+                    <stop offset="100%" stop-color="#00aaff" />
+                </linearGradient>
+            </defs>
+            <!-- Aslan Yelesi ve Baş Geometrik Silüeti -->
+            <path d="M50 12 L60 25 L75 20 L70 35 L85 40 L75 52 L88 65 L70 70 L65 85 L50 78 L35 85 L30 70 L12 65 L25 52 L15 40 L30 35 L25 20 L40 25 Z" 
+                  stroke="url(#lionGradient)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <path d="M38 42 L45 48 L50 45 L55 48 L62 42" stroke="url(#lionGradient)" stroke-width="2" stroke-linecap="round"/>
+            <path d="M50 45 L50 62 L44 68 M50 62 L56 68" stroke="url(#lionGradient)" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="38" cy="38" r="2.5" fill="url(#lionGradient)"/>
+            <circle cx="62" cy="38" r="2.5" fill="url(#lionGradient)"/>
+        </svg>
+
+        <h1 class="title">ASLAN PARÇASI</h1>
+        <div class="ai-badge">AI</div>
+        <p class="subtitle">Evrensel Yapay Zeka Platformu</p>
+
+        <form method="POST">
+            {% csrf_token %}
+            <div class="form-group">
+                <label for="username">Kullanıcı Adı</label>
+                <input type="text" name="username" id="username" placeholder="Kullanıcı adınızı girin" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Şifre</label>
+                <input type="password" name="password" id="password" placeholder="Şifrenizi girin" required>
+            </div>
+
+            <button type="submit" class="btn-submit">Giriş Yap</button>
+        </form>
+
+        <div class="footer-text">
+            Hesabın yok mu? <a href="{% url 'register' %}">Kayıt Ol</a>
+        </div>
+    </div>
+
+</body>
+</html>

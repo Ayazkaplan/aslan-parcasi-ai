@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Aslan Parçası AI | Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        body, html {
+            height: 100vh;
+            height: 100dvh;
+            width: 100vw;
+            overflow: hidden;
+            background-color: #0b0f19;
+            color: #ffffff;
+        }
+
+        .app-container {
+            display: flex;
+            height: 100%;
+            width: 100%;
+            position: relative;
+        }
+
+        /* SOL PANEL / SIDEBAR */
+        .sidebar {
+            width: 280px;
+            background: rgba(15, 22, 36, 0.95);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            flex-direction: column;
+            padding: 15px;
+            z-index: 10;
+            transition: all 0.3s ease;
+        }
+
+        .brand-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .brand-title {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .search-box {
+            position: relative;
+            margin-bottom: 15px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            font-size: 13px;
+            outline: none;
+        }
+
+        .search-box input:focus {
+            border-color: #00aaff;
+        }
+
+        .new-chat-btn {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px dashed rgba(0, 255, 170, 0.4);
+            background: rgba(0, 255, 170, 0.05);
+            color: #00ffaa;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 15px;
+            transition: 0.2s;
+        }
+
+        .new-chat-btn:hover {
+            background: rgba(0, 255, 170, 0.15);
+        }
+
+        .chat-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .chat-item {
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid transparent;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: #cbd5e1;
+            transition: 0.2s;
+        }
+
+        .chat-item:hover, .chat-item.active {
+            background: rgba(0, 170, 255, 0.1);
+            border-color: rgba(0, 170, 255, 0.3);
+            color: #fff;
+        }
+
+        .chat-item-title {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 150px;
+        }
+
+        .chat-item-actions {
+            display: none;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .chat-item:hover .chat-item-actions {
+            display: flex;
+        }
+
+        .chat-action-btn {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 4px;
+        }
+
+        .chat-action-btn:hover {
+            color: #00ffaa;
+        }
+
+        .chat-action-btn.delete:hover {
+            color: #ef4444;
+        }
+
+        .sidebar-footer {
+            margin-top: auto;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logout-link {
+            color: #ef4444;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        /* ANA SOHBET ALANI */
+        .main-chat {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            position: relative;
+            background-image: 
+                radial-gradient(circle at 50% 30%, rgba(0, 170, 255, 0.03) 0%, transparent 60%),
+                linear-gradient(rgba(255, 255, 255, 0.01) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.01) 1px, transparent 1px);
+            background-size: 100% 100%, 30px 30px, 30px 30px;
+        }
+
+        .chat-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: rgba(11, 15, 25, 0.8);
+            backdrop-filter: blur(8px);
+        }
+
+        .mode-selector {
+            display: flex;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 4px;
+            border-radius: 10px;
+            gap: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .mode-btn {
+            padding: 6px 14px;
+            border-radius: 7px;
+            border: none;
+            background: transparent;
+            color: #94a3b8;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .mode-btn.active {
+            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            color: #0b0f19;
+            box-shadow: 0 0 10px rgba(0, 255, 170, 0.3);
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .message-wrapper {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+            position: relative;
+        }
+
+        .message-wrapper.user {
+            align-self: flex-end;
+            align-items: flex-end;
+        }
+
+        .message-wrapper.ai {
+            align-self: flex-start;
+            align-items: flex-start;
+        }
+
+        .ai-header-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+            position: relative;
+            overflow: hidden;
+            border-radius: 20px;
+            padding: 2px 4px 2px 2px;
+        }
+
+        .lion-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: rgba(0, 255, 170, 0.1);
+            border: 1px solid rgba(0, 255, 170, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 2;
+            box-shadow: 0 0 10px rgba(0, 255, 170, 0.25);
+            transition: transform 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .lion-avatar:hover {
+            transform: scale(1.08);
+        }
+
+        /* GERÇEK ASLAN SİLÜETİ SVG (Kusursuz Profil Tasarımı) */
+        .lion-avatar svg {
+            width: 22px;
+            height: 22px;
+            fill: #00ffaa;
+        }
+
+        .gold-brand-text {
+            max-width: 0;
+            opacity: 0;
+            white-space: nowrap;
+            font-weight: 800;
+            font-size: 13px;
+            letter-spacing: 1px;
+            margin-left: 0;
+            transition: max-width 0.6s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.4s ease, margin-left 0.4s ease;
+            background: linear-gradient(135deg, #fff2a3 0%, #ffd700 30%, #cca010 70%, #fff2a3 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 8px rgba(212, 175, 55, 0.3);
+            pointer-events: none;
+            user-select: none;
+        }
+
+        .ai-header-container.expanded .gold-brand-text {
+            max-width: 180px;
+            opacity: 1;
+            margin-left: 8px;
+        }
+
+        .message {
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            width: 100%;
+        }
+
+        .message.user {
+            background: linear-gradient(135deg, #0066ff, #00aaff);
+            color: #fff;
+            border-bottom-right-radius: 2px;
+        }
+
+        .message.ai {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #e2e8f0;
+            border-bottom-left-radius: 2px;
+        }
+
+        .msg-action-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 4px;
+            font-size: 11px;
+        }
+
+        .action-btn {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 6px;
+            border-radius: 4px;
+            transition: 0.2s;
+        }
+
+        .action-btn:hover {
+            color: #00ffaa;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .action-btn svg {
+            width: 13px;
+            height: 13px;
+        }
+
+        .chat-input-wrapper {
+            padding: 12px 20px calc(12px + env(safe-area-inset-bottom)) 20px;
+            background: rgba(11, 15, 25, 0.95);
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            position: relative;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+        }
+
+        .chat-input-container {
+            max-width: 900px;
+            margin: 0 auto;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 12px;
+            padding: 6px 12px;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input-container:focus-within {
+            border-color: #00aaff;
+            box-shadow: 0 0 12px rgba(0, 170, 255, 0.2);
+        }
+
+        .chat-input-container textarea {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: #fff;
+            font-size: 14px;
+            resize: none;
+            max-height: 120px;
+            height: 24px;
+            padding: 2px 0;
+        }
+
+        .send-btn {
+            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            color: #0b0f19;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: 0.2s;
+        }
+
+        .send-btn:hover {
+            transform: scale(1.05);
+        }
+
+        /* MODAL PENCERELERİ */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-card {
+            background: #131b2e;
+            border: 1px solid rgba(0, 255, 170, 0.3);
+            border-radius: 14px;
+            padding: 20px;
+            width: 340px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .modal-card h3 {
+            font-size: 15px;
+            color: #fff;
+        }
+
+        .modal-card input {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            outline: none;
+            font-size: 14px;
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .modal-btn {
+            padding: 8px 14px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .modal-btn.cancel {
+            background: rgba(255, 255, 255, 0.1);
+            color: #cbd5e1;
+        }
+
+        .modal-btn.save {
+            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            color: #0b0f19;
+        }
+
+        .modal-btn.danger {
+            background: #ef4444;
+            color: #fff;
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                position: absolute;
+                left: -280px;
+                top: 0;
+                bottom: 0;
+            }
+            .sidebar.open {
+                left: 0;
+            }
+            .message-wrapper {
+                max-width: 90%;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <aside class="sidebar">
+        <div class="brand-header">
+            <div class="brand-title">ASLAN PARÇASI AI</div>
+        </div>
+
+        <div class="search-box">
+            <input type="text" id="chatSearchInput" placeholder="Sohbetlerde ara..." onkeyup="filterChats()">
+        </div>
+
+        <button class="new-chat-btn" onclick="createNewChat()">+ Yeni Sohbet</button>
+
+        <div class="chat-list" id="chatList"></div>
+
+        <div class="sidebar-footer">
+            <span style="font-size: 13px; color: #94a3b8;">{{ request.user.username }}</span>
+            <a href="{% url 'logout' %}" class="logout-link">Çıkış Yap</a>
+        </div>
+    </aside>
+
+    <main class="main-chat">
+        <header class="chat-header">
+            <div class="mode-selector">
+                <button class="mode-btn active" id="mode-normal" onclick="setMode('normal')">Normal Asistan</button>
+                <button class="mode-btn" id="mode-code" onclick="setMode('code')">Kod Asistanı</button>
+                <button class="mode-btn" id="mode-fast" onclick="setMode('fast')">Hızlı Analiz</button>
+            </div>
+        </header>
+
+        <div class="chat-messages" id="chatMessages"></div>
+
+        <div class="chat-input-wrapper">
+            <div class="chat-input-container">
+                <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
+                <button class="send-btn" onclick="sendMessage()">➔</button>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- SOHBET ADI DÜZENLEME MODALİ -->
+<div class="modal-overlay" id="renameModal">
+    <div class="modal-card">
+        <h3>Sohbet Adını Değiştir</h3>
+        <input type="text" id="renameInput" placeholder="Yeni sohbet adı...">
+        <div class="modal-actions">
+            <button class="modal-btn cancel" onclick="closeModal('renameModal')">İptal</button>
+            <button class="modal-btn save" onclick="saveChatTitle()">Kaydet</button>
+        </div>
+    </div>
+</div>
+
+<!-- MESAJ DÜZENLEME MODALİ -->
+<div class="modal-overlay" id="editMessageModal">
+    <div class="modal-card">
+        <h3>Mesajınızı Düzenleyin</h3>
+        <input type="text" id="editMessageInput" placeholder="Mesajınız...">
+        <div class="modal-actions">
+            <button class="modal-btn cancel" onclick="closeModal('editMessageModal')">İptal</button>
+            <button class="modal-btn save" onclick="saveEditedMessage()">Güncelle</button>
+        </div>
+    </div>
+</div>
+
+<!-- SİLME ONAY MODALİ -->
+<div class="modal-overlay" id="deleteModal">
+    <div class="modal-card">
+        <h3>Sohbeti Sil</h3>
+        <p style="font-size: 13px; color: #94a3b8;">Bu sohbeti silmek istediğinizden emin misiniz?</p>
+        <div class="modal-actions">
+            <button class="modal-btn cancel" onclick="closeModal('deleteModal')">İptal</button>
+            <button class="modal-btn danger" onclick="confirmDeleteChat()">Evet, Sil</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const SYSTEM_PROMPT = "Sen MEAY ASLAN PARÇASI AI şirketinin geliştirdiği yapay zeka asistanısın. Şirketin kurucusu ve tek sahibi Ayaz Kaplan'dır. Ayaz Kaplan senin mimarın ve liderindir. Saygılı, akıllı ve yardımsever ol.";
+    const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
+
+    let currentMode = 'normal';
+    let chats = JSON.parse(localStorage.getItem('aslan_parcasi_chats')) || [];
+    let activeChatId = null;
+    let editingChatId = null;
+    let deletingChatId = null;
+
+    function saveToStorage() {
+        const validChats = chats.filter(c => c.messages && c.messages.length > 0);
+        localStorage.setItem('aslan_parcasi_chats', JSON.stringify(validChats));
+    }
+
+    function setMode(mode) {
+        if (currentMode === mode) return;
+        currentMode = mode;
+
+        document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+        document.getElementById(`mode-${mode}`).classList.add('active');
+
+        const modeTitles = {
+            'normal': 'Normal Asistan',
+            'code': 'Kod Asistanı',
+            'fast': 'Hızlı Analiz'
+        };
+
+        createNewChat(modeTitles[mode], false);
+    }
+
+    function filterChats() {
+        const query = document.getElementById('chatSearchInput').value.toLowerCase();
+        document.querySelectorAll('.chat-item').forEach(item => {
+            const title = item.querySelector('.chat-item-title').innerText.toLowerCase();
+            item.style.display = title.includes(query) ? 'flex' : 'none';
+        });
+    }
+
+    function createNewChat(customTitle = 'Yeni Sohbet', saveImmediate = false) {
+        const chatId = Date.now();
+        const newChat = {
+            id: chatId,
+            title: customTitle,
+            mode: currentMode,
+            isCustomTitle: false,
+            messages: []
+        };
+        chats.unshift(newChat);
+        if (saveImmediate) saveToStorage();
+        selectChat(chatId);
+    }
+
+    function renderChatList() {
+        const chatListEl = document.getElementById('chatList');
+        chatListEl.innerHTML = '';
+
+        const visibleChats = chats.filter(c => c.messages && c.messages.length > 0);
+
+        visibleChats.forEach(chat => {
+            const item = document.createElement('div');
+            item.className = `chat-item ${chat.id === activeChatId ? 'active' : ''}`;
+            item.innerHTML = `
+                <span class="chat-item-title">${escapeHtml(chat.title)}</span>
+                <div class="chat-item-actions">
+                    <button class="chat-action-btn" onclick="openRenameModal(${chat.id}, event)" title="Düzenle">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                    </button>
+                    <button class="chat-action-btn delete" onclick="openDeleteModal(${chat.id}, event)" title="Sil">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+                </div>
+            `;
+            item.onclick = () => selectChat(chat.id);
+            chatListEl.appendChild(item);
+        });
+    }
+
+    function openRenameModal(chatId, e) {
+        e.stopPropagation();
+        editingChatId = chatId;
+        const chat = chats.find(c => c.id === chatId);
+        if (chat) {
+            document.getElementById('renameInput').value = chat.title;
+            document.getElementById('renameModal').style.display = 'flex';
+        }
+    }
+
+    function openDeleteModal(chatId, e) {
+        e.stopPropagation();
+        deletingChatId = chatId;
+        document.getElementById('deleteModal').style.display = 'flex';
+    }
+
+    function closeModal(modalId) {
+        document.getElementById(modalId).style.display = 'none';
+        if (modalId === 'renameModal') editingChatId = null;
+        if (modalId === 'deleteModal') deletingChatId = null;
+    }
+
+    function saveChatTitle() {
+        const newTitle = document.getElementById('renameInput').value.trim();
+        if (newTitle && editingChatId) {
+            const chat = chats.find(c => c.id === editingChatId);
+            if (chat) {
+                chat.title = newTitle;
+                chat.isCustomTitle = true;
+                saveToStorage();
+                renderChatList();
+            }
+        }
+        closeModal('renameModal');
+    }
+
+    function confirmDeleteChat() {
+        if (deletingChatId) {
+            chats = chats.filter(c => c.id !== deletingChatId);
+            saveToStorage();
+            if (activeChatId === deletingChatId) {
+                if (chats.length > 0) {
+                    selectChat(chats[0].id);
+                } else {
+                    createNewChat('Normal Asistan', false);
+                }
+            } else {
+                renderChatList();
+            }
+        }
+        closeModal('deleteModal');
+    }
+
+    function selectChat(chatId) {
+        activeChatId = chatId;
+        const chat = chats.find(c => c.id === chatId);
+        if (chat) {
+            currentMode = chat.mode || 'normal';
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = document.getElementById(`mode-${currentMode}`);
+            if (activeBtn) activeBtn.classList.add('active');
+        }
+        renderChatList();
+        renderMessages();
+    }
+
+    function renderMessages() {
+        const messagesEl = document.getElementById('chatMessages');
+        messagesEl.innerHTML = '';
+
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat || currentChat.messages.length === 0) {
+            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, false);
+        } else {
+            const msgs = currentChat.messages;
+            let lastUserIdx = -1;
+            let lastAiIdx = -1;
+
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].sender === 'user' && lastUserIdx === -1) lastUserIdx = i;
+                if (msgs[i].sender === 'ai' && lastAiIdx === -1) lastAiIdx = i;
+            }
+
+            msgs.forEach((msg, idx) => {
+                const isLastUser = (idx === lastUserIdx);
+                const isLastAi = (idx === lastAiIdx);
+                appendMessage(msg.text, msg.sender, false, isLastUser, isLastAi);
+            });
+        }
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function toggleBrandText(avatarEl) {
+        const header = avatarEl.closest('.ai-header-container');
+        if (header) {
+            header.classList.toggle('expanded');
+        }
+    }
+
+    function handleKeyPress(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    }
+
+    async function sendMessage(customText = null) {
+        const inputEl = document.getElementById('userInput');
+        const text = customText !== null ? customText : inputEl.value.trim();
+        if (!text) return;
+
+        if (chats.length === 0 || !activeChatId) {
+            createNewChat('Yeni Sohbet', false);
+        }
+
+        const currentChat = chats.find(c => c.id === activeChatId);
+
+        if (currentChat && !currentChat.isCustomTitle && currentChat.messages.length === 0) {
+            currentChat.title = text.length > 22 ? text.substring(0, 22) + '...' : text;
+        }
+
+        if (customText === null) {
+            currentChat.messages.push({ sender: 'user', text });
+            inputEl.value = '';
+        }
+
+        saveToStorage();
+        renderChatList();
+        renderMessages();
+
+        const previousHistory = currentChat.messages.slice(0, -1);
+
+        try {
+            const response = await fetch('/api/chat/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                body: JSON.stringify({ 
+                    message: text, 
+                    mode: currentMode,
+                    system_instruction: SYSTEM_PROMPT,
+                    history: previousHistory
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'success') {
+                currentChat.messages.push({ sender: 'ai', text: data.reply });
+            } else {
+                const errText = 'Bir hata oluştu: ' + (data.error || 'Bilinmeyen hata');
+                currentChat.messages.push({ sender: 'ai', text: errText });
+            }
+        } catch (err) {
+            const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
+            currentChat.messages.push({ sender: 'ai', text: connErr });
+        }
+
+        saveToStorage();
+        renderChatList();
+        renderMessages();
+    }
+
+    function openEditLastUserMessage() {
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat) return;
+
+        let lastUserIdx = -1;
+        for (let i = currentChat.messages.length - 1; i >= 0; i--) {
+            if (currentChat.messages[i].sender === 'user') {
+                lastUserIdx = i;
+                break;
+            }
+        }
+
+        if (lastUserIdx !== -1) {
+            document.getElementById('editMessageInput').value = currentChat.messages[lastUserIdx].text;
+            document.getElementById('editMessageModal').style.display = 'flex';
+        }
+    }
+
+    function saveEditedMessage() {
+        const newText = document.getElementById('editMessageInput').value.trim();
+        closeModal('editMessageModal');
+
+        if (!newText) return;
+
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat) return;
+
+        let lastUserIdx = -1;
+        for (let i = currentChat.messages.length - 1; i >= 0; i--) {
+            if (currentChat.messages[i].sender === 'user') {
+                lastUserIdx = i;
+                break;
+            }
+        }
+
+        if (lastUserIdx !== -1) {
+            currentChat.messages = currentChat.messages.slice(0, lastUserIdx);
+            saveToStorage();
+            sendMessage(newText);
+        }
+    }
+
+    function retryLastAiMessage() {
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat) return;
+
+        let lastUserIdx = -1;
+        for (let i = currentChat.messages.length - 1; i >= 0; i--) {
+            if (currentChat.messages[i].sender === 'user') {
+                lastUserIdx = i;
+                break;
+            }
+        }
+
+        if (lastUserIdx !== -1) {
+            const lastUserText = currentChat.messages[lastUserIdx].text;
+            currentChat.messages = currentChat.messages.slice(0, lastUserIdx + 1);
+            saveToStorage();
+            renderMessages();
+
+            const previousHistory = currentChat.messages.slice(0, -1);
+            
+            fetch('/api/chat/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                body: JSON.stringify({ 
+                    message: lastUserText, 
+                    mode: currentMode,
+                    system_instruction: SYSTEM_PROMPT,
+                    history: previousHistory,
+                    retry: true
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    currentChat.messages.push({ sender: 'ai', text: data.reply });
+                } else {
+                    currentChat.messages.push({ sender: 'ai', text: 'Yeniden analiz yapılırken hata oluştu.' });
+                }
+                saveToStorage();
+                renderMessages();
+            })
+            .catch(() => {
+                currentChat.messages.push({ sender: 'ai', text: 'Bağlantı hatası yaşandı.' });
+                saveToStorage();
+                renderMessages();
+            });
+        }
+    }
+
+    function appendMessage(text, sender, autoScroll = true, isLastUser = false, isLastAi = false) {
+        const messagesEl = document.getElementById('chatMessages');
+        const wrapper = document.createElement('div');
+        wrapper.className = `message-wrapper ${sender}`;
+
+        if (sender === 'ai') {
+            const aiHeader = document.createElement('div');
+            aiHeader.className = 'ai-header-container';
+            // Gerçek Aslan Silüeti SVG Tasarımı
+            aiHeader.innerHTML = `
+                <div class="lion-avatar" onclick="toggleBrandText(this)" title="Profil Bilgisi">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12 2C9.5 5 7 5.5 5 7C3.5 8.2 3 10 3 12C3 15.5 5.5 19 8 20.5C9.5 21.4 10.8 22 12 22C13.2 22 14.5 21.4 16 20.5C18.5 19 21 15.5 21 12C21 10 20.5 8.2 19 7C17 5.5 14.5 5 12 2Z" fill="none" stroke="#00ffaa" stroke-width="1.5"/>
+                        <path d="M9 11C9 10.4477 9.44772 10 10 10C10.5523 10 11 10.4477 11 11C11 11.5523 10.5523 12 10 12C9.44772 12 9 11.5523 9 11Z" fill="#00ffaa"/>
+                        <path d="M13 11C13 10.4477 13.4477 10 14 10C14.5523 10 15 10.4477 15 11C15 11.5523 14.5523 12 14 12C13.4477 12 13 11.5523 13 11Z" fill="#00ffaa"/>
+                        <path d="M12 12.5V15.5M10.5 16.5H13.5" stroke="#00ffaa" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <span class="gold-brand-text">ASLAN PARÇASI</span>
+            `;
+            wrapper.appendChild(aiHeader);
+        }
+
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `message ${sender}`;
+        msgDiv.innerText = text;
+        wrapper.appendChild(msgDiv);
+
+        if (sender === 'user' && isLastUser) {
+            const actionBar = document.createElement('div');
+            actionBar.className = 'msg-action-bar';
+            actionBar.innerHTML = `
+                <button class="action-btn" onclick="openEditLastUserMessage()" title="Mesajı Düzenle">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                    </svg>
+                    Düzenle
+                </button>
+            `;
+            wrapper.appendChild(actionBar);
+        } else if (sender === 'ai' && isLastAi) {
+            const actionBar = document.createElement('div');
+            actionBar.className = 'msg-action-bar';
+            actionBar.innerHTML = `
+                <button class="action-btn" onclick="retryLastAiMessage()" title="Yeniden Yanıt Oluştur">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                    </svg>
+                    Tekrar Dene
+                </button>
+            `;
+            wrapper.appendChild(actionBar);
+        }
+
+        messagesEl.appendChild(wrapper);
+        if (autoScroll) {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+    }
+
+    function escapeHtml(text) {
+        return text.replace(/&/g, "&amp;")
+                   .replace(/</g, "&lt;")
+                   .replace(/>/g, "&gt;")
+                   .replace(/"/g, "&quot;")
+                   .replace(/'/g, "&#039;");
+    }
+
+    if (chats.length > 0) {
+        selectChat(chats[0].id);
+    } else {
+        createNewChat('Normal Asistan', false);
+    }
+</script>
+
+</body>
+</html>
