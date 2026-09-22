@@ -8,12 +8,13 @@ from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from openai import OpenAI
 
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+def get_openai_client():
+  api_key = os.environ.get("OPENROUTER_API_KEY", "gecici_anahtar")
+  return OpenAI(
+      base_url="https://openrouter.ai/api/v1",
+      api_key=api_key,
+  )
 
 
 @login_required(login_url="login")
@@ -63,7 +64,7 @@ def api_chat(request):
 
       messages.append({"role": "user", "content": user_message})
 
-      # OpenRouter otomatik yönlendiricisi (Hata vermez, en uygun modeli seçer)
+      client = get_openai_client()
       completion = None
       last_error = None
 
