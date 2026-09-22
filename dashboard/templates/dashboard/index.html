@@ -197,15 +197,40 @@
             padding-top: 15px;
             border-top: 1px solid rgba(255, 255, 255, 0.05);
             display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .footer-row {
+            display: flex;
             justify-content: space-between;
             align-items: center;
+            width: 100%;
         }
 
         .logout-link {
-            color: #ef4444;
+            color: #94a3b8;
             text-decoration: none;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 600;
+            transition: color 0.2s;
+        }
+        .logout-link:hover {
+            color: #fff;
+        }
+
+        .delete-account-link {
+            color: #ef4444;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 0;
+            transition: opacity 0.2s;
+        }
+        .delete-account-link:hover {
+            opacity: 0.8;
         }
 
         /* ANA SOHBET ALANI */
@@ -581,7 +606,7 @@
                 transition: transform 0.3s ease;
             }
             .sidebar.open {
-                transform: translateX(280px);
+                transform: translateX(0);
             }
             .sidebar-overlay.open {
                 display: block;
@@ -598,7 +623,7 @@
 <body>
 
 <div class="app-container">
-    <aside class="sidebar" id="appSidebar">
+    <aside class="sidebar" id="appSidebar" onclick="event.stopPropagation()">
         <div class="brand-header">
             <div class="brand-title">ASLAN PARÇASI AI</div>
         </div>
@@ -613,11 +638,14 @@
 
         <div class="sidebar-footer">
             <span style="font-size: 13px; color: #94a3b8;">{{ request.user.username }}</span>
-            <a href="{% url 'logout' %}" class="logout-link">Çıkış Yap</a>
+            <div class="footer-row">
+                <a href="{% url 'logout' %}" class="logout-link">Çıkış Yap</a>
+                <button class="delete-account-link" onclick="openStep1Delete()">Hesabı Sil</button>
+            </div>
         </div>
     </aside>
 
-    <button class="mobile-menu-btn" onclick="toggleMobileSidebar()">
+    <button class="mobile-menu-btn" onclick="toggleMobileSidebar(event)">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="3" y1="12" x2="21" y2="12"></line>
             <line x1="3" y1="6" x2="21" y2="6"></line>
@@ -625,7 +653,7 @@
         </svg>
     </button>
 
-    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar()"></div>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar(event)"></div>
 
     <main class="main-chat">
         <header class="chat-header">
@@ -668,6 +696,7 @@
     </main>
 </div>
 
+<!-- MODALLER -->
 <div class="modal-overlay" id="renameModal">
     <div class="modal-card">
         <h3>Sohbet Adını Değiştir</h3>
@@ -701,6 +730,29 @@
     </div>
 </div>
 
+<!-- 2 AŞAMALI HESAP SİLME MODALLERİ -->
+<div class="modal-overlay" id="accountDeleteStep1">
+    <div class="modal-card">
+        <h3>Hesabı Sil</h3>
+        <p style="font-size: 13px; color: #94a3b8;">Hesabınızı silmek istediğinizden emin misiniz?</p>
+        <div class="modal-actions">
+            <button class="modal-btn cancel" onclick="closeModal('accountDeleteStep1')">İptal</button>
+            <button class="modal-btn danger" onclick="proceedToStep2()">Evet</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="accountDeleteStep2">
+    <div class="modal-card">
+        <h3>Kesin Kararlı Mısınız?</h3>
+        <p style="font-size: 13px; color: #ef4444; font-weight: 600;">Bu işlem bir daha geri döndürülemez emin misiniz!</p>
+        <div class="modal-actions">
+            <button class="modal-btn cancel" onclick="closeModal('accountDeleteStep2')">İptal</button>
+            <button class="modal-btn danger" onclick="executeAccountDeletion()">Evet, Sil</button>
+        </div>
+    </div>
+</div>
+
 <script>
     const SYSTEM_PROMPT = "Sen MEAY ASLAN PARÇASI AI şirketinin geliştirdiği yapay zeka asistanısın. Şirketin kurucusu ve tek sahibi Ayaz Kaplan'dır. Ayaz Kaplan senin mimarın ve liderindir. Saygılı, akıllı ve yardımsever ol.";
     const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
@@ -722,11 +774,39 @@
     let editingChatId = null;
     let deletingChatId = null;
 
-    function toggleMobileSidebar() {
+    function toggleMobileSidebar(e) {
+        if (e) e.stopPropagation();
         const sidebar = document.getElementById('appSidebar');
         const overlay = document.getElementById('sidebarOverlay');
         sidebar.classList.toggle('open');
         overlay.classList.toggle('open');
+    }
+
+    function openStep1Delete() {
+        document.getElementById('accountDeleteStep1').style.display = 'flex';
+    }
+
+    function proceedToStep2() {
+        closeModal('accountDeleteStep1');
+        document.getElementById('accountDeleteStep2').style.display = 'flex';
+    }
+
+    function executeAccountDeletion() {
+        fetch('/api/delete-account/', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'success') {
+                localStorage.clear();
+                window.location.href = '/login/';
+            }
+        })
+        .catch(() => alert('Hesap silinirken bir hata oluştu.'));
     }
 
     function showTypingIndicator() {
@@ -1026,13 +1106,11 @@
         }
 
         if (lastUserIdx !== -1) {
-            // Önceki mesajı ve sonrasındaki AI yanıtını kesip temizliyoruz
             currentChat.messages = currentChat.messages.slice(0, lastUserIdx);
             currentChat.messages.push({ sender: 'user', text: newText });
             saveToStorage();
             renderMessages();
 
-            // Şimdi normal akışta AI yanıtını tetikliyoruz
             const previousHistory = currentChat.messages.slice(0, -1);
             showTypingIndicator();
 

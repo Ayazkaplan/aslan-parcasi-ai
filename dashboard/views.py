@@ -2,7 +2,8 @@ import json
 import os
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
+from django.contrib.auth.forms import AuthenticationForm
+from .forms import CustomUserCreationForm
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from openai import OpenAI
@@ -18,7 +19,34 @@ def get_openai_client():
 
 @login_required(login_url="login")
 def index(request):
+  # Eğer daha önce eposta girmemişse eposta tamamlama sayfasına yönlendirilebilir
+  if not request.user.email:
+    return redirect("update_email")
   return render(request, "dashboard/index.html")
+
+
+@login_required(login_url="login")
+def update_email_view(request):
+  if request.user.email:
+    return redirect("index")
+  
+  if request.method == "POST":
+    email = request.POST.get("email", "").strip()
+    if email:
+      request.user.email = email
+      request.user.save()
+      return redirect("index")
+  return render(request, "dashboard/update_email.html")
+
+
+@login_required(login_url="login")
+def delete_account_view(request):
+  if request.method == "POST":
+    user = request.user
+    logout(request)
+    user.delete()
+    return JsonResponse({"status": "success"})
+  return JsonResponse({"error": "Geçersiz istek."}, status=405)
 
 
 @login_required(login_url="login")
@@ -65,9 +93,9 @@ def api_chat(request):
 
       client = get_openai_client()
       
-      # Tek seferde ve hızlı yanıt için optimize edildi (Gecikme yapan döngü kaldırıldı)
+      # 404 hatasını çözen kararlı ve hızlı OpenRouter model yolu
       completion = client.chat.completions.create(
-          model="anthropic/claude-3.5-sonnet",  # Veya openrouter/auto yerine hızlı bir model
+          model="openrouter/auto",
           messages=messages,
           temperature=0.7,
           max_tokens=4096,
@@ -94,6 +122,7 @@ def login_view(request):
     form = AuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
+      request.session.set_expiry(2592000)  # Oturumu 30 gün boyunca kalıcı yap (Çıkış yapılana kadar gitmez)
       return redirect("index")
   else:
     form = AuthenticationForm()
@@ -104,13 +133,14 @@ def register_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    form = UserCreationForm(request.POST)
+    form = CustomUserCreationForm(request.POST)
     if form.is_valid():
       user = form.save()
       login(request, user)
+      request.session.set_expiry(2592000)
       return redirect("index")
   else:
-    form = UserCreationForm()
+    form = CustomUserCreationForm()
   return render(request, "dashboard/register.html", {"form": form})
 
 
