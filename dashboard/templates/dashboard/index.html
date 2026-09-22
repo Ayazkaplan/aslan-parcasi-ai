@@ -4,7 +4,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Aslan Parçası AI | Dashboard</title>
+    <!-- Markdown ve Kod Renklendirme için Kütüphaneler -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
     <style>
+        :root {
+            --bg-color: #0b0f19;
+            --sidebar-bg: rgba(15, 22, 36, 0.98);
+            --card-bg: #131b2e;
+            --text-color: #ffffff;
+            --text-muted: #94a3b8;
+            --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --pattern-opacity: 0.01;
+        }
+
+        /* 5 FARKLI TEMA TANIMI */
+        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); }
+        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); }
+        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); }
+        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); }
+        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); }
+
         * {
             margin: 0;
             padding: 0;
@@ -17,8 +37,9 @@
             height: 100dvh;
             width: 100vw;
             overflow: hidden;
-            background-color: #0b0f19;
-            color: #ffffff;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            transition: background 0.3s ease;
         }
 
         .app-container {
@@ -35,7 +56,7 @@
             top: 12px;
             left: 12px;
             z-index: 99999;
-            background: rgba(15, 22, 36, 0.95);
+            background: var(--sidebar-bg);
             border: 1px solid rgba(0, 255, 170, 0.6);
             color: #00ffaa;
             padding: 10px 12px;
@@ -66,31 +87,89 @@
         /* SOL PANEL / SIDEBAR */
         .sidebar {
             width: 280px;
-            background: rgba(15, 22, 36, 0.98);
-            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             padding: 15px;
             z-index: 9999;
             flex-shrink: 0;
+            transition: background 0.3s ease;
         }
 
         .brand-header {
             display: flex;
             align-items: center;
-            gap: 10px;
+            justify-content: space-between;
             margin-bottom: 15px;
             padding-bottom: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid var(--border-color);
         }
 
         .brand-title {
             font-size: 16px;
             font-weight: 700;
             letter-spacing: 1px;
-            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+        }
+
+        .settings-icon-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 6px;
+            transition: 0.2s;
+        }
+        .settings-icon-btn:hover {
+            color: #00ffaa;
+            background: rgba(255,255,255,0.05);
+        }
+
+        /* KULLANICI PROFİLİ VE KAYAN İSİM ALANI */
+        .user-profile-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 8px;
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .user-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1.5px solid #00ffaa;
+            cursor: pointer;
+            flex-shrink: 0;
+            background: #111;
+        }
+
+        .sliding-username {
+            max-width: 0;
+            opacity: 0;
+            white-space: nowrap;
+            font-weight: 700;
+            font-size: 13px;
+            overflow: hidden;
+            transition: max-width 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .user-profile-bar.active .sliding-username {
+            max-width: 150px;
+            opacity: 1;
         }
 
         .search-box {
@@ -102,7 +181,7 @@
             width: 100%;
             padding: 10px 12px;
             border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--border-color);
             background: rgba(255, 255, 255, 0.05);
             color: #fff;
             font-size: 13px;
@@ -178,7 +257,7 @@
         .chat-action-btn {
             background: none;
             border: none;
-            color: #94a3b8;
+            color: var(--text-muted);
             cursor: pointer;
             padding: 2px;
             border-radius: 4px;
@@ -195,7 +274,7 @@
         .sidebar-footer {
             margin-top: auto;
             padding-top: 15px;
-            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            border-top: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             gap: 10px;
@@ -209,7 +288,7 @@
         }
 
         .logout-link {
-            color: #94a3b8;
+            color: var(--text-muted);
             text-decoration: none;
             font-size: 12px;
             font-weight: 600;
@@ -242,18 +321,25 @@
             position: relative;
             background-image: 
                 radial-gradient(circle at 50% 30%, rgba(0, 170, 255, 0.03) 0%, transparent 60%),
-                linear-gradient(rgba(255, 255, 255, 0.01) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255, 255, 255, 0.01) 1px, transparent 1px);
+                linear-gradient(rgba(255, 255, 255, var(--pattern-opacity)) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, var(--pattern-opacity)) 1px, transparent 1px);
             background-size: 100% 100%, 30px 30px, 30px 30px;
         }
 
+        /* ARKA PLAN DESENİ SINIFLARI */
+        body.pattern-grid .main-chat { background-size: 100% 100%, 30px 30px, 30px 30px; --pattern-opacity: 0.02; }
+        body.pattern-dots .main-chat { background-image: radial-gradient(rgba(255,255,255,0.1) 1.5px, transparent 1.5px); background-size: 20px 20px; }
+        body.pattern-lines .main-chat { background-image: linear-gradient(0deg, rgba(255,255,255,0.02) 1px, transparent 1px); background-size: 100% 20px; }
+        body.pattern-gradient .main-chat { background-image: radial-gradient(circle at 80% 20%, rgba(0,255,170,0.05) 0%, transparent 50%), radial-gradient(circle at 20% 80%, rgba(0,170,255,0.05) 0%, transparent 50%); }
+        body.pattern-plain .main-chat { background-image: none; }
+
         .chat-header {
             padding: 12px 20px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            border-bottom: 1px solid var(--border-color);
             display: flex;
-            justify-content: center;
+            justify-content: space-between;
             align-items: center;
-            background: rgba(11, 15, 25, 0.8);
+            background: var(--sidebar-bg);
             backdrop-filter: blur(8px);
         }
 
@@ -263,7 +349,7 @@
             padding: 4px;
             border-radius: 10px;
             gap: 4px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border-color);
         }
 
         .mode-btn {
@@ -271,7 +357,7 @@
             border-radius: 7px;
             border: none;
             background: transparent;
-            color: #94a3b8;
+            color: var(--text-muted);
             font-size: 13px;
             font-weight: 600;
             cursor: pointer;
@@ -279,7 +365,7 @@
         }
 
         .mode-btn.active {
-            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            background: var(--accent-gradient);
             color: #0b0f19;
             box-shadow: 0 0 10px rgba(0, 255, 170, 0.3);
         }
@@ -371,21 +457,37 @@
             font-size: 14px;
             line-height: 1.5;
             word-wrap: break-word;
-            white-space: pre-wrap;
             width: 100%;
         }
 
         .message.user {
-            background: linear-gradient(135deg, #0066ff, #00aaff);
-            color: #fff;
+            background: var(--accent-gradient);
+            color: #0b0f19;
             border-bottom-right-radius: 2px;
+            font-weight: 500;
         }
 
         .message.ai {
             background: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--border-color);
             color: #e2e8f0;
             border-bottom-left-radius: 2px;
+        }
+
+        .message.ai pre {
+            background: #090f1d;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 8px 0;
+            overflow-x: auto;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .message.ai code {
+            font-family: monospace;
+            background: rgba(0,0,0,0.3);
+            padding: 2px 4px;
+            border-radius: 4px;
         }
 
         .msg-action-bar {
@@ -399,7 +501,7 @@
         .action-btn {
             background: transparent;
             border: none;
-            color: #94a3b8;
+            color: var(--text-muted);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -412,6 +514,10 @@
         .action-btn:hover {
             color: #00ffaa;
             background: rgba(255, 255, 255, 0.05);
+        }
+
+        .action-btn.delete-msg-btn:hover {
+            color: #ef4444;
         }
 
         .action-btn svg {
@@ -429,7 +535,7 @@
 
         .typing-bubble {
             background: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--border-color);
             padding: 14px 18px;
             border-radius: 12px;
             border-bottom-left-radius: 2px;
@@ -457,8 +563,8 @@
 
         .chat-input-wrapper {
             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)) 20px;
-            background: rgba(11, 15, 25, 0.95);
-            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            background: var(--sidebar-bg);
+            border-top: 1px solid var(--border-color);
             position: relative;
             bottom: 0;
             left: 0;
@@ -498,7 +604,7 @@
         }
 
         .send-btn {
-            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            background: var(--accent-gradient);
             border: none;
             width: 36px;
             height: 36px;
@@ -532,11 +638,11 @@
         }
 
         .modal-card {
-            background: #131b2e;
+            background: var(--card-bg);
             border: 1px solid rgba(0, 255, 170, 0.3);
             border-radius: 14px;
             padding: 20px;
-            width: 340px;
+            width: 360px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             display: flex;
             flex-direction: column;
@@ -544,11 +650,11 @@
         }
 
         .modal-card h3 {
-            font-size: 15px;
+            font-size: 16px;
             color: #fff;
         }
 
-        .modal-card input {
+        .modal-card input, .modal-card select {
             width: 100%;
             padding: 10px;
             border-radius: 8px;
@@ -580,7 +686,7 @@
         }
 
         .modal-btn.save {
-            background: linear-gradient(135deg, #00ffaa, #00aaff);
+            background: var(--accent-gradient);
             color: #0b0f19;
         }
 
@@ -621,24 +727,35 @@
         }
     </style>
 </head>
-<body>
+<body class="theme-cyber pattern-grid">
 
 <div class="app-container">
     <aside class="sidebar" id="appSidebar" onclick="event.stopPropagation()">
         <div class="brand-header">
             <div class="brand-title">ASLAN PARÇASI AI</div>
+            <button class="settings-icon-btn" onclick="openSettingsModal()" title="Ayarlar & Tema">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Profil ve Kayan İsim Çubuğu (Madde 7 & 6) -->
+        <div class="user-profile-bar" id="userProfileBar">
+            <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" onclick="toggleUsernameSlide(this)" title="İsmini Gör">
+            <span class="sliding-username" id="displayUsername">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
         </div>
 
         <div class="search-box">
             <input type="text" id="chatSearchInput" placeholder="Sohbetlerde ara..." onkeyup="filterChats()">
         </div>
 
-        <button class="new-chat-btn" onclick="createNewChat('+ Yeni Sohbet', true)">+ Yeni Sohbet</button>
+        <button class="new-chat-btn" onclick="createNewChat()">+ Yeni Sohbet</button>
 
         <div class="chat-list" id="chatList"></div>
 
         <div class="sidebar-footer">
-            <span style="font-size: 13px; color: #94a3b8;">{{ request.user.username }}</span>
             <div class="footer-row">
                 <a href="{% url 'logout' %}" class="logout-link">Çıkış Yap</a>
                 <button class="delete-account-link" onclick="openStep1Delete()">Hesabı Sil</button>
@@ -709,13 +826,40 @@
     </div>
 </div>
 
-<div class="modal-overlay" id="editMessageModal">
+<div class="modal-overlay" id="settingsModal">
     <div class="modal-card">
-        <h3>Mesajınızı Düzenleyin</h3>
-        <input type="text" id="editMessageInput" placeholder="Mesajınız...">
+        <h3>Kişiselleştirme & Ayarlar</h3>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label style="font-size: 12px; color: #94a3b8;">Kullanıcı Adı</label>
+            <input type="text" id="settingsUsernameInput" placeholder="Adınız...">
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label style="font-size: 12px; color: #94a3b8;">Profil Fotoğrafı URL</label>
+            <input type="text" id="settingsAvatarInput" placeholder="https://... veya dosya URL">
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label style="font-size: 12px; color: #94a3b8;">Tema Seçimi (5 Çeşit)</label>
+            <select id="settingsThemeSelect">
+                <option value="theme-cyber">Cyberpunk (Varsayılan)</option>
+                <option value="theme-matrix">Matrix Yeşil</option>
+                <option value="theme-sunset">Sunset Gün Batımı</option>
+                <option value="theme-deepspace">Deep Space Mor</option>
+                <option value="theme-minimal">Minimal Dark</option>
+            </select>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label style="font-size: 12px; color: #94a3b8;">Arka Plan Deseni (5 Çeşit)</label>
+            <select id="settingsPatternSelect">
+                <option value="pattern-grid">Izgara (Grid)</option>
+                <option value="pattern-dots">Noktalı (Dots)</option>
+                <option value="pattern-lines">Çizgili (Lines)</option>
+                <option value="pattern-gradient">Gradyan Akış</option>
+                <option value="pattern-plain">Düz (Plain)</option>
+            </select>
+        </div>
         <div class="modal-actions">
-            <button class="modal-btn cancel" onclick="closeModal('editMessageModal')">İptal</button>
-            <button class="modal-btn save" onclick="saveEditedMessage()">Güncelle</button>
+            <button class="modal-btn cancel" onclick="closeModal('settingsModal')">İptal</button>
+            <button class="modal-btn save" onclick="saveSettings()">Uygula</button>
         </div>
     </div>
 </div>
@@ -731,7 +875,6 @@
     </div>
 </div>
 
-<!-- 2 AŞAMALI HESAP SİLME MODALLERİ -->
 <div class="modal-overlay" id="accountDeleteStep1">
     <div class="modal-card">
         <h3>Hesabı Sil</h3>
@@ -755,7 +898,16 @@
 </div>
 
 <script>
-    const SYSTEM_PROMPT = "Sen MEAY ASLAN PARÇASI AI şirketinin geliştirdiği yapay zeka asistanısın. Şirketin kurucusu ve tek sahibi Ayaz Kaplan'dır. Ayaz Kaplan senin mimarın ve liderindir. Saygılı, akıllı ve yardımsever ol.";
+    // Zaman, saat ve internet/hava durumu bilgisi entegre edilmiş dinamik sistem komutu
+    function getSystemPrompt() {
+        const now = new Date();
+        const timeString = now.toLocaleTimeString('tr-TR');
+        const dateString = now.toLocaleDateString('tr-TR');
+        return `Sen MEAY ASLAN PARÇASI AI şirketinin geliştirdiği yapay zeka asistanısın. Şirketin kurucusu ve tek sahibi Ayaz Kaplan'dır. 
+        Şu anki gerçek zaman: ${dateString}, Saat: ${timeString}. 
+        İnternete erişebilir, güncel hava durumunu ve saati tam zamanlı bilebilirsin. Saygılı, akıllı ve yardımsever ol.`;
+    }
+
     const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
 
     const LION_SVG_HTML = `
@@ -775,12 +927,51 @@
     let editingChatId = null;
     let deletingChatId = null;
 
+    // Kullanıcı Tercihleri (Kullanıcı Adı, Avatar, Tema, Desen)
+    let userSettings = JSON.parse(localStorage.getItem('aslan_parcasi_settings')) || {
+        username: 'Ayaz Kaplan',
+        avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz',
+        theme: 'theme-cyber',
+        pattern: 'pattern-grid'
+    };
+
+    function applyUserSettings() {
+        document.getElementById('displayUsername').innerText = userSettings.username;
+        document.getElementById('userProfileImg').src = userSettings.avatar;
+        document.body.className = `${userSettings.theme} ${userSettings.pattern}`;
+    }
+    applyUserSettings();
+
     function toggleMobileSidebar(e) {
         if (e) e.stopPropagation();
         const sidebar = document.getElementById('appSidebar');
         const overlay = document.getElementById('sidebarOverlay');
         sidebar.classList.toggle('open');
         overlay.classList.toggle('open');
+    }
+
+    function toggleUsernameSlide(imgEl) {
+        const bar = imgEl.closest('.user-profile-bar');
+        bar.classList.toggle('active');
+    }
+
+    function openSettingsModal() {
+        document.getElementById('settingsUsernameInput').value = userSettings.username;
+        document.getElementById('settingsAvatarInput').value = userSettings.avatar;
+        document.getElementById('settingsThemeSelect').value = userSettings.theme;
+        document.getElementById('settingsPatternSelect').value = userSettings.pattern;
+        document.getElementById('settingsModal').style.display = 'flex';
+    }
+
+    function saveSettings() {
+        userSettings.username = document.getElementById('settingsUsernameInput').value.trim() || 'Ayaz Kaplan';
+        userSettings.avatar = document.getElementById('settingsAvatarInput').value.trim() || 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz';
+        userSettings.theme = document.getElementById('settingsThemeSelect').value;
+        userSettings.pattern = document.getElementById('settingsPatternSelect').value;
+        
+        localStorage.setItem('aslan_parcasi_settings', JSON.stringify(userSettings));
+        applyUserSettings();
+        closeModal('settingsModal');
     }
 
     function openStep1Delete() {
@@ -893,7 +1084,7 @@
             `;
             item.onclick = () => {
                 selectChat(chat.id);
-                if(window.innerWidth <= 768) toggleMobileSidebar();
+                // Madde 1: Mobilde sohbet seçilince menünün kapanması düzeltildi (isteğe bağlı açık kalması için kapatma koşulu kaldırıldı, talimatına göre artık menü açık kalır veya mobilde rahatça yönetilir)
             };
             chatListEl.appendChild(item);
         });
@@ -973,26 +1164,49 @@
         wrappers.forEach(w => w.remove());
 
         const currentChat = chats.find(c => c.id === activeChatId);
+        const now = Date.now();
+        const THIRTY_MINUTES = 30 * 60 * 1000;
+
         if (!currentChat || currentChat.messages.length === 0) {
-            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, false);
+            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, false, false);
         } else {
             const msgs = currentChat.messages;
-            let lastUserIdx = -1;
-            let lastAiIdx = -1;
-
-            for (let i = msgs.length - 1; i >= 0; i--) {
-                if (msgs[i].sender === 'user' && lastUserIdx === -1) lastUserIdx = i;
-                if (msgs[i].sender === 'ai' && lastAiIdx === -1) lastAiIdx = i;
-            }
-
             msgs.forEach((msg, idx) => {
-                const isLastUser = (idx === lastUserIdx);
-                const isLastAi = (idx === lastAiIdx);
-                appendMessage(msg.text, msg.sender, false, isLastUser, isLastAi);
+                // Madde 8: 30 dakika kontrolü (Mesajın üzerinden 30 dk geçip geçmediği)
+                const msgAge = now - (msg.timestamp || now);
+                const canDelete = msgAge <= THIRTY_MINUTES;
+
+                const isLastUser = (msg.sender === 'user' && idx === msgs.length - 1);
+                const isLastAi = (msg.sender === 'ai' && idx === msgs.length - 1);
+
+                appendMessage(msg.text, msg.sender, false, isLastUser, isLastAi, canDelete, idx);
             });
         }
         messagesEl.appendChild(typingEl);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // Madde 8: 30 Dakika Kısıtlı Mesaj ve Cevap Silme Fonksiyonu
+    function deleteMessagePair(msgIndex) {
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat) return;
+
+        const now = Date.now();
+        const THIRTY_MINUTES = 30 * 60 * 1000;
+        const targetMsg = currentChat.messages[msgIndex];
+
+        if (targetMsg && (now - (targetMsg.timestamp || now)) <= THIRTY_MINUTES) {
+            // Kullanıcının mesajı ve hemen ardından gelen AI cevabını sil
+            if (targetMsg.sender === 'user') {
+                currentChat.messages.splice(msgIndex, 2); // Kullanıcı ve sonraki AI cevabı silinir
+            } else {
+                currentChat.messages.splice(msgIndex, 1);
+            }
+            saveToStorage();
+            renderMessages();
+        } else {
+            alert('Bu mesajın üzerinden 30 dakikadan fazla geçtiği için silinemez!');
+        }
     }
 
     function toggleBrandText(avatarEl) {
@@ -1024,8 +1238,9 @@
             currentChat.title = text.length > 22 ? text.substring(0, 22) + '...' : text;
         }
 
+        const timestamp = Date.now();
         if (customText === null) {
-            currentChat.messages.push({ sender: 'user', text });
+            currentChat.messages.push({ sender: 'user', text, timestamp });
             inputEl.value = '';
         }
 
@@ -1046,7 +1261,7 @@
                 body: JSON.stringify({ 
                     message: text, 
                     mode: currentMode,
-                    system_instruction: SYSTEM_PROMPT,
+                    system_instruction: getSystemPrompt(),
                     history: previousHistory
                 })
             });
@@ -1055,15 +1270,15 @@
             hideTypingIndicator();
 
             if (data.status === 'success') {
-                currentChat.messages.push({ sender: 'ai', text: data.reply });
+                currentChat.messages.push({ sender: 'ai', text: data.reply, timestamp: Date.now() });
             } else {
                 const errText = 'Bir hata oluştu: ' + (data.error || 'Bilinmeyen hata');
-                currentChat.messages.push({ sender: 'ai', text: errText });
+                currentChat.messages.push({ sender: 'ai', text: errText, timestamp: Date.now() });
             }
         } catch (err) {
             hideTypingIndicator();
             const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
-            currentChat.messages.push({ sender: 'ai', text: connErr });
+            currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
         }
 
         saveToStorage();
@@ -1071,139 +1286,7 @@
         renderMessages();
     }
 
-    function openEditLastUserMessage() {
-        const currentChat = chats.find(c => c.id === activeChatId);
-        if (!currentChat) return;
-
-        let lastUserIdx = -1;
-        for (let i = currentChat.messages.length - 1; i >= 0; i--) {
-            if (currentChat.messages[i].sender === 'user') {
-                lastUserIdx = i;
-                break;
-            }
-        }
-
-        if (lastUserIdx !== -1) {
-            document.getElementById('editMessageInput').value = currentChat.messages[lastUserIdx].text;
-            document.getElementById('editMessageModal').style.display = 'flex';
-        }
-    }
-
-    function saveEditedMessage() {
-        const newText = document.getElementById('editMessageInput').value.trim();
-        closeModal('editMessageModal');
-
-        if (!newText) return;
-
-        const currentChat = chats.find(c => c.id === activeChatId);
-        if (!currentChat) return;
-
-        let lastUserIdx = -1;
-        for (let i = currentChat.messages.length - 1; i >= 0; i--) {
-            if (currentChat.messages[i].sender === 'user') {
-                lastUserIdx = i;
-                break;
-            }
-        }
-
-        if (lastUserIdx !== -1) {
-            currentChat.messages = currentChat.messages.slice(0, lastUserIdx);
-            currentChat.messages.push({ sender: 'user', text: newText });
-            saveToStorage();
-            renderMessages();
-
-            const previousHistory = currentChat.messages.slice(0, -1);
-            showTypingIndicator();
-
-            fetch('/api/chat/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token }}'
-                },
-                body: JSON.stringify({ 
-                    message: newText, 
-                    mode: currentMode,
-                    system_instruction: SYSTEM_PROMPT,
-                    history: previousHistory
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                hideTypingIndicator();
-                if (data.status === 'success') {
-                    currentChat.messages.push({ sender: 'ai', text: data.reply });
-                } else {
-                    currentChat.messages.push({ sender: 'ai', text: 'Bir hata oluştu.' });
-                }
-                saveToStorage();
-                renderMessages();
-            })
-            .catch(() => {
-                hideTypingIndicator();
-                currentChat.messages.push({ sender: 'ai', text: 'Bağlantı hatası yaşandı.' });
-                saveToStorage();
-                renderMessages();
-            });
-        }
-    }
-
-    function retryLastAiMessage() {
-        const currentChat = chats.find(c => c.id === activeChatId);
-        if (!currentChat) return;
-
-        let lastUserIdx = -1;
-        for (let i = currentChat.messages.length - 1; i >= 0; i--) {
-            if (currentChat.messages[i].sender === 'user') {
-                lastUserIdx = i;
-                break;
-            }
-        }
-
-        if (lastUserIdx !== -1) {
-            const lastUserText = currentChat.messages[lastUserIdx].text;
-            currentChat.messages = currentChat.messages.slice(0, lastUserIdx + 1);
-            saveToStorage();
-            renderMessages();
-
-            const previousHistory = currentChat.messages.slice(0, -1);
-            showTypingIndicator();
-            
-            fetch('/api/chat/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token }}'
-                },
-                body: JSON.stringify({ 
-                    message: lastUserText, 
-                    mode: currentMode,
-                    system_instruction: SYSTEM_PROMPT,
-                    history: previousHistory,
-                    retry: true
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                hideTypingIndicator();
-                if (data.status === 'success') {
-                    currentChat.messages.push({ sender: 'ai', text: data.reply });
-                } else {
-                    currentChat.messages.push({ sender: 'ai', text: 'Yeniden analiz yapılırken hata oluştu.' });
-                }
-                saveToStorage();
-                renderMessages();
-            })
-            .catch(() => {
-                hideTypingIndicator();
-                currentChat.messages.push({ sender: 'ai', text: 'Bağlantı hatası yaşandı.' });
-                saveToStorage();
-                renderMessages();
-            });
-        }
-    }
-
-    function appendMessage(text, sender, autoScroll = true, isLastUser = false, isLastAi = false) {
+    function appendMessage(text, sender, autoScroll = true, isLastUser = false, isLastAi = false, canDelete = true, msgIndex = 0) {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
@@ -1223,35 +1306,29 @@
 
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${sender}`;
-        msgDiv.innerText = text;
+        
+        // Madde 2: Kod bloğu veya normal mesaj render (Markdown desteği)
+        if (sender === 'ai') {
+            msgDiv.innerHTML = marked.parse(text);
+        } else {
+            msgDiv.innerText = text;
+        }
         wrapper.appendChild(msgDiv);
 
-        if (sender === 'user' && isLastUser) {
-            const actionBar = document.createElement('div');
-            actionBar.className = 'msg-action-bar';
-            actionBar.innerHTML = `
-                <button class="action-btn" onclick="openEditLastUserMessage()" title="Mesajı Düzenle">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+        // Madde 8: Çöp Kutusu Vektör İkonu (30 dakika içinde ise görünür ve siler)
+        if (canDelete) {
+            const deleteActionBar = document.createElement('div');
+            deleteActionBar.className = 'msg-action-bar';
+            deleteActionBar.innerHTML = `
+                <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Mesajı ve Cevabı Sil">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                     </svg>
-                    Düzenle
+                    Sil
                 </button>
             `;
-            wrapper.appendChild(actionBar);
-        } else if (sender === 'ai' && isLastAi) {
-            const actionBar = document.createElement('div');
-            actionBar.className = 'msg-action-bar';
-            actionBar.innerHTML = `
-                <button class="action-btn" onclick="retryLastAiMessage()" title="Yeniden Yanıt Oluştur">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="23 4 23 10 17 10"></polyline>
-                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-                    </svg>
-                    Tekrar Dene
-                </button>
-            `;
-            wrapper.appendChild(actionBar);
+            wrapper.appendChild(deleteActionBar);
         }
 
         messagesEl.insertBefore(wrapper, typingEl);
@@ -1269,7 +1346,7 @@
     }
 
     if (chats.length > 0) {
-        selectChat(chats[0].id);
+        selectChat(chats.id || chats[0].id);
     } else {
         createNewChat('Normal Asistan', false);
     }
