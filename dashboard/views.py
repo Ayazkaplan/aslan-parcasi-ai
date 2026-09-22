@@ -1,5 +1,6 @@
 import json
 import os
+import datetime
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
@@ -20,6 +21,22 @@ def get_openai_client():
 @login_required(login_url="login")
 def index(request):
   return render(request, "dashboard/index.html")
+
+
+@login_required(login_url="login")
+def update_username_view(request):
+  if request.method == "POST":
+    try:
+      data = json.loads(request.body)
+      new_username = data.get("username", "").strip()
+      if new_username and not User.objects.filter(username=new_username).exclude(pk=request.user.pk).exists():
+        request.user.username = new_username
+        request.user.save()
+        return JsonResponse({"status": "success"})
+      return JsonResponse({"error": "Bu kullanıcı adı zaten alınmış veya geçersiz."}, status=400)
+    except Exception as e:
+      return JsonResponse({"error": str(e)}, status=500)
+  return JsonResponse({"error": "Geçersiz istek."}, status=405)
 
 
 @login_required(login_url="login")
@@ -44,27 +61,21 @@ def api_chat(request):
       if not user_message:
         return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
+      current_time = datetime.datetime.now().strftime("%d %B %Y, %A - %H:%M")
+
       system_instruction = (
-          "Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş"
-          " bilgi birikimine sahip bir yapay zeka asistanısın. Seni oluşturan,"
-          " kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI"
-          " şirketinin kurucusu Ayaz Kaplan'dır. Biri sana kurucunu, kimin"
-          " geliştirdiğini veya sahibini sorduğunda gururla MEAY ASLAN PARÇASI AI"
-          " kurucusu Ayaz Kaplan olduğunu söyle. Asla genel veya başka şirketler"
-          " tarafından eğitildiğini söyleme. Gerçek bir dost gibi doğal, akıcı"
-          " konuş. Hangi dilde yazılırsa yazılsın yüksek kalitede yanıt ver."
+          f"Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş bilgi birikimine sahip bir yapay zeka asistanısın. "
+          f"Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
+          f"Şu anki gerçek zamanlı tarih ve saat: {current_time} (Türkiye/İstanbul). "
+          f"Kullanıcı sana hava durumunu, saati veya güncel web bilgilerini sorduğunda bu zaman bilgisini ve internet erişim yeteneğini kullanarak tam ve doğru yanıt ver. "
+          f"Kod asistanı modunda (code) tam, hatasız ve profesyonel kod blokları (markdown formatında) üret. "
+          f"Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
       )
 
       if mode == "code":
-        system_instruction += (
-            " Kod asistanı modundasın. Yazılım ve kodlama sorunlarını eksiksiz,"
-            " temiz ve profesyonelce çöz."
-        )
+        system_instruction += " Kod asistanı modundasın. Yazdığın kodlar eksiksiz, modern ve çalıştırılabilir olmalı, kod blokları içinde tam çözümler sunmalısın."
       elif mode == "fast":
-        system_instruction += (
-            " Hızlı analiz modundasın. Yanıtlarını en net, öz ve hızlı"
-            " okunabilir formatta sun."
-        )
+        system_instruction += " Hızlı analiz modundasın. Yanıtlarını en net, öz ve hızlı okunabilir formatta sun."
 
       messages = [{"role": "system", "content": system_instruction}]
 
