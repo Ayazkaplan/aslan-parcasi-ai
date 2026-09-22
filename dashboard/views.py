@@ -116,6 +116,7 @@ def login_view(request):
     if form.is_valid():
       login(request, form.get_user())
       request.session.set_expiry(2592000)
+      request.session.save()
       return redirect("index")
   else:
     form = AuthenticationForm()
@@ -131,6 +132,7 @@ def register_view(request):
       user = form.save()
       login(request, user)
       request.session.set_expiry(2592000)
+      request.session.save()
       return redirect("index")
   else:
     form = CustomUserCreationForm()

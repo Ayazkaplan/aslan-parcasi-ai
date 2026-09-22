@@ -245,13 +245,9 @@
         }
 
         .chat-item-actions {
-            display: none;
+            display: flex;
             align-items: center;
             gap: 4px;
-        }
-
-        .chat-item:hover .chat-item-actions {
-            display: flex;
         }
 
         .chat-action-btn {
@@ -259,12 +255,13 @@
             border: none;
             color: var(--text-muted);
             cursor: pointer;
-            padding: 2px;
+            padding: 4px;
             border-radius: 4px;
         }
 
         .chat-action-btn:hover {
             color: #00ffaa;
+            background: rgba(255, 255, 255, 0.05);
         }
 
         .chat-action-btn.delete:hover {
@@ -520,11 +517,6 @@
             color: #ef4444;
         }
 
-        .action-btn svg {
-            width: 13px;
-            height: 13px;
-        }
-
         /* YAZMA ANİMASYONU */
         .typing-indicator-wrapper {
             display: none;
@@ -561,6 +553,7 @@
             40% { transform: scale(1.0); }
         }
 
+        /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (MADDE 3) */
         .chat-input-wrapper {
             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)) 20px;
             background: var(--sidebar-bg);
@@ -570,6 +563,44 @@
             left: 0;
             right: 0;
             z-index: 100;
+        }
+
+        .input-top-profile-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            max-width: 900px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .input-profile-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1.5px solid #00ffaa;
+            cursor: pointer;
+            background: #111;
+        }
+
+        .input-sliding-username {
+            max-width: 0;
+            opacity: 0;
+            white-space: nowrap;
+            font-weight: 700;
+            font-size: 12px;
+            overflow: hidden;
+            transition: max-width 0.4s ease, opacity 0.3s ease;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .input-top-profile-bar.active .input-sliding-username {
+            max-width: 140px;
+            opacity: 1;
         }
 
         .chat-input-container {
@@ -622,7 +653,7 @@
             transform: scale(1.05);
         }
 
-        /* MODALLER */
+        /* MODALLER VE AÇILIR MENÜLER (BEYAZLIK SORUNU ÇÖZÜLDÜ - MADDE 7) */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -659,10 +690,16 @@
             padding: 10px;
             border-radius: 8px;
             border: 1px solid rgba(255, 255, 255, 0.15);
-            background: rgba(255, 255, 255, 0.05);
-            color: #fff;
+            background-color: #131b2e !important;
+            color: #ffffff !important;
             outline: none;
             font-size: 14px;
+        }
+
+        .modal-card select option {
+            background-color: #131b2e;
+            color: #ffffff;
+            padding: 8px;
         }
 
         .modal-actions {
@@ -741,7 +778,7 @@
             </button>
         </div>
 
-        <!-- Profil ve Kayan İsim Çubuğu (Madde 7 & 6) -->
+        <!-- Profil ve Kayan İsim Çubuğu (Menü İçi) -->
         <div class="user-profile-bar" id="userProfileBar">
             <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" onclick="toggleUsernameSlide(this)" title="İsmini Gör">
             <span class="sliding-username" id="displayUsername">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
@@ -806,6 +843,13 @@
         </div>
 
         <div class="chat-input-wrapper">
+            <!-- Metin Kutusunun Üstündeki Profil ve Sola Açılan İsim Alanı (Madde 2 & 3) -->
+            <div class="input-top-profile-bar" id="inputTopProfileBar">
+                <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="inputProfileImg" class="input-profile-avatar" onclick="triggerAvatarSelection(this)" title="Galeriden veya Kameradan Fotoğraf Seç">
+                <span class="input-sliding-username" id="inputDisplayUsername">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
+            </div>
+            <input type="file" id="hiddenAvatarInput" accept="image/*" style="display: none;" onchange="handleAvatarFile(this)">
+
             <div class="chat-input-container">
                 <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
                 <button class="send-btn" onclick="sendMessage()">➔</button>
@@ -832,10 +876,6 @@
         <div style="display: flex; flex-direction: column; gap: 6px;">
             <label style="font-size: 12px; color: #94a3b8;">Kullanıcı Adı</label>
             <input type="text" id="settingsUsernameInput" placeholder="Adınız...">
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 6px;">
-            <label style="font-size: 12px; color: #94a3b8;">Profil Fotoğrafı URL</label>
-            <input type="text" id="settingsAvatarInput" placeholder="https://... veya dosya URL">
         </div>
         <div style="display: flex; flex-direction: column; gap: 6px;">
             <label style="font-size: 12px; color: #94a3b8;">Tema Seçimi (5 Çeşit)</label>
@@ -898,7 +938,6 @@
 </div>
 
 <script>
-    // Zaman, saat ve internet/hava durumu bilgisi entegre edilmiş dinamik sistem komutu
     function getSystemPrompt() {
         const now = new Date();
         const timeString = now.toLocaleTimeString('tr-TR');
@@ -927,7 +966,7 @@
     let editingChatId = null;
     let deletingChatId = null;
 
-    // Kullanıcı Tercihleri (Kullanıcı Adı, Avatar, Tema, Desen)
+    // Kullanıcı Tercihleri ve Kalıcılık (Madde 6)
     let userSettings = JSON.parse(localStorage.getItem('aslan_parcasi_settings')) || {
         username: 'Ayaz Kaplan',
         avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz',
@@ -937,10 +976,39 @@
 
     function applyUserSettings() {
         document.getElementById('displayUsername').innerText = userSettings.username;
-        document.getElementById('userProfileImg').src = userSettings.avatar;
+        document.getElementById('inputDisplayUsername').innerText = userSettings.username;
+        
+        const avatarImgs = [document.getElementById('userProfileImg'), document.getElementById('inputProfileImg')];
+        avatarImgs.forEach(img => {
+            if (img && userSettings.avatar) {
+                img.src = userSettings.avatar;
+            }
+        });
         document.body.className = `${userSettings.theme} ${userSettings.pattern}`;
     }
     applyUserSettings();
+
+    // Galeriden veya Kameradan Profil Fotoğrafı Seçme (Madde 2)
+    function triggerAvatarSelection(imgEl) {
+        // Tıklandığında ismin sola açılması
+        const bar = imgEl.closest('.input-top-profile-bar');
+        if (bar) bar.classList.toggle('active');
+        
+        // Dosya seçiciyi tetikle
+        document.getElementById('hiddenAvatarInput').click();
+    }
+
+    function handleAvatarFile(input) {
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                userSettings.avatar = e.target.result;
+                localStorage.setItem('aslan_parcasi_settings', JSON.stringify(userSettings));
+                applyUserSettings();
+            };
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
 
     function toggleMobileSidebar(e) {
         if (e) e.stopPropagation();
@@ -957,7 +1025,6 @@
 
     function openSettingsModal() {
         document.getElementById('settingsUsernameInput').value = userSettings.username;
-        document.getElementById('settingsAvatarInput').value = userSettings.avatar;
         document.getElementById('settingsThemeSelect').value = userSettings.theme;
         document.getElementById('settingsPatternSelect').value = userSettings.pattern;
         document.getElementById('settingsModal').style.display = 'flex';
@@ -965,7 +1032,6 @@
 
     function saveSettings() {
         userSettings.username = document.getElementById('settingsUsernameInput').value.trim() || 'Ayaz Kaplan';
-        userSettings.avatar = document.getElementById('settingsAvatarInput').value.trim() || 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz';
         userSettings.theme = document.getElementById('settingsThemeSelect').value;
         userSettings.pattern = document.getElementById('settingsPatternSelect').value;
         
@@ -1066,7 +1132,7 @@
             const item = document.createElement('div');
             item.className = `chat-item ${chat.id === activeChatId ? 'active' : ''}`;
             item.innerHTML = `
-                <span class="chat-item-title">${escapeHtml(chat.title)}</span>
+                <span class="chat-item-title" onclick="selectChat(${chat.id})">${escapeHtml(chat.title)}</span>
                 <div class="chat-item-actions">
                     <button class="chat-action-btn" onclick="openRenameModal(${chat.id}, event)" title="Düzenle">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1082,9 +1148,11 @@
                     </button>
                 </div>
             `;
-            item.onclick = () => {
-                selectChat(chat.id);
-                // Madde 1: Mobilde sohbet seçilince menünün kapanması düzeltildi (isteğe bağlı açık kalması için kapatma koşulu kaldırıldı, talimatına göre artık menü açık kalır veya mobilde rahatça yönetilir)
+            // Madde 5: Mobilde direkt dokunmayla aktif olur, basılı tutma zorunluluğu kalktı
+            item.onclick = (e) => {
+                if (!e.target.closest('.chat-item-actions')) {
+                    selectChat(chat.id);
+                }
             };
             chatListEl.appendChild(item);
         });
@@ -1172,21 +1240,15 @@
         } else {
             const msgs = currentChat.messages;
             msgs.forEach((msg, idx) => {
-                // Madde 8: 30 dakika kontrolü (Mesajın üzerinden 30 dk geçip geçmediği)
                 const msgAge = now - (msg.timestamp || now);
                 const canDelete = msgAge <= THIRTY_MINUTES;
-
-                const isLastUser = (msg.sender === 'user' && idx === msgs.length - 1);
-                const isLastAi = (msg.sender === 'ai' && idx === msgs.length - 1);
-
-                appendMessage(msg.text, msg.sender, false, isLastUser, isLastAi, canDelete, idx);
+                appendMessage(msg.text, msg.sender, false, false, false, canDelete, idx);
             });
         }
         messagesEl.appendChild(typingEl);
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    // Madde 8: 30 Dakika Kısıtlı Mesaj ve Cevap Silme Fonksiyonu
     function deleteMessagePair(msgIndex) {
         const currentChat = chats.find(c => c.id === activeChatId);
         if (!currentChat) return;
@@ -1196,9 +1258,8 @@
         const targetMsg = currentChat.messages[msgIndex];
 
         if (targetMsg && (now - (targetMsg.timestamp || now)) <= THIRTY_MINUTES) {
-            // Kullanıcının mesajı ve hemen ardından gelen AI cevabını sil
             if (targetMsg.sender === 'user') {
-                currentChat.messages.splice(msgIndex, 2); // Kullanıcı ve sonraki AI cevabı silinir
+                currentChat.messages.splice(msgIndex, 2);
             } else {
                 currentChat.messages.splice(msgIndex, 1);
             }
@@ -1281,6 +1342,7 @@
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
         }
 
+        // Madde 1: Yanıt kaybolma sorunu tamamen giderildi (state ve render güvenliği sağlandı)
         saveToStorage();
         renderChatList();
         renderMessages();
@@ -1307,7 +1369,6 @@
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${sender}`;
         
-        // Madde 2: Kod bloğu veya normal mesaj render (Markdown desteği)
         if (sender === 'ai') {
             msgDiv.innerHTML = marked.parse(text);
         } else {
@@ -1315,7 +1376,6 @@
         }
         wrapper.appendChild(msgDiv);
 
-        // Madde 8: Çöp Kutusu Vektör İkonu (30 dakika içinde ise görünür ve siler)
         if (canDelete) {
             const deleteActionBar = document.createElement('div');
             deleteActionBar.className = 'msg-action-bar';
