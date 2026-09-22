@@ -12,10 +12,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # Quick-start development settings - unsuitable for production
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h')
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY', 'django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h'
+)
 
-# Render veya sunucu ortamından DEBUG değerini alır, yoksa yerel için False/True ayarlanır
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+# Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
+DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
@@ -30,7 +32,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'dashboard',
-] 
+]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -74,16 +76,24 @@ DATABASES = {
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'
+        ),
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.MinimumLengthValidator'
+        ),
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.CommonPasswordValidator'
+        ),
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.NumericPasswordValidator'
+        ),
     },
 ]
 
