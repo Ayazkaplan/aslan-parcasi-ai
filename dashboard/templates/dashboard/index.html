@@ -129,7 +129,7 @@
             background: rgba(255,255,255,0.05);
         }
 
-        /* KULLANICI PROFİLİ VE KAYAN İSİM ALANI */
+        /* KULLANICI PROFİLİ VE KAYAN İSİM ALANI ( + BUTONLU ) */
         .user-profile-bar {
             display: flex;
             align-items: center;
@@ -143,15 +143,44 @@
             overflow: hidden;
         }
 
+        .avatar-container {
+            position: relative;
+            width: 34px;
+            height: 34px;
+            flex-shrink: 0;
+        }
+
         .user-avatar {
             width: 34px;
             height: 34px;
             border-radius: 50%;
             object-fit: cover;
             border: 1.5px solid #00ffaa;
-            cursor: pointer;
-            flex-shrink: 0;
             background: #111;
+        }
+
+        .plus-avatar-btn {
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            width: 14px;
+            height: 14px;
+            background: #00ffaa;
+            color: #0b0f19;
+            border-radius: 50%;
+            font-size: 10px;
+            font-weight: 900;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border: 1px solid #0b0f19;
+            box-shadow: 0 0 5px rgba(0,255,170,0.5);
+            z-index: 5;
+            transition: transform 0.2s;
+        }
+        .plus-avatar-btn:hover {
+            transform: scale(1.15);
         }
 
         .sliding-username {
@@ -165,6 +194,7 @@
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            cursor: pointer;
         }
 
         .user-profile-bar.active .sliding-username {
@@ -323,7 +353,6 @@
             background-size: 100% 100%, 30px 30px, 30px 30px;
         }
 
-        /* ARKA PLAN DESENİ SINIFLARI */
         body.pattern-grid .main-chat { background-size: 100% 100%, 30px 30px, 30px 30px; --pattern-opacity: 0.02; }
         body.pattern-dots .main-chat { background-image: radial-gradient(rgba(255,255,255,0.1) 1.5px, transparent 1.5px); background-size: 20px 20px; }
         body.pattern-lines .main-chat { background-image: linear-gradient(0deg, rgba(255,255,255,0.02) 1px, transparent 1px); background-size: 100% 20px; }
@@ -553,7 +582,7 @@
             40% { transform: scale(1.0); }
         }
 
-        /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (MADDE 3) */
+        /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (ASLAN PARÇASI DÜZENİ & + BUTONU) */
         .chat-input-wrapper {
             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)) 20px;
             background: var(--sidebar-bg);
@@ -575,14 +604,44 @@
             margin-right: auto;
         }
 
+        .input-avatar-container {
+            position: relative;
+            width: 30px;
+            height: 30px;
+            flex-shrink: 0;
+        }
+
         .input-profile-avatar {
             width: 30px;
             height: 30px;
             border-radius: 50%;
             object-fit: cover;
             border: 1.5px solid #00ffaa;
-            cursor: pointer;
             background: #111;
+        }
+
+        .input-plus-avatar-btn {
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            width: 12px;
+            height: 12px;
+            background: #00ffaa;
+            color: #0b0f19;
+            border-radius: 50%;
+            font-size: 9px;
+            font-weight: 900;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border: 1px solid #0b0f19;
+            box-shadow: 0 0 4px rgba(0,255,170,0.5);
+            z-index: 5;
+            transition: transform 0.2s;
+        }
+        .input-plus-avatar-btn:hover {
+            transform: scale(1.15);
         }
 
         .input-sliding-username {
@@ -596,6 +655,7 @@
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            cursor: pointer;
         }
 
         .input-top-profile-bar.active .input-sliding-username {
@@ -653,7 +713,7 @@
             transform: scale(1.05);
         }
 
-        /* MODALLER VE AÇILIR MENÜLER (BEYAZLIK SORUNU ÇÖZÜLDÜ - MADDE 7) */
+        /* MODALLER VE AÇILIR MENÜLER */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -778,10 +838,13 @@
             </button>
         </div>
 
-        <!-- Profil ve Kayan İsim Çubuğu (Menü İçi) -->
+        <!-- Profil ve Kayan İsim Çubuğu (Sol Menü + Sol Üstte + Butonu) -->
         <div class="user-profile-bar" id="userProfileBar">
-            <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" onclick="toggleUsernameSlide(this)" title="İsmini Gör">
-            <span class="sliding-username" id="displayUsername">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
+            <div class="avatar-container">
+                <div class="plus-avatar-btn" onclick="triggerAvatarSelection(event)" title="Fotoğraf Seç">+</div>
+                <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" alt="Profil">
+            </div>
+            <span class="sliding-username" id="displayUsername" onclick="toggleUsernameSlide(this)">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
         </div>
 
         <div class="search-box">
@@ -843,10 +906,13 @@
         </div>
 
         <div class="chat-input-wrapper">
-            <!-- Metin Kutusunun Üstündeki Profil ve Sola Açılan İsim Alanı (Madde 2 & 3) -->
+            <!-- Metin Kutusunun Üstündeki Profil Alanı ve Sol Üst + Butonu (Aslan Parçası Düzeni) -->
             <div class="input-top-profile-bar" id="inputTopProfileBar">
-                <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="inputProfileImg" class="input-profile-avatar" onclick="triggerAvatarSelection(this)" title="Galeriden veya Kameradan Fotoğraf Seç">
-                <span class="input-sliding-username" id="inputDisplayUsername">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
+                <div class="input-avatar-container">
+                    <div class="input-plus-avatar-btn" onclick="triggerAvatarSelection(event)" title="Fotoğraf Seç">+</div>
+                    <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="inputProfileImg" class="input-profile-avatar" alt="Profil">
+                </div>
+                <span class="input-sliding-username" id="inputDisplayUsername" onclick="toggleInputUsernameSlide(this)">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
             </div>
             <input type="file" id="hiddenAvatarInput" accept="image/*" style="display: none;" onchange="handleAvatarFile(this)">
 
@@ -966,7 +1032,6 @@
     let editingChatId = null;
     let deletingChatId = null;
 
-    // Kullanıcı Tercihleri ve Kalıcılık (Madde 6)
     let userSettings = JSON.parse(localStorage.getItem('aslan_parcasi_settings')) || {
         username: 'Ayaz Kaplan',
         avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz',
@@ -988,13 +1053,9 @@
     }
     applyUserSettings();
 
-    // Galeriden veya Kameradan Profil Fotoğrafı Seçme (Madde 2)
-    function triggerAvatarSelection(imgEl) {
-        // Tıklandığında ismin sola açılması
-        const bar = imgEl.closest('.input-top-profile-bar');
-        if (bar) bar.classList.toggle('active');
-        
-        // Dosya seçiciyi tetikle
+    // Kalıcı Profil Fotoğrafı ve + Butonu Tetikleyicisi
+    function triggerAvatarSelection(e) {
+        if (e) e.stopPropagation();
         document.getElementById('hiddenAvatarInput').click();
     }
 
@@ -1018,8 +1079,13 @@
         overlay.classList.toggle('open');
     }
 
-    function toggleUsernameSlide(imgEl) {
-        const bar = imgEl.closest('.user-profile-bar');
+    function toggleUsernameSlide(el) {
+        const bar = el.closest('.user-profile-bar');
+        bar.classList.toggle('active');
+    }
+
+    function toggleInputUsernameSlide(el) {
+        const bar = el.closest('.input-top-profile-bar');
         bar.classList.toggle('active');
     }
 
@@ -1148,7 +1214,6 @@
                     </button>
                 </div>
             `;
-            // Madde 5: Mobilde direkt dokunmayla aktif olur, basılı tutma zorunluluğu kalktı
             item.onclick = (e) => {
                 if (!e.target.closest('.chat-item-actions')) {
                     selectChat(chat.id);
@@ -1232,17 +1297,13 @@
         wrappers.forEach(w => w.remove());
 
         const currentChat = chats.find(c => c.id === activeChatId);
-        const now = Date.now();
-        const THIRTY_MINUTES = 30 * 60 * 1000;
 
         if (!currentChat || currentChat.messages.length === 0) {
-            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, false, false);
+            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, 0);
         } else {
             const msgs = currentChat.messages;
             msgs.forEach((msg, idx) => {
-                const msgAge = now - (msg.timestamp || now);
-                const canDelete = msgAge <= THIRTY_MINUTES;
-                appendMessage(msg.text, msg.sender, false, false, false, canDelete, idx);
+                appendMessage(msg.text, msg.sender, false, true, idx);
             });
         }
         messagesEl.appendChild(typingEl);
@@ -1253,11 +1314,8 @@
         const currentChat = chats.find(c => c.id === activeChatId);
         if (!currentChat) return;
 
-        const now = Date.now();
-        const THIRTY_MINUTES = 30 * 60 * 1000;
         const targetMsg = currentChat.messages[msgIndex];
-
-        if (targetMsg && (now - (targetMsg.timestamp || now)) <= THIRTY_MINUTES) {
+        if (targetMsg) {
             if (targetMsg.sender === 'user') {
                 currentChat.messages.splice(msgIndex, 2);
             } else {
@@ -1265,8 +1323,20 @@
             }
             saveToStorage();
             renderMessages();
-        } else {
-            alert('Bu mesajın üzerinden 30 dakikadan fazla geçtiği için silinemez!');
+        }
+    }
+
+    function editMessage(msgIndex) {
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat) return;
+
+        const targetMsg = currentChat.messages[msgIndex];
+        if (targetMsg && targetMsg.sender === 'user') {
+            document.getElementById('userInput').value = targetMsg.text;
+            currentChat.messages.splice(msgIndex, 2); // Kullanıcı ve AI yanıtını temizle, yeniden gönderilecek
+            saveToStorage();
+            renderMessages();
+            document.getElementById('userInput').focus();
         }
     }
 
@@ -1342,13 +1412,12 @@
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
         }
 
-        // Madde 1: Yanıt kaybolma sorunu tamamen giderildi (state ve render güvenliği sağlandı)
         saveToStorage();
         renderChatList();
         renderMessages();
     }
 
-    function appendMessage(text, sender, autoScroll = true, isLastUser = false, isLastAi = false, canDelete = true, msgIndex = 0) {
+    function appendMessage(text, sender, autoScroll = true, canAction = true, msgIndex = 0) {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
@@ -1376,11 +1445,12 @@
         }
         wrapper.appendChild(msgDiv);
 
-        if (canDelete) {
-            const deleteActionBar = document.createElement('div');
-            deleteActionBar.className = 'msg-action-bar';
-            deleteActionBar.innerHTML = `
-                <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Mesajı ve Cevabı Sil">
+        if (canAction) {
+            const actionBrd = document.createElement('div');
+            actionBrd.className = 'msg-action-bar';
+            
+            let actionHtml = `
+                <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
                         <polyline points="3 6 5 6 21 6"></polyline>
                         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -1388,7 +1458,21 @@
                     Sil
                 </button>
             `;
-            wrapper.appendChild(deleteActionBar);
+
+            if (sender === 'user') {
+                actionHtml += `
+                    <button class="action-btn" onclick="editMessage(${msgIndex})" title="Düzenle">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                        Düzenle
+                    </button>
+                `;
+            }
+
+            actionBrd.innerHTML = actionHtml;
+            wrapper.appendChild(actionBrd);
         }
 
         messagesEl.insertBefore(wrapper, typingEl);
@@ -1406,7 +1490,7 @@
     }
 
     if (chats.length > 0) {
-        selectChat(chats.id || chats[0].id);
+        selectChat(chats[0].id);
     } else {
         createNewChat('Normal Asistan', false);
     }
