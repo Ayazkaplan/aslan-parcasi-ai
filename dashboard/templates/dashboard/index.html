@@ -697,6 +697,7 @@
 </div>
 
 <script>
+    const LION_LOGO_URL = "https://i.imgur.com/IhVQgrM.jpeg";
     const SYSTEM_PROMPT = "Sen MEAY ASLAN PARÇASI AI şirketinin geliştirdiği yapay zeka asistanısın. Şirketin kurucusu ve tek sahibi Ayaz Kaplan'dır. Ayaz Kaplan senin mimarın ve liderindir. Saygılı, akıllı ve yardımsever ol.";
     const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
 
@@ -1082,7 +1083,7 @@
             aiHeader.className = 'ai-header-container';
             aiHeader.innerHTML = `
                 <div class="lion-avatar" onclick="toggleBrandText(this)" title="Profili Gör">
-                    <img src="https://i.imgur.com/IhVQgrM.jpeg" alt="Aslan Logo">
+                    <img src="${LION_LOGO_URL}" alt="Aslan Logo">
                 </div>
                 <span class="gold-brand-text">ASLAN PARÇASI</span>
             `;
