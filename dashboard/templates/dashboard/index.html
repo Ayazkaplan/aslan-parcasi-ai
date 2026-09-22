@@ -28,16 +28,46 @@
             position: relative;
         }
 
+        /* MOBİL HAMBURGER MENÜ BUTONU - Z-INDEX ARTIRILDI */
+        .mobile-menu-btn {
+            display: none;
+            position: fixed;
+            top: 12px;
+            left: 12px;
+            z-index: 99999;
+            background: rgba(15, 22, 36, 0.95);
+            border: 1px solid rgba(0, 255, 170, 0.6);
+            color: #00ffaa;
+            padding: 10px 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            backdrop-filter: blur(5px);
+            box-shadow: 0 0 15px rgba(0, 255, 170, 0.3);
+        }
+
+        /* MOBİL KARARTMA PERDESİ */
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 9998;
+        }
+
         /* SOL PANEL / SIDEBAR */
         .sidebar {
             width: 280px;
-            background: rgba(15, 22, 36, 0.95);
+            background: rgba(15, 22, 36, 0.98);
             border-right: 1px solid rgba(255, 255, 255, 0.08);
             display: flex;
             flex-direction: column;
             padding: 15px;
-            z-index: 10;
-            transition: all 0.3s ease;
+            z-index: 9999;
+            transition: transform 0.3s ease;
         }
 
         .brand-header {
@@ -188,7 +218,7 @@
         }
 
         .chat-header {
-            padding: 12px 20px;
+            padding: 12px 20px 12px 60px; /* Mobilde hamburger butonunun üstüne binmemesi için sol boşluk */
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             display: flex;
             justify-content: center;
@@ -260,31 +290,27 @@
             padding: 2px 4px 2px 2px;
         }
 
+        /* NEON ASLAN LOGO PROFİL STİLİ */
         .lion-avatar {
-            width: 34px;
-            height: 34px;
+            width: 36px;
+            height: 36px;
             border-radius: 50%;
-            background: rgba(0, 255, 170, 0.1);
-            border: 1px solid rgba(0, 255, 170, 0.5);
+            background: rgba(0, 255, 170, 0.15);
+            border: 1.5px solid #00ffaa;
+            overflow: hidden;
+            cursor: pointer;
+            z-index: 2;
+            box-shadow: 0 0 12px rgba(0, 255, 170, 0.4);
+            flex-shrink: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            cursor: pointer;
-            z-index: 2;
-            box-shadow: 0 0 10px rgba(0, 255, 170, 0.25);
-            transition: transform 0.2s ease;
-            flex-shrink: 0;
         }
 
-        .lion-avatar:hover {
-            transform: scale(1.08);
-        }
-
-        /* GERÇEK ASLAN SİLÜETİ SVG (Kusursuz Profil Tasarımı) */
-        .lion-avatar svg {
-            width: 22px;
-            height: 22px;
-            fill: #00ffaa;
+        .lion-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
         }
 
         .gold-brand-text {
@@ -364,6 +390,42 @@
             height: 13px;
         }
 
+        /* YAZMA ANİMASYONU (TYPING INDICATOR) */
+        .typing-indicator-wrapper {
+            display: none;
+            flex-direction: column;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+
+        .typing-bubble {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 14px 18px;
+            border-radius: 12px;
+            border-bottom-left-radius: 2px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #00ffaa;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        .typing-dot:nth-child(3) { animation-delay: 0s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1.0); }
+        }
+
         .chat-input-wrapper {
             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)) 20px;
             background: rgba(11, 15, 25, 0.95);
@@ -437,7 +499,7 @@
             display: none;
             align-items: center;
             justify-content: center;
-            z-index: 1000;
+            z-index: 10000;
         }
 
         .modal-card {
@@ -498,15 +560,26 @@
             color: #fff;
         }
 
+        /* MOBİL UYUMLULUK DÜZENLEMELERİ */
         @media (max-width: 768px) {
+            .mobile-menu-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
             .sidebar {
-                position: absolute;
+                position: fixed;
                 left: -280px;
                 top: 0;
                 bottom: 0;
+                width: 280px;
+                box-shadow: 5px 0 25px rgba(0,0,0,0.8);
             }
             .sidebar.open {
                 left: 0;
+            }
+            .sidebar-overlay.open {
+                display: block;
             }
             .message-wrapper {
                 max-width: 90%;
@@ -516,9 +589,22 @@
 </head>
 <body>
 
+<!-- MOBİL SOL ÜST MENÜ BUTONU -->
+<button class="mobile-menu-btn" onclick="toggleMobileSidebar()">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+</button>
+
+<!-- MOBİL KARARTMA PERDESİ -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileSidebar()"></div>
+
 <div class="app-container">
-    <aside class="sidebar">
+    <aside class="sidebar" id="appSidebar">
         <div class="brand-header">
+            {% load static %}
             <div class="brand-title">ASLAN PARÇASI AI</div>
         </div>
 
@@ -545,7 +631,22 @@
             </div>
         </header>
 
-        <div class="chat-messages" id="chatMessages"></div>
+        <div class="chat-messages" id="chatMessages">
+            <!-- YAZMA ANİMASYONU BÖLÜMÜ -->
+            <div class="typing-indicator-wrapper" id="typingIndicator">
+                <div class="ai-header-container">
+                    <div class="lion-avatar">
+                        <img src="{% static 'dashboard/aslan_logo.jpg' %}?v=2.1" alt="Aslan Logo">
+                    </div>
+                    <span class="gold-brand-text">ASLAN PARÇASI</span>
+                </div>
+                <div class="typing-bubble">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                </div>
+            </div>
+        </div>
 
         <div class="chat-input-wrapper">
             <div class="chat-input-container">
@@ -601,6 +702,25 @@
     let activeChatId = null;
     let editingChatId = null;
     let deletingChatId = null;
+
+    function toggleMobileSidebar() {
+        const sidebar = document.getElementById('appSidebar');
+        const overlay = document.getElementById('sidebarOverlay');
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('open');
+    }
+
+    function showTypingIndicator() {
+        const indicator = document.getElementById('typingIndicator');
+        indicator.style.display = 'flex';
+        const messagesEl = document.getElementById('chatMessages');
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function hideTypingIndicator() {
+        const indicator = document.getElementById('typingIndicator');
+        indicator.style.display = 'none';
+    }
 
     function saveToStorage() {
         const validChats = chats.filter(c => c.messages && c.messages.length > 0);
@@ -671,7 +791,10 @@
                     </button>
                 </div>
             `;
-            item.onclick = () => selectChat(chat.id);
+            item.onclick = () => {
+                selectChat(chat.id);
+                if(window.innerWidth <= 768) toggleMobileSidebar();
+            };
             chatListEl.appendChild(item);
         });
     }
@@ -744,7 +867,10 @@
 
     function renderMessages() {
         const messagesEl = document.getElementById('chatMessages');
-        messagesEl.innerHTML = '';
+        const typingEl = document.getElementById('typingIndicator');
+        
+        const wrappers = messagesEl.querySelectorAll('.message-wrapper');
+        wrappers.forEach(w => w.remove());
 
         const currentChat = chats.find(c => c.id === activeChatId);
         if (!currentChat || currentChat.messages.length === 0) {
@@ -765,6 +891,7 @@
                 appendMessage(msg.text, msg.sender, false, isLastUser, isLastAi);
             });
         }
+        messagesEl.appendChild(typingEl);
         messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -807,6 +934,7 @@
         renderMessages();
 
         const previousHistory = currentChat.messages.slice(0, -1);
+        showTypingIndicator();
 
         try {
             const response = await fetch('/api/chat/', {
@@ -824,6 +952,7 @@
             });
 
             const data = await response.json();
+            hideTypingIndicator();
 
             if (data.status === 'success') {
                 currentChat.messages.push({ sender: 'ai', text: data.reply });
@@ -832,6 +961,7 @@
                 currentChat.messages.push({ sender: 'ai', text: errText });
             }
         } catch (err) {
+            hideTypingIndicator();
             const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
             currentChat.messages.push({ sender: 'ai', text: connErr });
         }
@@ -902,6 +1032,7 @@
             renderMessages();
 
             const previousHistory = currentChat.messages.slice(0, -1);
+            showTypingIndicator();
             
             fetch('/api/chat/', {
                 method: 'POST',
@@ -919,6 +1050,7 @@
             })
             .then(res => res.json())
             .then(data => {
+                hideTypingIndicator();
                 if (data.status === 'success') {
                     currentChat.messages.push({ sender: 'ai', text: data.reply });
                 } else {
@@ -928,6 +1060,7 @@
                 renderMessages();
             })
             .catch(() => {
+                hideTypingIndicator();
                 currentChat.messages.push({ sender: 'ai', text: 'Bağlantı hatası yaşandı.' });
                 saveToStorage();
                 renderMessages();
@@ -937,21 +1070,16 @@
 
     function appendMessage(text, sender, autoScroll = true, isLastUser = false, isLastAi = false) {
         const messagesEl = document.getElementById('chatMessages');
+        const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
         wrapper.className = `message-wrapper ${sender}`;
 
         if (sender === 'ai') {
             const aiHeader = document.createElement('div');
             aiHeader.className = 'ai-header-container';
-            // Gerçek Aslan Silüeti SVG Tasarımı
             aiHeader.innerHTML = `
                 <div class="lion-avatar" onclick="toggleBrandText(this)" title="Profil Bilgisi">
-                    <svg viewBox="0 0 24 24">
-                        <path d="M12 2C9.5 5 7 5.5 5 7C3.5 8.2 3 10 3 12C3 15.5 5.5 19 8 20.5C9.5 21.4 10.8 22 12 22C13.2 22 14.5 21.4 16 20.5C18.5 19 21 15.5 21 12C21 10 20.5 8.2 19 7C17 5.5 14.5 5 12 2Z" fill="none" stroke="#00ffaa" stroke-width="1.5"/>
-                        <path d="M9 11C9 10.4477 9.44772 10 10 10C10.5523 10 11 10.4477 11 11C11 11.5523 10.5523 12 10 12C9.44772 12 9 11.5523 9 11Z" fill="#00ffaa"/>
-                        <path d="M13 11C13 10.4477 13.4477 10 14 10C14.5523 10 15 10.4477 15 11C15 11.5523 14.5523 12 14 12C13.4477 12 13 11.5523 13 11Z" fill="#00ffaa"/>
-                        <path d="M12 12.5V15.5M10.5 16.5H13.5" stroke="#00ffaa" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
+                    <img src="{% static 'dashboard/aslan_logo.jpg' %}?v=2.1" alt="Aslan Logo">
                 </div>
                 <span class="gold-brand-text">ASLAN PARÇASI</span>
             `;
@@ -991,7 +1119,7 @@
             wrapper.appendChild(actionBar);
         }
 
-        messagesEl.appendChild(wrapper);
+        messagesEl.insertBefore(wrapper, typingEl);
         if (autoScroll) {
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
@@ -1006,7 +1134,7 @@
     }
 
     if (chats.length > 0) {
-        selectChat(chats[0].id);
+        selectChat(chats.id || chats[0].id);
     } else {
         createNewChat('Normal Asistan', false);
     }
