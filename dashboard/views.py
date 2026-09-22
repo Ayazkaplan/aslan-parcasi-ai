@@ -19,7 +19,6 @@ def get_openai_client():
 
 @login_required(login_url="login")
 def index(request):
-  # Eğer daha önce eposta girmemişse eposta tamamlama sayfasına yönlendirilebilir
   if not request.user.email:
     return redirect("update_email")
   return render(request, "dashboard/index.html")
@@ -74,13 +73,11 @@ def api_chat(request):
 
       if mode == "code":
         system_instruction += (
-            " Kod asistanı modundasın. Yazılım ve kodlama sorunlarını eksiksiz,"
-            " temiz ve profesyonelce çöz."
+            " Kod asistanı modundasın. Yazılım danışmanlığı yap."
         )
       elif mode == "fast":
         system_instruction += (
-            " Hızlı analiz modundasın. Yanıtlarını en net, öz ve hızlı"
-            " okunabilir formatta sun."
+            " Hızlı analiz modundasın. Kısa ve net yanıt ver."
         )
 
       messages = [{"role": "system", "content": system_instruction}]
@@ -93,7 +90,6 @@ def api_chat(request):
 
       client = get_openai_client()
       
-      # 404 hatasını çözen kararlı ve hızlı OpenRouter model yolu
       completion = client.chat.completions.create(
           model="openrouter/auto",
           messages=messages,
@@ -122,7 +118,7 @@ def login_view(request):
     form = AuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
-      request.session.set_expiry(2592000)  # Oturumu 30 gün boyunca kalıcı yap (Çıkış yapılana kadar gitmez)
+      request.session.set_expiry(2592000)
       return redirect("index")
   else:
     form = AuthenticationForm()
