@@ -548,6 +548,27 @@
             margin: 8px 0;
             overflow-x: auto;
             border: 1px solid rgba(255,255,255,0.1);
+            position: relative;
+        }
+
+        .code-copy-btn {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: var(--text-muted);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: 0.2s;
+            z-index: 1;
+        }
+
+        .code-copy-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            color: #fff;
         }
 
         .message.ai code {
@@ -623,6 +644,49 @@
             40% { transform: scale(1.0); }
         }
 
+        /* KULLANICI MESAJI AVATAR HEADER */
+        .user-avatar-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+            position: relative;
+            border-radius: 20px;
+            padding: 2px;
+            justify-content: flex-end;
+        }
+
+        .user-message-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1.5px solid #00ffaa;
+            background: #111;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .user-sliding-username {
+            max-width: 0;
+            opacity: 0;
+            white-space: nowrap;
+            font-weight: 700;
+            font-size: 13px;
+            overflow: hidden;
+            transition: max-width 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            cursor: pointer;
+            margin-right: 0;
+        }
+
+        .user-avatar-header.expanded .user-sliding-username {
+            max-width: 150px;
+            opacity: 1;
+            margin-right: 8px;
+        }
+
         /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (ASLAN PARÇASI DÜZENİ & + BUTONU) */
         .chat-input-wrapper {
             flex-shrink: 0;
@@ -631,75 +695,6 @@
             border-top: 1px solid var(--border-color);
             position: relative;
             z-index: 100;
-        }
-
-        .input-top-profile-bar {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
-            max-width: 900px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .input-avatar-container {
-            position: relative;
-            width: 30px;
-            height: 30px;
-            flex-shrink: 0;
-        }
-
-        .input-profile-avatar {
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            object-fit: cover;
-            border: 1.5px solid #00ffaa;
-            background: #111;
-        }
-
-        .input-plus-avatar-btn {
-            position: absolute;
-            top: -2px;
-            left: -2px;
-            width: 12px;
-            height: 12px;
-            background: #00ffaa;
-            color: #0b0f19;
-            border-radius: 50%;
-            font-size: 9px;
-            font-weight: 900;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            border: 1px solid #0b0f19;
-            box-shadow: 0 0 4px rgba(0,255,170,0.5);
-            z-index: 5;
-            transition: transform 0.2s;
-        }
-        .input-plus-avatar-btn:hover {
-            transform: scale(1.15);
-        }
-
-        .input-sliding-username {
-            max-width: 0;
-            opacity: 0;
-            white-space: nowrap;
-            font-weight: 700;
-            font-size: 12px;
-            overflow: hidden;
-            transition: max-width 0.4s ease, opacity 0.3s ease;
-            background: var(--accent-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            cursor: pointer;
-        }
-
-        .input-top-profile-bar.active .input-sliding-username {
-            max-width: 140px;
-            opacity: 1;
         }
 
         .chat-input-container {
@@ -750,6 +745,207 @@
 
         .send-btn:hover {
             transform: scale(1.05);
+        }
+
+        /* DÜŞÜNME BUTONU */
+        .think-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            color: var(--text-muted);
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: 0.2s;
+        }
+
+        .think-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+        }
+
+        .think-btn.active {
+            background: linear-gradient(135deg, #7928ca, #ff0080);
+            border-color: #ff0080;
+            color: #fff;
+            box-shadow: 0 0 12px rgba(255, 0, 128, 0.4);
+        }
+
+        /* DÜŞÜNME ANİMASYONU */
+        .reasoning-container {
+            display: none;
+            margin-bottom: 12px;
+            background: rgba(121, 40, 202, 0.1);
+            border: 1px solid rgba(121, 40, 202, 0.3);
+            border-radius: 8px;
+            padding: 12px;
+            max-width: min(80%, 720px);
+            align-self: flex-start;
+        }
+
+        .reasoning-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #ff0080;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .reasoning-content {
+            font-size: 13px;
+            color: #cbd5e1;
+            line-height: 1.4;
+            font-style: italic;
+        }
+
+        .reasoning-dot {
+            width: 6px;
+            height: 6px;
+            background: #ff0080;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+
+        /* MEDYA BUTONLARI */
+        .media-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .media-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            color: var(--text-muted);
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: 0.2s;
+        }
+
+        .media-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+        }
+
+        .media-btn.recording {
+            background: #ef4444;
+            border-color: #ef4444;
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+
+        /* MEDYA ÖNİZLEME */
+        .media-preview {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 8px;
+            max-width: 900px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .media-preview-item {
+            position: relative;
+            width: 60px;
+            height: 60px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .media-preview-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .media-preview-item .remove-btn {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: rgba(239, 68, 68, 0.9);
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .voice-preview {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 8px;
+            max-width: 900px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .voice-preview audio {
+            flex: 1;
+            height: 30px;
+        }
+
+        .voice-preview .remove-btn {
+            background: rgba(239, 68, 68, 0.9);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        /* GÖRSEL ÜRETİM BUTONU */
+        .image-gen-btn {
+            background: linear-gradient(135deg, #7928ca, #ff0080);
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .image-gen-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 15px rgba(255, 0, 128, 0.4);
+        }
+
+        .generated-image {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 8px 0;
+            border: 1px solid var(--border-color);
         }
 
         /* MODALLER VE AÇILIR MENÜLER */
@@ -883,7 +1079,7 @@
         <div class="user-profile-bar" id="userProfileBar">
             <div class="avatar-container">
                 <div class="plus-avatar-btn" onclick="triggerAvatarSelection(event)" title="Fotoğraf Seç">+</div>
-                <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" alt="Profil">
+                <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" alt="Profil" onclick="toggleUsernameSlide(this)" style="cursor: pointer;">
             </div>
             <span class="sliding-username" id="displayUsername" onclick="toggleUsernameSlide(this)">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
         </div>
@@ -947,20 +1143,27 @@
         </div>
 
         <div class="chat-input-wrapper">
-            <!-- Metin Kutusunun Üstündeki Profil Alanı ve Sol Üst + Butonu (Aslan Parçası Düzeni) -->
-            <div class="input-top-profile-bar" id="inputTopProfileBar">
-                <div class="input-avatar-container">
-                    <div class="input-plus-avatar-btn" onclick="triggerAvatarSelection(event)" title="Fotoğraf Seç">+</div>
-                    <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="inputProfileImg" class="input-profile-avatar" alt="Profil">
-                </div>
-                <span class="input-sliding-username" id="inputDisplayUsername" onclick="toggleInputUsernameSlide(this)">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
-            </div>
             <input type="file" id="hiddenAvatarInput" accept="image/*" style="display: none;" onchange="handleAvatarFile(this)">
 
             <div class="chat-input-container">
+                <div class="media-buttons">
+                    <button class="media-btn" id="voiceBtn" onclick="toggleVoiceRecording()" title="Ses kaydı">🎤</button>
+                    <button class="media-btn" onclick="triggerImageUpload()" title="Görsel ekle">📷</button>
+                    <button class="media-btn" onclick="triggerFileUpload()" title="Dosya ekle">📎</button>
+                    <button class="media-btn" id="imageGenBtn" onclick="generateImage()" title="Görsel oluştur">🎨</button>
+                </div>
+                <button class="think-btn" id="thinkBtn" onclick="toggleDeepThink()" title="Daha uzun düşün">🧠</button>
                 <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
                 <button class="send-btn" onclick="sendMessage()">➔</button>
             </div>
+            
+            <!-- Media Previews -->
+            <div class="media-preview" id="imagePreview"></div>
+            <div class="voice-preview" id="voicePreview" style="display: none;"></div>
+            
+            <!-- Hidden file inputs -->
+            <input type="file" id="imageInput" accept="image/*" multiple style="display: none;" onchange="handleImageUpload(this)">
+            <input type="file" id="fileInput" style="display: none;" onchange="handleFileUpload(this)">
         </div>
     </main>
 </div>
@@ -1071,6 +1274,11 @@
     let activeChatId = null;
     let editingChatId = null;
     let deletingChatId = null;
+    let deepThinkEnabled = false;
+    let selectedImages = [];
+    let selectedVoiceBlob = null;
+    let mediaRecorder = null;
+    let isRecording = false;
 
     let userSettings = JSON.parse(localStorage.getItem('aslan_parcasi_settings')) || {
         username: DJANGO_USERNAME,
@@ -1082,14 +1290,11 @@
 
     function applyUserSettings() {
         document.getElementById('displayUsername').textContent = userSettings.username;
-        document.getElementById('inputDisplayUsername').textContent = userSettings.username;
         
-        const avatarImgs = [document.getElementById('userProfileImg'), document.getElementById('inputProfileImg')];
-        avatarImgs.forEach(img => {
-            if (img && userSettings.avatar) {
-                img.src = userSettings.avatar;
-            }
-        });
+        const avatarImg = document.getElementById('userProfileImg');
+        if (avatarImg && userSettings.avatar) {
+            avatarImg.src = userSettings.avatar;
+        }
         document.body.className = `${userSettings.theme} ${userSettings.pattern}`;
     }
     applyUserSettings();
@@ -1097,6 +1302,12 @@
     function triggerAvatarSelection(e) {
         if (e) e.stopPropagation();
         document.getElementById('hiddenAvatarInput').click();
+    }
+
+    function toggleUsernameSlide(el) {
+        if (el) el.stopPropagation();
+        const bar = el.closest('.user-profile-bar');
+        bar.classList.toggle('active');
     }
 
     function handleAvatarFile(input) {
@@ -1119,15 +1330,9 @@
         overlay.classList.toggle('open');
     }
 
-    function toggleUsernameSlide(el) {
-        const bar = el.closest('.user-profile-bar');
-        bar.classList.toggle('active');
-    }
 
-    function toggleInputUsernameSlide(el) {
-        const bar = el.closest('.input-top-profile-bar');
-        bar.classList.toggle('active');
-    }
+
+
 
     function openSettingsModal() {
         document.getElementById('settingsUsernameInput').value = userSettings.username;
@@ -1410,6 +1615,251 @@
         }
     }
 
+    function toggleUserUsernameSlide(avatarEl) {
+        if (avatarEl) avatarEl.stopPropagation();
+        const header = avatarEl.closest('.user-avatar-header');
+        if (header) {
+            header.classList.toggle('expanded');
+        }
+    }
+
+    function toggleDeepThink() {
+        deepThinkEnabled = !deepThinkEnabled;
+        const thinkBtn = document.getElementById('thinkBtn');
+        thinkBtn.classList.toggle('active', deepThinkEnabled);
+    }
+
+    function showReasoningAnimation() {
+        const messagesEl = document.getElementById('chatMessages');
+        const typingEl = document.getElementById('typingIndicator');
+        
+        const reasoningContainer = document.createElement('div');
+        reasoningContainer.className = 'reasoning-container';
+        reasoningContainer.id = 'reasoningContainer';
+        reasoningContainer.innerHTML = `
+            <div class="reasoning-header">
+                <div class="reasoning-dot"></div>
+                <span>Düşünüyor...</span>
+            </div>
+            <div class="reasoning-content" id="reasoningContent"></div>
+        `;
+        
+        if (typingEl && typingEl.parentNode === messagesEl) {
+            messagesEl.insertBefore(reasoningContainer, typingEl);
+        } else {
+            messagesEl.appendChild(reasoningContainer);
+        }
+        scrollMessagesToBottom();
+    }
+
+    function hideReasoningAnimation() {
+        const reasoningContainer = document.getElementById('reasoningContainer');
+        if (reasoningContainer) {
+            reasoningContainer.remove();
+        }
+    }
+
+    function updateReasoningContent(text) {
+        const reasoningContent = document.getElementById('reasoningContent');
+        if (reasoningContent) {
+            reasoningContent.textContent = text;
+            scrollMessagesToBottom();
+        }
+    }
+
+    // Media upload functions
+    function triggerImageUpload() {
+        document.getElementById('imageInput').click();
+    }
+
+    function triggerFileUpload() {
+        document.getElementById('fileInput').click();
+    }
+
+    function handleImageUpload(input) {
+        if (input.files && input.files.length > 0) {
+            const files = Array.from(input.files);
+            
+            // Enforce maximum 10 images
+            if (selectedImages.length + files.length > 10) {
+                alert('Maksimum 10 görsel yükleyebilirsiniz.');
+                return;
+            }
+
+            files.forEach(file => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    selectedImages.push({
+                        name: file.name,
+                        base64: e.target.result.split(',')[1], // Get base64 data
+                        type: file.type
+                    });
+                    renderImagePreviews();
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+        input.value = ''; // Reset input
+    }
+
+    function handleFileUpload(input) {
+        if (input.files && input.files.length > 0) {
+            const file = input.files[0];
+            alert(`Dosya seçildi: ${file.name}\nNot: Dosya gönderimi şu an için desteklenmiyor, sadece görsel gönderimi aktif.`);
+        }
+        input.value = '';
+    }
+
+    function renderImagePreviews() {
+        const previewContainer = document.getElementById('imagePreview');
+        previewContainer.innerHTML = '';
+
+        selectedImages.forEach((img, index) => {
+            const previewItem = document.createElement('div');
+            previewItem.className = 'media-preview-item';
+            previewItem.innerHTML = `
+                <img src="data:${img.type};base64,${img.base64}" alt="Preview">
+                <button class="remove-btn" onclick="removeImage(${index})">×</button>
+            `;
+            previewContainer.appendChild(previewItem);
+        });
+    }
+
+    function removeImage(index) {
+        selectedImages.splice(index, 1);
+        renderImagePreviews();
+    }
+
+    // Voice recording functions
+    function toggleVoiceRecording() {
+        if (isRecording) {
+            stopVoiceRecording();
+        } else {
+            startVoiceRecording();
+        }
+    }
+
+    async function startVoiceRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            const chunks = [];
+
+            mediaRecorder.ondataavailable = (e) => {
+                chunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                selectedVoiceBlob = new Blob(chunks, { type: 'audio/webm' });
+                renderVoicePreview();
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            mediaRecorder.start();
+            isRecording = true;
+            document.getElementById('voiceBtn').classList.add('recording');
+        } catch (err) {
+            alert('Mikrofon erişimi reddedildi veya desteklenmiyor.');
+        }
+    }
+
+    function stopVoiceRecording() {
+        if (mediaRecorder && isRecording) {
+            mediaRecorder.stop();
+            isRecording = false;
+            document.getElementById('voiceBtn').classList.remove('recording');
+        }
+    }
+
+    function renderVoicePreview() {
+        const voicePreview = document.getElementById('voicePreview');
+        if (selectedVoiceBlob) {
+            const audioUrl = URL.createObjectURL(selectedVoiceBlob);
+            voicePreview.innerHTML = `
+                <audio controls src="${audioUrl}"></audio>
+                <button class="remove-btn" onclick="removeVoice()">Sil</button>
+            `;
+            voicePreview.style.display = 'flex';
+        }
+    }
+
+    function removeVoice() {
+        selectedVoiceBlob = null;
+        document.getElementById('voicePreview').style.display = 'none';
+        document.getElementById('voicePreview').innerHTML = '';
+    }
+
+    async function transcribeVoice(audioBlob) {
+        // Simple placeholder for voice transcription
+        // In a real implementation, you would send this to a speech-to-text API
+        return "Ses kaydı transcription placeholder";
+    }
+
+    async function generateImage() {
+        const inputEl = document.getElementById('userInput');
+        const prompt = inputEl.value.trim();
+        
+        if (!prompt) {
+            alert('Lütfen görsel oluşturmak için bir prompt girin.');
+            return;
+        }
+
+        const generateBtn = document.getElementById('imageGenBtn');
+        const originalText = generateBtn.textContent;
+        generateBtn.textContent = '⏳';
+        generateBtn.disabled = true;
+
+        try {
+            const response = await fetch('{% url "api_image_generate" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken()
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({ prompt: prompt })
+            });
+
+            const data = await response.json();
+            
+            if (data.status === 'success' && data.image_url) {
+                // Add the generated image to the chat
+                if (chats.length === 0 || !activeChatId) {
+                    createNewChat('Görsel Oluşturma', false);
+                }
+                
+                const currentChat = chats.find(c => c.id === activeChatId);
+                const timestamp = Date.now();
+                
+                // Add user message with prompt
+                currentChat.messages.push({ 
+                    sender: 'user', 
+                    text: `Görsel oluştur: ${prompt}`, 
+                    timestamp 
+                });
+                
+                // Add AI message with generated image
+                currentChat.messages.push({ 
+                    sender: 'ai', 
+                    text: `İşte oluşturulan görsel:\n\n![Generated Image](${data.image_url})`, 
+                    timestamp 
+                });
+                
+                inputEl.value = '';
+                saveToStorage();
+                renderChatList();
+                renderMessages();
+            } else {
+                alert('Görsel oluşturma başarısız: ' + (data.error || 'Bilinmeyen hata'));
+            }
+        } catch (err) {
+            alert('Görsel oluşturma sırasında hata oluştu: ' + err.message);
+        } finally {
+            generateBtn.textContent = originalText;
+            generateBtn.disabled = false;
+        }
+    }
+
     function handleKeyPress(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -1420,7 +1870,9 @@
     async function sendMessage(customText = null) {
         const inputEl = document.getElementById('userInput');
         const text = customText !== null ? customText : inputEl.value.trim();
-        if (!text) return;
+        
+        // Check if there's any content to send
+        if (!text && selectedImages.length === 0 && !selectedVoiceBlob) return;
 
         if (chats.length === 0 || !activeChatId) {
             createNewChat('Yeni Sohbet', false);
@@ -1428,14 +1880,47 @@
 
         const currentChat = chats.find(c => c.id === activeChatId);
 
+        // Handle voice transcription
+        let voiceTranscript = '';
+        if (selectedVoiceBlob) {
+            voiceTranscript = await transcribeVoice(selectedVoiceBlob);
+        }
+
+        // Combine text with voice transcript
+        const fullMessage = text || voiceTranscript;
+
         if (currentChat && !currentChat.isCustomTitle && currentChat.messages.length === 0) {
-            currentChat.title = text.length > 22 ? text.substring(0, 22) + '...' : text;
+            currentChat.title = fullMessage.length > 22 ? fullMessage.substring(0, 22) + '...' : fullMessage;
         }
 
         const timestamp = Date.now();
-        currentChat.messages.push({ sender: 'user', text, timestamp });
+        currentChat.messages.push({ 
+            sender: 'user', 
+            text: fullMessage, 
+            timestamp,
+            images: selectedImages.length > 0 ? selectedImages : undefined,
+            hasVoice: !!selectedVoiceBlob
+        });
+        
         if (customText === null) {
             inputEl.value = '';
+        }
+
+        // Clear media after sending
+        const imagesToSend = [...selectedImages];
+        const voiceToSend = selectedVoiceBlob;
+        selectedImages = [];
+        selectedVoiceBlob = null;
+        renderImagePreviews();
+        removeVoice();
+
+        // Store deep think state before disabling
+        const wasDeepThink = deepThinkEnabled;
+        
+        // Disable deep think after sending
+        if (deepThinkEnabled) {
+            deepThinkEnabled = false;
+            document.getElementById('thinkBtn').classList.remove('active');
         }
 
         saveToStorage();
@@ -1444,6 +1929,9 @@
 
         const previousHistory = currentChat.messages.slice(0, -1);
         showTypingIndicator();
+        if (wasDeepThink) {
+            showReasoningAnimation();
+        }
 
         try {
             const response = await fetch('{% url "api_chat" %}', {
@@ -1454,23 +1942,58 @@
                 },
                 credentials: 'same-origin',
                 body: JSON.stringify({ 
-                    message: text, 
+                    message: fullMessage, 
                     mode: currentMode,
-                    history: previousHistory
+                    history: previousHistory,
+                    deep_think: wasDeepThink,
+                    images: imagesToSend,
+                    voice_transcript: voiceTranscript
                 })
             });
 
-            const data = await response.json();
             hideTypingIndicator();
+            if (wasDeepThink) {
+                hideReasoningAnimation();
+            }
 
-            if (data.status === 'success') {
-                currentChat.messages.push({ sender: 'ai', text: data.reply, timestamp: Date.now() });
+            // Handle streaming response
+            if (response.body) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullResponse = '';
+                
+                // Create AI message placeholder
+                const aiMsgIndex = currentChat.messages.length;
+                currentChat.messages.push({ sender: 'ai', text: '', timestamp: Date.now() });
+                renderMessages();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    fullResponse += chunk;
+                    
+                    // Update the AI message in real-time
+                    currentChat.messages[aiMsgIndex].text = fullResponse;
+                    renderMessages();
+                }
+                
+                currentChat.messages[aiMsgIndex].text = fullResponse;
             } else {
-                const errText = 'Bir hata oluştu: ' + (data.error || 'Bilinmeyen hata');
-                currentChat.messages.push({ sender: 'ai', text: errText, timestamp: Date.now() });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    currentChat.messages.push({ sender: 'ai', text: data.reply, timestamp: Date.now() });
+                } else {
+                    const errText = 'Bir hata oluştu: ' + (data.error || 'Bilinmeyen hata');
+                    currentChat.messages.push({ sender: 'ai', text: errText, timestamp: Date.now() });
+                }
             }
         } catch (err) {
             hideTypingIndicator();
+            if (wasDeepThink) {
+                hideReasoningAnimation();
+            }
             const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
         }
@@ -1496,6 +2019,14 @@
                 <span class="gold-brand-text">ASLAN PARÇASI</span>
             `;
             wrapper.appendChild(aiHeader);
+        } else if (sender === 'user') {
+            const userHeader = document.createElement('div');
+            userHeader.className = 'user-avatar-header';
+            userHeader.innerHTML = `
+                <span class="user-sliding-username">${userSettings.username}</span>
+                <img src="${userSettings.avatar}" class="user-message-avatar" onclick="toggleUserUsernameSlide(this)" title="Profili Gör">
+            `;
+            wrapper.appendChild(userHeader);
         }
 
         const msgDiv = document.createElement('div');
@@ -1506,6 +2037,27 @@
             if (window.hljs) {
                 msgDiv.querySelectorAll('pre code').forEach((block) => {
                     try { hljs.highlightElement(block); } catch (err) { /* ignore */ }
+                });
+            }
+            
+            // Add copy buttons to code blocks in code mode
+            if (currentMode === 'code') {
+                msgDiv.querySelectorAll('pre').forEach((pre) => {
+                    if (!pre.querySelector('.code-copy-btn')) {
+                        const copyBtn = document.createElement('button');
+                        copyBtn.className = 'code-copy-btn';
+                        copyBtn.textContent = 'Kopyala';
+                        copyBtn.onclick = function() {
+                            const code = pre.querySelector('code').textContent;
+                            navigator.clipboard.writeText(code).then(() => {
+                                copyBtn.textContent = 'Kopyalandı!';
+                                setTimeout(() => {
+                                    copyBtn.textContent = 'Kopyala';
+                                }, 2000);
+                            });
+                        };
+                        pre.appendChild(copyBtn);
+                    }
                 });
             }
         } else {
