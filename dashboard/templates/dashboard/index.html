@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Aslan Parçası AI | Dashboard</title>
     <!-- Markdown ve Kod Renklendirme için Kütüphaneler -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.5/dist/purify.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
     <style>
         :root {
             --bg-color: #0b0f19;
@@ -46,6 +49,7 @@
             display: flex;
             height: 100%;
             width: 100%;
+            min-height: 0;
             position: relative;
         }
 
@@ -345,6 +349,9 @@
             display: flex;
             flex-direction: column;
             height: 100%;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
             position: relative;
             background-image: 
                 radial-gradient(circle at 50% 30%, rgba(0, 170, 255, 0.03) 0%, transparent 60%),
@@ -360,6 +367,7 @@
         body.pattern-plain .main-chat { background-image: none; }
 
         .chat-header {
+            flex-shrink: 0;
             padding: 12px 20px;
             border-bottom: 1px solid var(--border-color);
             display: flex;
@@ -398,28 +406,32 @@
 
         .chat-messages {
             flex: 1;
+            min-height: 0;
             padding: 20px;
+            overflow-x: hidden;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
             gap: 20px;
+            -webkit-overflow-scrolling: touch;
         }
 
         .message-wrapper {
             display: flex;
             flex-direction: column;
-            max-width: 80%;
+            align-items: stretch;
+            max-width: min(80%, 720px);
+            width: fit-content;
+            min-width: min(100%, 220px);
             position: relative;
         }
 
         .message-wrapper.user {
             align-self: flex-end;
-            align-items: flex-end;
         }
 
         .message-wrapper.ai {
             align-self: flex-start;
-            align-items: flex-start;
         }
 
         .ai-header-container {
@@ -483,12 +495,16 @@
             font-size: 14px;
             line-height: 1.5;
             word-wrap: break-word;
+            overflow-wrap: anywhere;
             width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
         }
 
         .message.user {
             background: var(--accent-gradient);
             color: #0b0f19;
+            -webkit-text-fill-color: #0b0f19;
             border-bottom-right-radius: 2px;
             font-weight: 500;
         }
@@ -497,7 +513,32 @@
             background: rgba(255, 255, 255, 0.06);
             border: 1px solid var(--border-color);
             color: #e2e8f0;
+            -webkit-text-fill-color: #e2e8f0;
             border-bottom-left-radius: 2px;
+        }
+
+        .message.ai p,
+        .message.ai li,
+        .message.ai span,
+        .message.ai strong,
+        .message.ai em,
+        .message.ai h1,
+        .message.ai h2,
+        .message.ai h3,
+        .message.ai h4,
+        .message.ai blockquote,
+        .message.ai td,
+        .message.ai th {
+            color: #e2e8f0;
+            -webkit-text-fill-color: #e2e8f0;
+        }
+
+        .message.ai p {
+            margin: 0 0 8px 0;
+        }
+
+        .message.ai p:last-child {
+            margin-bottom: 0;
         }
 
         .message.ai pre {
@@ -584,13 +625,11 @@
 
         /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (ASLAN PARÇASI DÜZENİ & + BUTONU) */
         .chat-input-wrapper {
+            flex-shrink: 0;
             padding: 12px 20px calc(12px + env(safe-area-inset-bottom)) 20px;
             background: var(--sidebar-bg);
             border-top: 1px solid var(--border-color);
             position: relative;
-            bottom: 0;
-            left: 0;
-            right: 0;
             z-index: 100;
         }
 
@@ -817,6 +856,7 @@
             }
             .message-wrapper {
                 max-width: 90%;
+                min-width: min(100%, 160px);
             }
             .chat-header {
                 padding-left: 60px;
@@ -825,6 +865,7 @@
     </style>
 </head>
 <body class="theme-cyber pattern-grid">
+{% csrf_token %}
 
 <div class="app-container">
     <aside class="sidebar" id="appSidebar" onclick="event.stopPropagation()">
@@ -1004,16 +1045,15 @@
 </div>
 
 <script>
-    function getSystemPrompt() {
-        const now = new Date();
-        const timeString = now.toLocaleTimeString('tr-TR');
-        const dateString = now.toLocaleDateString('tr-TR');
-        return `Sen MEAY ASLAN PARÇASI AI şirketinin geliştirdiği yapay zeka asistanısın. Şirketin kurucusu ve tek sahibi Ayaz Kaplan'dır. 
-        Şu anki gerçek zaman: ${dateString}, Saat: ${timeString}. 
-        İnternete erişebilir, güncel hava durumunu ve saati tam zamanlı bilebilirsin. Saygılı, akıllı ve yardımsever ol.`;
-    }
-
     const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
+    const DJANGO_USERNAME = "{{ request.user.username|escapejs }}";
+
+    function getCsrfToken() {
+        const tokenInput = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (tokenInput && tokenInput.value) return tokenInput.value;
+        const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+        return match ? decodeURIComponent(match[1]) : '{{ csrf_token }}';
+    }
 
     const LION_SVG_HTML = `
         <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
@@ -1033,15 +1073,16 @@
     let deletingChatId = null;
 
     let userSettings = JSON.parse(localStorage.getItem('aslan_parcasi_settings')) || {
-        username: 'Ayaz Kaplan',
+        username: DJANGO_USERNAME,
         avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz',
         theme: 'theme-cyber',
         pattern: 'pattern-grid'
     };
+    userSettings.username = DJANGO_USERNAME || userSettings.username;
 
     function applyUserSettings() {
-        document.getElementById('displayUsername').innerText = userSettings.username;
-        document.getElementById('inputDisplayUsername').innerText = userSettings.username;
+        document.getElementById('displayUsername').textContent = userSettings.username;
+        document.getElementById('inputDisplayUsername').textContent = userSettings.username;
         
         const avatarImgs = [document.getElementById('userProfileImg'), document.getElementById('inputProfileImg')];
         avatarImgs.forEach(img => {
@@ -1095,11 +1136,32 @@
         document.getElementById('settingsModal').style.display = 'flex';
     }
 
-    function saveSettings() {
-        userSettings.username = document.getElementById('settingsUsernameInput').value.trim() || 'Ayaz Kaplan';
+    async function saveSettings() {
+        const newUsername = document.getElementById('settingsUsernameInput').value.trim();
         userSettings.theme = document.getElementById('settingsThemeSelect').value;
         userSettings.pattern = document.getElementById('settingsPatternSelect').value;
-        
+
+        try {
+            const res = await fetch('{% url "update_username" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken()
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({ username: newUsername })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.error || 'Kullanıcı adı güncellenemedi.');
+                return;
+            }
+            userSettings.username = data.username || newUsername;
+        } catch (err) {
+            alert('Kullanıcı adı güncellenirken bir hata oluştu.');
+            return;
+        }
+
         localStorage.setItem('aslan_parcasi_settings', JSON.stringify(userSettings));
         applyUserSettings();
         closeModal('settingsModal');
@@ -1115,12 +1177,13 @@
     }
 
     function executeAccountDeletion() {
-        fetch('/api/delete-account/', {
+        fetch('{% url "delete_account" %}', {
             method: 'POST',
             headers: {
-                'X-CSRFToken': '{{ csrf_token }}',
+                'X-CSRFToken': getCsrfToken(),
                 'Content-Type': 'application/json'
-            }
+            },
+            credentials: 'same-origin'
         })
         .then(res => res.json())
         .then(data => {
@@ -1135,8 +1198,7 @@
     function showTypingIndicator() {
         const indicator = document.getElementById('typingIndicator');
         indicator.style.display = 'flex';
-        const messagesEl = document.getElementById('chatMessages');
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollMessagesToBottom();
     }
 
     function hideTypingIndicator() {
@@ -1305,8 +1367,10 @@
                 appendMessage(msg.text, msg.sender, false, true, idx);
             });
         }
-        messagesEl.appendChild(typingEl);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        if (typingEl) {
+            messagesEl.appendChild(typingEl);
+        }
+        scrollMessagesToBottom();
     }
 
     function deleteMessagePair(msgIndex) {
@@ -1369,8 +1433,8 @@
         }
 
         const timestamp = Date.now();
+        currentChat.messages.push({ sender: 'user', text, timestamp });
         if (customText === null) {
-            currentChat.messages.push({ sender: 'user', text, timestamp });
             inputEl.value = '';
         }
 
@@ -1382,16 +1446,16 @@
         showTypingIndicator();
 
         try {
-            const response = await fetch('/api/chat/', {
+            const response = await fetch('{% url "api_chat" %}', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token }}'
+                    'X-CSRFToken': getCsrfToken()
                 },
+                credentials: 'same-origin',
                 body: JSON.stringify({ 
                     message: text, 
                     mode: currentMode,
-                    system_instruction: getSystemPrompt(),
                     history: previousHistory
                 })
             });
@@ -1438,9 +1502,14 @@
         msgDiv.className = `message ${sender}`;
         
         if (sender === 'ai') {
-            msgDiv.innerHTML = marked.parse(text);
+            msgDiv.innerHTML = renderMarkdown(text);
+            if (window.hljs) {
+                msgDiv.querySelectorAll('pre code').forEach((block) => {
+                    try { hljs.highlightElement(block); } catch (err) { /* ignore */ }
+                });
+            }
         } else {
-            msgDiv.innerText = text;
+            msgDiv.textContent = text == null ? '' : String(text);
         }
         wrapper.appendChild(msgDiv);
 
@@ -1474,14 +1543,50 @@
             wrapper.appendChild(actionBrd);
         }
 
-        messagesEl.insertBefore(wrapper, typingEl);
+        if (typingEl && typingEl.parentNode === messagesEl) {
+            messagesEl.insertBefore(wrapper, typingEl);
+        } else {
+            messagesEl.appendChild(wrapper);
+        }
         if (autoScroll) {
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            scrollMessagesToBottom();
         }
     }
 
+    function renderMarkdown(text) {
+        const raw = text == null ? '' : String(text);
+        let html = '';
+        try {
+            if (window.marked && typeof marked.parse === 'function') {
+                html = marked.parse(raw);
+            } else if (typeof window.marked === 'function') {
+                html = window.marked(raw);
+            } else {
+                html = escapeHtml(raw).replace(/\n/g, '<br>');
+            }
+        } catch (err) {
+            html = escapeHtml(raw).replace(/\n/g, '<br>');
+        }
+        try {
+            if (window.DOMPurify) {
+                html = DOMPurify.sanitize(html);
+            }
+        } catch (err) {
+            html = escapeHtml(raw).replace(/\n/g, '<br>');
+        }
+        return html;
+    }
+
+    function scrollMessagesToBottom() {
+        const messagesEl = document.getElementById('chatMessages');
+        if (!messagesEl) return;
+        requestAnimationFrame(() => {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        });
+    }
+
     function escapeHtml(text) {
-        return text.replace(/&/g, "&amp;")
+        return String(text).replace(/&/g, "&amp;")
                    .replace(/</g, "&lt;")
                    .replace(/>/g, "&gt;")
                    .replace(/"/g, "&quot;")
