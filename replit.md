@@ -17,3 +17,9 @@ python manage.py runserver 0.0.0.0:5000
 - `OPENROUTER_FALLBACK_MODEL` (isteğe bağlı): Sohbet için yedek model.
 
 Kullanıcı adı, profil fotoğrafı, tema ve arka plan deseni `UserProfile` tablosunda saklanır; bu ayarlar tarayıcı veya cihaz değişse de hesaba bağlı kalır.
+Sohbet geçmişleri `ChatHistory` tablosunda kullanıcı hesabına bağlı saklanır; aynı hesapla açılan cihazlar sohbetleri ve profil ayarlarını sunucudan senkronize eder.
+Sohbet eklerinde dosya sınırı 50 MB'dır. Metin, PDF ve DOCX dosyalarının içeriği yapay zekâ isteğine aktarılır; ses kayıtları ses destekli model girdisi olarak gönderilir.
+
+## Yapay zekâ özellikleri
+
+Sohbet, görsel oluşturma ve sesli mesajların anlaşılması için `OPENROUTER_API_KEY` gereklidir. Anahtar tanımlı değilse uygulama çalışmaya devam eder ancak ilgili isteklerde kullanıcıya açık bir yapılandırma hatası gösterir.

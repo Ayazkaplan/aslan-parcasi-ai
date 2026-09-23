@@ -701,6 +701,35 @@
             z-index: 100;
         }
 
+        .think-settings {
+            position: absolute;
+            right: 54px;
+            bottom: 70px;
+            width: min(290px, calc(100vw - 36px));
+            padding: 14px;
+            display: none;
+            flex-direction: column;
+            gap: 9px;
+            background: var(--sidebar-bg);
+            border: 1px solid rgba(255, 0, 128, 0.45);
+            border-radius: 12px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+            color: #e2e8f0;
+            z-index: 120;
+        }
+
+        .think-settings.open { display: flex; }
+        .think-settings strong { font-size: 13px; color: #fff; }
+        .think-settings small { color: #94a3b8; line-height: 1.35; }
+        .think-settings input[type="range"] { width: 100%; accent-color: #ff0080; }
+        .think-duration {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #ff8ac4;
+            font-weight: 700;
+        }
+
         .chat-input-container {
             max-width: 900px;
             margin: 0 auto;
@@ -1297,6 +1326,16 @@
                         <path d="M9 4a6 6 0 0 1 6 10.4V17H9v-2.6A6 6 0 0 1 9 4Z"></path><path d="M9 20h6M10 23h4M7 7H4M20 7h-3M6.5 2.5 5 1M17.5 2.5 19 1"></path>
                     </svg>
                 </button>
+                <div class="think-settings" id="thinkSettings">
+                    <strong>Ne kadar uzun düşünsün?</strong>
+                    <small>Aslan Parçası seçtiğin süreyi araştırma ve kontrol bütçesi olarak kullanır.</small>
+                    <input id="thinkSeconds" type="range" min="30" max="1800" step="30" value="300" oninput="updateThinkDuration(this.value)">
+                    <div class="think-duration">
+                        <span>30 sn</span>
+                        <span id="thinkDurationLabel">5 dk</span>
+                        <span>30 dk</span>
+                    </div>
+                </div>
                 <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
                 <button class="send-btn" onclick="sendMessage()" title="Gönder" aria-label="Gönder">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
@@ -1422,16 +1461,29 @@
     `;
 
     let currentMode = 'normal';
-    let chats = JSON.parse(localStorage.getItem(`${USER_STORAGE_KEY}_chats`)) || [];
+    let chats = [];
+    try {
+        chats = JSON.parse(localStorage.getItem(`${USER_STORAGE_KEY}_chats`) || '[]');
+        if (!Array.isArray(chats)) chats = [];
+    } catch (err) {
+        chats = [];
+    }
     let activeChatId = null;
     let editingChatId = null;
     let deletingChatId = null;
     let deepThinkEnabled = false;
+    let deepThinkSeconds = 300;
     let selectedImages = [];
     let selectedFiles = [];
     let selectedVoiceBlob = null;
     let mediaRecorder = null;
     let isRecording = false;
+    let voiceStopPromise = null;
+    let activeRequestController = null;
+    let localMutationAt = 0;
+    let serverSyncTimer = null;
+    let serverSyncInFlight = false;
+    let lastServerUpdateAt = 0;
 
     let userSettings = {
         username: DJANGO_USERNAME,
@@ -1523,6 +1575,19 @@
         if (!buttons) return;
         buttons.classList.remove('open');
         buttons.querySelector('.media-menu-trigger').setAttribute('aria-expanded', 'false');
+    }
+
+    function formatThinkDuration(value) {
+        const seconds = Number(value);
+        const minutes = Math.floor(seconds / 60);
+        const remainder = seconds % 60;
+        if (!minutes) return `${seconds} sn`;
+        return remainder ? `${minutes} dk ${remainder} sn` : `${minutes} dk`;
+    }
+
+    function updateThinkDuration(value) {
+        deepThinkSeconds = Math.max(30, Math.min(1800, Number(value) || 300));
+        document.getElementById('thinkDurationLabel').textContent = formatThinkDuration(deepThinkSeconds);
     }
 
     document.addEventListener('click', (event) => {
@@ -1621,7 +1686,83 @@
 
     function saveToStorage() {
         const validChats = chats.filter(c => c.messages && c.messages.length > 0);
-        localStorage.setItem(`${USER_STORAGE_KEY}_chats`, JSON.stringify(validChats));
+        try {
+            localStorage.setItem(`${USER_STORAGE_KEY}_chats`, JSON.stringify(validChats));
+        } catch (err) {
+            // Large attachments belong on the server; localStorage is only a fallback cache.
+        }
+        localMutationAt = Date.now();
+        clearTimeout(serverSyncTimer);
+        serverSyncTimer = setTimeout(syncChatsToServer, 250);
+    }
+
+    async function syncChatsToServer() {
+        if (serverSyncInFlight) return;
+        serverSyncInFlight = true;
+        try {
+            const response = await fetch('{% url "api_chats" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken()
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({ chats: chats.filter(c => c.messages && c.messages.length > 0) })
+            });
+            if (response.ok) {
+                const data = await response.json();
+                lastServerUpdateAt = Date.parse(data.updated_at || '') || Date.now();
+            }
+        } catch (err) {
+            // Keep the local cache available if the device is temporarily offline.
+        } finally {
+            serverSyncInFlight = false;
+        }
+    }
+
+    async function loadChatsFromServer() {
+        try {
+            const response = await fetch('{% url "api_chats" %}', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error('Sohbetler alınamadı.');
+            const data = await response.json();
+            const remoteChats = Array.isArray(data.chats) ? data.chats : [];
+            lastServerUpdateAt = Date.parse(data.updated_at || '') || 0;
+            if (remoteChats.length || !chats.length) {
+                chats = remoteChats;
+            } else {
+                syncChatsToServer();
+            }
+        } catch (err) {
+            // The existing local cache still lets the app open without a connection.
+        }
+        if (chats.length > 0) {
+            selectChat(chats[0].id);
+        } else {
+            createNewChat('Normal Asistan', false);
+        }
+    }
+
+    async function refreshChatsFromServer() {
+        if (serverSyncInFlight || Date.now() - localMutationAt < 3000) return;
+        try {
+            const response = await fetch('{% url "api_chats" %}', { credentials: 'same-origin' });
+            if (!response.ok) return;
+            const data = await response.json();
+            const serverUpdatedAt = Date.parse(data.updated_at || '') || 0;
+            if (serverUpdatedAt > lastServerUpdateAt && Array.isArray(data.chats)) {
+                chats = data.chats;
+                lastServerUpdateAt = serverUpdatedAt;
+                if (!activeChatId && chats.length) activeChatId = chats[0].id;
+                if (chats.length) {
+                    const activeStillExists = chats.some(chat => chat.id === activeChatId);
+                    if (!activeStillExists) activeChatId = chats[0].id;
+                    renderChatList();
+                    renderMessages();
+                }
+            }
+        } catch (err) {
+            // Polling is best effort and must not interrupt a conversation.
+        }
     }
 
     function setMode(mode) {
@@ -1792,14 +1933,23 @@
 
         const targetMsg = currentChat.messages[msgIndex];
         if (targetMsg) {
-            if (targetMsg.sender === 'user') {
-                currentChat.messages.splice(msgIndex, 2);
-            } else {
+            if (targetMsg.sender !== 'user') return;
+            currentChat.messages.splice(msgIndex, 1);
+            if (currentChat.messages[msgIndex] && currentChat.messages[msgIndex].sender === 'ai') {
                 currentChat.messages.splice(msgIndex, 1);
             }
             saveToStorage();
             renderMessages();
         }
+    }
+
+    function cancelPendingResponse() {
+        if (activeRequestController) {
+            activeRequestController.abort();
+            activeRequestController = null;
+        }
+        hideTypingIndicator();
+        hideReasoningAnimation();
     }
 
     function editMessage(msgIndex) {
@@ -1808,8 +1958,12 @@
 
         const targetMsg = currentChat.messages[msgIndex];
         if (targetMsg && targetMsg.sender === 'user') {
+            cancelPendingResponse();
             document.getElementById('userInput').value = targetMsg.text;
-            currentChat.messages.splice(msgIndex, 2);
+            currentChat.messages.splice(msgIndex, 1);
+            if (currentChat.messages[msgIndex] && currentChat.messages[msgIndex].sender === 'ai') {
+                currentChat.messages.splice(msgIndex, 1);
+            }
             saveToStorage();
             renderMessages();
             document.getElementById('userInput').focus();
@@ -1835,6 +1989,7 @@
         deepThinkEnabled = !deepThinkEnabled;
         const thinkBtn = document.getElementById('thinkBtn');
         thinkBtn.classList.toggle('active', deepThinkEnabled);
+        document.getElementById('thinkSettings').classList.toggle('open', deepThinkEnabled);
     }
 
     function showReasoningAnimation() {
@@ -1913,8 +2068,9 @@
     function handleFileUpload(input) {
         if (input.files && input.files.length > 0) {
             const file = input.files[0];
-            if (file.size > 5 * 1024 * 1024) {
-                alert('Dosya boyutu 5 MB sınırını aşamaz.');
+            const maxFileSize = 50 * 1024 * 1024;
+            if (file.size > maxFileSize) {
+                alert('Dosya boyutu 50 MB sınırını aşamaz.');
                 input.value = '';
                 return;
             }
@@ -1922,15 +2078,24 @@
                 || /\.(txt|md|json|csv|py|js|ts|html|css|java|c|cpp|sql|xml|yaml|yml)$/i.test(file.name);
             const reader = new FileReader();
             reader.onload = function(event) {
+                const bytes = new Uint8Array(event.target.result);
+                let base64 = '';
+                const chunkSize = 0x8000;
+                for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+                    base64 += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+                }
                 selectedFiles = [{
                     name: file.name,
                     type: file.type || 'application/octet-stream',
                     size: file.size,
-                    text: textLike ? String(event.target.result).slice(0, 200000) : ''
+                    base64: btoa(base64),
+                    text: textLike
+                        ? new TextDecoder().decode(event.target.result).slice(0, 300000)
+                        : ''
                 }];
                 renderFilePreviews();
             };
-            reader.readAsText(file);
+            reader.readAsArrayBuffer(file);
         }
         input.value = '';
     }
@@ -1999,6 +2164,9 @@
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaRecorder = new MediaRecorder(stream);
             const chunks = [];
+            voiceStopPromise = new Promise(resolve => {
+                mediaRecorder._resolveStop = resolve;
+            });
 
             mediaRecorder.ondataavailable = (e) => {
                 chunks.push(e.data);
@@ -2008,6 +2176,10 @@
                 selectedVoiceBlob = new Blob(chunks, { type: 'audio/webm' });
                 renderVoicePreview();
                 stream.getTracks().forEach(track => track.stop());
+                if (mediaRecorder && mediaRecorder._resolveStop) {
+                    mediaRecorder._resolveStop();
+                    mediaRecorder._resolveStop = null;
+                }
             };
 
             mediaRecorder.start();
@@ -2024,6 +2196,7 @@
             isRecording = false;
             document.getElementById('voiceBtn').classList.remove('recording');
         }
+        return voiceStopPromise || Promise.resolve();
     }
 
     function renderVoicePreview() {
@@ -2032,6 +2205,7 @@
             const audioUrl = URL.createObjectURL(selectedVoiceBlob);
             voicePreview.innerHTML = `
                 <audio controls src="${audioUrl}"></audio>
+                <span class="voice-ready-label">Ses hazır — Gönder düğmesine basın</span>
                 <button class="remove-btn" onclick="removeVoice()">Sil</button>
             `;
             voicePreview.style.display = 'flex';
@@ -2045,9 +2219,18 @@
     }
 
     async function transcribeVoice(audioBlob) {
-        // Simple placeholder for voice transcription
-        // In a real implementation, you would send this to a speech-to-text API
-        return "Ses kaydı transcription placeholder";
+        // The audio itself is sent to the multimodal model. Browser speech recognition
+        // is only an optional convenience and must not block sending the recording.
+        return "";
+    }
+
+    function blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
     }
 
     async function generateImage() {
@@ -2126,6 +2309,11 @@
     async function sendMessage(customText = null) {
         const inputEl = document.getElementById('userInput');
         const text = customText !== null ? customText : inputEl.value.trim();
+
+        // Stopping and sending in the same interaction must wait for MediaRecorder.onstop.
+        if (isRecording) {
+            await stopVoiceRecording();
+        }
         
         // Check if there's any content to send
         if (!text && selectedImages.length === 0 && selectedFiles.length === 0 && !selectedVoiceBlob) return;
@@ -2141,6 +2329,7 @@
         if (selectedVoiceBlob) {
             voiceTranscript = await transcribeVoice(selectedVoiceBlob);
         }
+        const voiceDataUrl = selectedVoiceBlob ? await blobToDataUrl(selectedVoiceBlob) : '';
 
         // Combine text with voice transcript
         let fullMessage = text || voiceTranscript;
@@ -2149,11 +2338,6 @@
             type: file.type,
             size: file.size
         }));
-        const fileText = selectedFiles
-            .filter(file => file.text)
-            .map(file => `\n\n[${file.name} dosyasının içeriği]\n${file.text}`)
-            .join('');
-        if (fileText) fullMessage += fileText;
         if (!fullMessage && selectedFiles.length) {
             fullMessage = `[Dosya gönderildi: ${selectedFiles.map(file => file.name).join(', ')}]`;
         }
@@ -2169,7 +2353,8 @@
             timestamp,
             images: selectedImages.length > 0 ? selectedImages : undefined,
             files: filesForMessage.length > 0 ? filesForMessage : undefined,
-            hasVoice: !!selectedVoiceBlob
+            hasVoice: !!selectedVoiceBlob,
+            voice: voiceDataUrl || undefined
         });
         
         if (customText === null) {
@@ -2193,6 +2378,7 @@
         if (deepThinkEnabled) {
             deepThinkEnabled = false;
             document.getElementById('thinkBtn').classList.remove('active');
+            document.getElementById('thinkSettings').classList.remove('open');
         }
 
         saveToStorage();
@@ -2218,10 +2404,16 @@
                     mode: currentMode,
                     history: previousHistory,
                     deep_think: wasDeepThink,
+                    deep_think_seconds: deepThinkSeconds,
                     images: imagesToSend,
                     files: filesToSend,
-                    voice_transcript: voiceTranscript
-                })
+                    voice_transcript: voiceTranscript,
+                    voice: voiceToSend && voiceDataUrl ? {
+                        type: voiceToSend.type || 'audio/webm',
+                        base64: voiceDataUrl.split(',')[1] || ''
+                    } : null
+                }),
+                signal: (activeRequestController = new AbortController()).signal
             });
 
             hideTypingIndicator();
@@ -2281,13 +2473,33 @@
             if (wasDeepThink) {
                 hideReasoningAnimation();
             }
+            if (err.name === 'AbortError') {
+                return;
+            }
             const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
+        } finally {
+            activeRequestController = null;
         }
 
         saveToStorage();
         renderChatList();
         renderMessages();
+    }
+
+    function retryMessage(aiMsgIndex) {
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (!currentChat) return;
+        const userMsgIndex = aiMsgIndex - 1;
+        const aiMessage = currentChat.messages[aiMsgIndex];
+        const userMessage = currentChat.messages[userMsgIndex];
+        if (!aiMessage || aiMessage.sender !== 'ai' || !userMessage || userMessage.sender !== 'user') return;
+        cancelPendingResponse();
+        currentChat.messages.splice(aiMsgIndex, 1);
+        currentChat.messages.splice(userMsgIndex, 1);
+        saveToStorage();
+        renderMessages();
+        sendMessage(userMessage.text);
     }
 
     function appendMessage(text, sender, autoScroll = true, canAction = true, msgIndex = 0, messageData = null) {
@@ -2369,6 +2581,13 @@
                 `;
                 msgDiv.appendChild(fileEl);
             });
+            if (attachments.voice) {
+                const audioEl = document.createElement('audio');
+                audioEl.controls = true;
+                audioEl.className = 'message-voice-attachment';
+                audioEl.src = attachments.voice;
+                msgDiv.appendChild(audioEl);
+            }
         }
         wrapper.appendChild(msgDiv);
 
@@ -2376,7 +2595,22 @@
             const actionBrd = document.createElement('div');
             actionBrd.className = 'msg-action-bar';
             
-            let actionHtml = `
+            const currentChat = chats.find(c => c.id === activeChatId);
+            const lastUserIndex = currentChat
+                ? currentChat.messages.reduce((last, message, index) => message.sender === 'user' ? index : last, -1)
+                : -1;
+            let actionHtml = '';
+            if (sender === 'ai') {
+                actionHtml = `
+                    <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
+                            <path d="M20 11a8.1 8.1 0 0 0-15.5-3M4 5v4h4"></path>
+                            <path d="M4 13a8.1 8.1 0 0 0 15.5 3M20 19v-4h-4"></path>
+                        </svg>
+                    </button>
+                `;
+            } else if (sender === 'user' && msgIndex === lastUserIndex) {
+                actionHtml = `
                 <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
                         <polyline points="3 6 5 6 21 6"></polyline>
@@ -2386,7 +2620,6 @@
                 </button>
             `;
 
-            if (sender === 'user') {
                 actionHtml += `
                     <button class="action-btn" onclick="editMessage(${msgIndex})" title="Düzenle">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
@@ -2398,8 +2631,10 @@
                 `;
             }
 
-    actionBrd.innerHTML = actionHtml;
-            wrapper.appendChild(actionBrd);
+            if (actionHtml) {
+                actionBrd.innerHTML = actionHtml;
+                wrapper.appendChild(actionBrd);
+            }
         }
 
         if (typingEl && typingEl.parentNode === messagesEl) {
@@ -2452,11 +2687,9 @@
                    .replace(/'/g, "&#039;");
     }
 
-    if (chats.length > 0) {
-        selectChat(chats[0].id);
-    } else {
-        createNewChat('Normal Asistan', false);
-    }
+    document.getElementById('thinkDurationLabel').textContent = formatThinkDuration(deepThinkSeconds);
+    loadChatsFromServer();
+    setInterval(refreshChatsFromServer, 6000);
 </script>
 
 </body>

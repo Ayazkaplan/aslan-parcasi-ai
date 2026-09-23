@@ -1,5 +1,8 @@
 import json
 import os
+import base64
+import io
+import re
 import time
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
@@ -11,7 +14,11 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openai import OpenAI
 from .forms import CustomUserCreationForm
-from .models import UserProfile
+from .models import ChatHistory, UserProfile
+
+
+MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
+MAX_EXTRACTED_TEXT = 300_000
 
 
 def get_openai_client():
@@ -27,6 +34,80 @@ def get_openai_client():
 def get_user_profile(user):
   profile, _ = UserProfile.objects.get_or_create(user=user)
   return profile
+
+
+def get_chat_history(user):
+  history, _ = ChatHistory.objects.get_or_create(user=user)
+  return history
+
+
+def extract_uploaded_file_text(file_item):
+  """Extract useful text from common uploaded formats before sending to AI."""
+  if not isinstance(file_item, dict):
+    return ""
+  encoded = file_item.get("base64") or ""
+  if file_item.get("text"):
+    return str(file_item.get("text"))[:MAX_EXTRACTED_TEXT]
+  if not encoded:
+    return ""
+  try:
+    raw = base64.b64decode(encoded, validate=True)
+  except (ValueError, TypeError):
+    return ""
+
+  name = str(file_item.get("name") or "").lower()
+  content_type = str(file_item.get("type") or "").lower()
+  try:
+    if content_type.startswith("text/") or re.search(
+        r"\.(txt|md|json|csv|py|js|ts|html|css|java|c|cpp|sql|xml|yaml|yml|log)$",
+        name,
+    ):
+      return raw.decode("utf-8", errors="replace")[:MAX_EXTRACTED_TEXT]
+    if name.endswith(".pdf") or content_type == "application/pdf":
+      from pypdf import PdfReader
+      pages = PdfReader(io.BytesIO(raw)).pages
+      return "\n\n".join((page.extract_text() or "") for page in pages)[:MAX_EXTRACTED_TEXT]
+    if name.endswith(".docx") or content_type.endswith("wordprocessingml.document"):
+      from docx import Document
+      document = Document(io.BytesIO(raw))
+      return "\n".join(paragraph.text for paragraph in document.paragraphs)[:MAX_EXTRACTED_TEXT]
+  except Exception:
+    return ""
+  return ""
+
+
+def extract_image_url(message):
+  """Accept the different image shapes returned by OpenRouter models."""
+  images = getattr(message, "images", None) if message else None
+  if images:
+    for image in images:
+      image_url = getattr(image, "image_url", None)
+      if isinstance(image_url, dict):
+        image_url = image_url.get("url")
+      elif image_url:
+        image_url = getattr(image_url, "url", image_url)
+      if image_url:
+        return image_url
+
+  content = getattr(message, "content", None) if message else None
+  if isinstance(content, list):
+    for part in content:
+      if not isinstance(part, dict):
+        continue
+      if part.get("type") == "image_url":
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+          image_url = image_url.get("url")
+        if image_url:
+          return image_url
+  if isinstance(content, str):
+    match = re.search(r"!\[[^\]]*\]\(([^)]+)\)", content)
+    if match:
+      return match.group(1)
+    match = re.search(r"(https?://\S+|data:image/[^\s]+)", content)
+    if match:
+      return match.group(1).rstrip(").,")
+  return None
 
 
 def profile_payload(user):
@@ -223,16 +304,9 @@ def api_image_generate(request):
           modalities=["text", "image"],
       )
       message = response.choices[0].message if response.choices else None
-      images = getattr(message, "images", None) if message else None
-      if images:
-        image = images[0]
-        image_url = getattr(image, "image_url", None)
-        if isinstance(image_url, dict):
-          image_url = image_url.get("url")
-        elif image_url:
-          image_url = getattr(image_url, "url", image_url)
-        if image_url:
-          return JsonResponse({"status": "success", "image_url": image_url})
+      image_url = extract_image_url(message)
+      if image_url:
+        return JsonResponse({"status": "success", "image_url": image_url})
       return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
     except Exception as img_error:
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
@@ -241,6 +315,28 @@ def api_image_generate(request):
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   except Exception as e:
     return JsonResponse({"error": str(e)}, status=500)
+
+
+@login_required(login_url="login")
+def api_chats(request):
+  history = get_chat_history(request.user)
+  if request.method == "GET":
+    return JsonResponse({"chats": history.chats, "updated_at": history.updated_at.isoformat()})
+  if request.method != "POST":
+    return JsonResponse({"error": "Geçersiz istek."}, status=405)
+  try:
+    data = json.loads(request.body or "{}")
+  except json.JSONDecodeError:
+    return JsonResponse({"error": "Geçersiz JSON."}, status=400)
+  chats = data.get("chats")
+  if not isinstance(chats, list):
+    return JsonResponse({"error": "Geçersiz sohbet verisi."}, status=400)
+  # Keep the sync endpoint bounded and only accept the fields the UI uses.
+  if len(json.dumps(chats, ensure_ascii=False)) > 80 * 1024 * 1024:
+    return JsonResponse({"error": "Sohbet geçmişi çok büyük."}, status=413)
+  history.chats = chats
+  history.save(update_fields=["chats", "updated_at"])
+  return JsonResponse({"status": "success", "updated_at": history.updated_at.isoformat()})
 
 
 @login_required(login_url="login")
@@ -254,9 +350,14 @@ def api_chat(request):
     mode = data.get("mode", "normal")
     history = data.get("history") or []
     deep_think = data.get("deep_think", False)
+    try:
+      deep_think_seconds = max(30, min(1800, int(data.get("deep_think_seconds") or 300)))
+    except (TypeError, ValueError):
+      deep_think_seconds = 300
     images = data.get("images", [])
     files = data.get("files", [])
     voice_transcript = data.get("voice_transcript", "")
+    voice = data.get("voice") or {}
 
     if not user_message and not voice_transcript and not images and not files:
       return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
@@ -269,6 +370,21 @@ def api_chat(request):
       else:
         full_message = voice_transcript
     file_names = [str(item.get("name", "dosya")) for item in files if isinstance(item, dict)]
+    extracted_files = []
+    for file_item in files:
+      if not isinstance(file_item, dict):
+        continue
+      try:
+        file_size = int(file_item.get("size") or 0)
+      except (TypeError, ValueError):
+        file_size = 0
+      if file_size > MAX_CHAT_FILE_BYTES:
+        return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
+      extracted = extract_uploaded_file_text(file_item)
+      if extracted:
+        extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
+    if extracted_files:
+      full_message += "".join(extracted_files)
     if file_names and not full_message:
       full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
@@ -340,8 +456,17 @@ def api_chat(request):
 
     # Keep requests within the available provider limits.
     if deep_think:
-      system_instruction += " Kapsamlı düşünme modundasın. Konuyu dikkatle analiz et ve detaylı ama gereksiz tekrarsız bir yanıt ver."
-      max_tokens = min(max_tokens, 3072)
+      minutes = deep_think_seconds // 60
+      seconds = deep_think_seconds % 60
+      budget_label = f"{minutes} dakika {seconds} saniye" if minutes else f"{seconds} saniye"
+      system_instruction += (
+        f" Kapsamlı araştırma modu açık; kullanıcı sana {budget_label} düşünme bütçesi verdi. "
+        "Bu süreyi boş beklemek için değil, soruyu parçalara ayırmak, varsayımları kontrol etmek, "
+        "kanıt ve karşı örnekleri değerlendirmek ve sonunda net bir araştırma özeti üretmek için kullan. "
+        "Canlı internet erişimin yoksa bunu dürüstçe belirt; kaynak uydurma. "
+        "Yanıt vermeden önce kısa bir araştırma planı ve bulgularını zihinsel olarak kontrol et."
+      )
+      max_tokens = min(max_tokens * 2, 8192)
 
     messages = [{"role": "system", "content": system_instruction}]
 
@@ -357,6 +482,16 @@ def api_chat(request):
         image_type = img.get("type") or "image/jpeg"
         user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
 
+    if isinstance(voice, dict) and voice.get("base64"):
+      audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
+      audio_format = audio_type.split("/")[-1] or "webm"
+      user_content.append({
+        "type": "input_audio",
+        "input_audio": {"data": voice["base64"], "format": audio_format},
+      })
+      if voice_transcript:
+        user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
+
     for h in history:
       if not isinstance(h, dict):
         continue
@@ -371,10 +506,11 @@ def api_chat(request):
       messages.append({"role": "user", "content": full_message})
 
     try:
+      request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
       completion = safe_model_call(
         client,
         messages,
-        model,
+        request_model,
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,

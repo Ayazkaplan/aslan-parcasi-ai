@@ -30,3 +30,18 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.username} profili"
+
+
+class ChatHistory(models.Model):
+    """The user's chats, shared by every authenticated device."""
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="chat_history",
+    )
+    chats = models.JSONField(default=list)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} sohbetleri"
