@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openai import OpenAI
 from .forms import CustomUserCreationForm
+from .models import UserProfile
 
 
 def get_openai_client():
@@ -23,20 +24,43 @@ def get_openai_client():
   )
 
 
+def get_user_profile(user):
+  profile, _ = UserProfile.objects.get_or_create(user=user)
+  return profile
+
+
+def profile_payload(user):
+  profile = get_user_profile(user)
+  return {
+      "username": user.username,
+      "avatar": profile.avatar,
+      "theme": profile.theme,
+      "pattern": profile.pattern,
+  }
+
+
+def friendly_api_error(error):
+  error_text = str(error).lower()
+  if "402" in error_text or "credit" in error_text or "max_tokens" in error_text:
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+  if "401" in error_text or "403" in error_text or "unauthorized" in error_text:
+    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
+  if "404" in error_text or "not found" in error_text:
+    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
+  if "429" in error_text or "rate limit" in error_text:
+    return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
+  return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
+
+
 def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, stream=False, deep_think=False):
     """
     Safe model call with retry logic and fallback models.
     Handles 404 (model not found) and 429 (rate limit) errors.
     """
     # Primary model and fallback models
-    if deep_think:
-        models = [model, "anthropic/claude-3.5-sonnet", "openai/gpt-4o"]
-        max_tokens = 8192
-    elif model == "fast":
-        models = ["openai/gpt-4o-mini", "anthropic/claude-3-haiku", "openrouter/auto"]
-        max_tokens = 2048
-    else:
-        models = [model, "openai/gpt-4o", "anthropic/claude-3.5-sonnet", "openrouter/auto"]
+    configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+    models = [model, configured_fallback, "openrouter/auto"]
+    models = list(dict.fromkeys(item for item in models if item))
     
     last_error = None
     
@@ -71,11 +95,7 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
                         last_error = retry_e
                         continue
             
-            # If model not found (404), try next model
-            if "404" in error_str or "not found" in error_str or "model" in error_str:
-                continue
-            
-            # For other errors, try next model
+            # The next configured model is attempted for provider/model errors.
             continue
     
     # All models failed
@@ -86,7 +106,41 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
 def index(request):
   if not request.user.email:
     return redirect("update_email")
-  return render(request, "dashboard/index.html")
+  profile = get_user_profile(request.user)
+  return render(
+      request,
+      "dashboard/index.html",
+      {"user_settings": json.dumps(profile_payload(request.user))},
+  )
+
+
+@login_required(login_url="login")
+@require_POST
+def update_profile_view(request):
+  try:
+    data = json.loads(request.body or "{}")
+  except json.JSONDecodeError:
+    return JsonResponse({"error": "Geçersiz JSON."}, status=400)
+
+  profile = get_user_profile(request.user)
+  avatar = data.get("avatar")
+  theme = (data.get("theme") or profile.theme).strip()
+  pattern = (data.get("pattern") or profile.pattern).strip()
+
+  allowed_themes = {"theme-cyber", "theme-matrix", "theme-sunset", "theme-deepspace", "theme-minimal"}
+  allowed_patterns = {"pattern-grid", "pattern-dots", "pattern-lines", "pattern-gradient", "pattern-plain"}
+  if theme not in allowed_themes or pattern not in allowed_patterns:
+    return JsonResponse({"error": "Geçersiz tema veya arka plan deseni."}, status=400)
+  if avatar is not None:
+    if avatar and (not isinstance(avatar, str) or not avatar.startswith(("data:image/", "http://", "https://"))):
+      return JsonResponse({"error": "Geçersiz profil fotoğrafı."}, status=400)
+    if isinstance(avatar, str) and len(avatar) > 5_000_000:
+      return JsonResponse({"error": "Profil fotoğrafı çok büyük. Daha küçük bir görsel seçin."}, status=400)
+    profile.avatar = avatar
+  profile.theme = theme
+  profile.pattern = pattern
+  profile.save()
+  return JsonResponse({"status": "success", "settings": profile_payload(request.user)})
 
 
 @login_required(login_url="login")
@@ -156,26 +210,32 @@ def api_image_generate(request):
           status=503,
       )
     
+    image_model = os.environ.get(
+        "OPENROUTER_IMAGE_MODEL",
+        "google/gemini-2.5-flash-image-preview",
+    ).strip()
     try:
-      # Try to use an image generation model via OpenRouter
-      response = client.images.generate(
-        model="openai/dall-e-3",
-        prompt=prompt,
-        n=1,
-        size="1024x1024"
+      # OpenRouter exposes current image models through chat completions. The
+      # old openai/dall-e-3 name returned 404 on this deployment.
+      response = client.chat.completions.create(
+          model=image_model,
+          messages=[{"role": "user", "content": prompt}],
+          modalities=["text", "image"],
       )
-      
-      if response.data and len(response.data) > 0:
-        image_url = response.data[0].url
-        return JsonResponse({"status": "success", "image_url": image_url})
-      else:
-        return JsonResponse({"error": "Görsel oluşturulamadı."}, status=500)
-        
+      message = response.choices[0].message if response.choices else None
+      images = getattr(message, "images", None) if message else None
+      if images:
+        image = images[0]
+        image_url = getattr(image, "image_url", None)
+        if isinstance(image_url, dict):
+          image_url = image_url.get("url")
+        elif image_url:
+          image_url = getattr(image_url, "url", image_url)
+        if image_url:
+          return JsonResponse({"status": "success", "image_url": image_url})
+      return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
     except Exception as img_error:
-      return JsonResponse(
-          {"error": f"Görsel oluşturma hatası: {str(img_error)}. API erişimi olmayabilir."},
-          status=500
-      )
+      return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
       
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
@@ -195,9 +255,10 @@ def api_chat(request):
     history = data.get("history") or []
     deep_think = data.get("deep_think", False)
     images = data.get("images", [])
+    files = data.get("files", [])
     voice_transcript = data.get("voice_transcript", "")
 
-    if not user_message and not voice_transcript:
+    if not user_message and not voice_transcript and not images and not files:
       return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
     # Combine voice transcript with text message
@@ -207,6 +268,9 @@ def api_chat(request):
         full_message = f"{voice_transcript} {full_message}"
       else:
         full_message = voice_transcript
+    file_names = [str(item.get("name", "dosya")) for item in files if isinstance(item, dict)]
+    if file_names and not full_message:
+      full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     client = get_openai_client()
     if client is None:
@@ -238,7 +302,7 @@ def api_chat(request):
       )
       model = "openai/gpt-4o"
       temperature = 0.7
-      max_tokens = 4096
+      max_tokens = 2048
 
     elif mode == "code":
       system_instruction = (
@@ -253,7 +317,7 @@ def api_chat(request):
       )
       model = "openai/gpt-4o"
       temperature = 0.3
-      max_tokens = 8192
+      max_tokens = 4096
 
     elif mode == "fast":
       system_instruction = (
@@ -274,10 +338,10 @@ def api_chat(request):
       temperature = 0.7
       max_tokens = 4096
 
-    # Adjust for deep think mode
+    # Keep requests within the available provider limits.
     if deep_think:
-      system_instruction += " Kapsamlı düşünme modundasın. Konuyu derinlemesine analiz et, farklı açıları değerlendir ve detaylı reasoning yap."
-      max_tokens = 8192
+      system_instruction += " Kapsamlı düşünme modundasın. Konuyu dikkatle analiz et ve detaylı ama gereksiz tekrarsız bir yanıt ver."
+      max_tokens = min(max_tokens, 3072)
 
     messages = [{"role": "system", "content": system_instruction}]
 
@@ -290,7 +354,8 @@ def api_chat(request):
       if img.get("url"):
         user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
       elif img.get("base64"):
-        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img['base64']}"}})
+        image_type = img.get("type") or "image/jpeg"
+        user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
 
     for h in history:
       if not isinstance(h, dict):
@@ -305,25 +370,33 @@ def api_chat(request):
     else:
       messages.append({"role": "user", "content": full_message})
 
-    # Use streaming response
+    try:
+      completion = safe_model_call(
+        client,
+        messages,
+        model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True,
+        deep_think=deep_think,
+      )
+    except Exception as api_error:
+      return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
+
+    # Use streaming response after the provider accepts the request. This
+    # prevents an API exception from becoming a fake successful blank bubble.
     def generate():
       try:
-        completion = safe_model_call(
-          client, 
-          messages, 
-          model, 
-          temperature=temperature, 
-          max_tokens=max_tokens, 
-          stream=True,
-          deep_think=deep_think
-        )
-        
+        yielded = False
         for chunk in completion:
           if chunk.choices and chunk.choices[0].delta.content:
+            yielded = True
             yield chunk.choices[0].delta.content
       except Exception as e:
-        error_msg = f"Hata: {str(e)}"
-        yield error_msg
+        yield friendly_api_error(e)
+      else:
+        if not yielded:
+          yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 

@@ -10,6 +10,7 @@ urlpatterns = [
     path('update-email/', views.update_email_view, name='update_email'),
     path('api/delete-account/', views.delete_account_view, name='delete_account'),
     path('api/update-username/', views.update_username_view, name='update_username'),
+    path('api/update-profile/', views.update_profile_view, name='update_profile'),
     path('api/chat/', views.api_chat, name='api_chat'),
     path('api/image-generate/', views.api_image_generate, name='api_image_generate'),
 ]

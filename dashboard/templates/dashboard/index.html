@@ -172,7 +172,6 @@
             background: #00ffaa;
             color: #0b0f19;
             border-radius: 50%;
-            font-size: 10px;
             font-weight: 900;
             display: flex;
             align-items: center;
@@ -182,6 +181,11 @@
             box-shadow: 0 0 5px rgba(0,255,170,0.5);
             z-index: 5;
             transition: transform 0.2s;
+        }
+        .plus-avatar-btn svg {
+            width: 10px;
+            height: 10px;
+            display: block;
         }
         .plus-avatar-btn:hover {
             transform: scale(1.15);
@@ -822,6 +826,7 @@
             display: flex;
             gap: 8px;
             align-items: center;
+            position: relative;
         }
 
         .media-btn {
@@ -831,12 +836,64 @@
             height: 36px;
             border-radius: 8px;
             color: var(--text-muted);
-            font-size: 16px;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
             transition: 0.2s;
+        }
+
+        .media-menu-trigger {
+            color: var(--text-muted);
+        }
+
+        .media-menu-trigger svg,
+        .think-btn svg,
+        .send-btn svg,
+        .media-menu-panel svg {
+            width: 18px;
+            height: 18px;
+            display: block;
+        }
+
+        .media-menu-panel {
+            position: absolute;
+            left: 0;
+            bottom: calc(100% + 10px);
+            display: none;
+            grid-template-columns: repeat(2, minmax(110px, 1fr));
+            gap: 6px;
+            padding: 8px;
+            min-width: 240px;
+            background: var(--card-bg);
+            border: 1px solid rgba(0, 255, 170, 0.3);
+            border-radius: 12px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+            z-index: 120;
+        }
+
+        .media-buttons.open .media-menu-panel {
+            display: grid;
+        }
+
+        .media-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+            padding: 9px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 12px;
+            text-align: left;
+        }
+
+        .media-menu-item:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.12);
         }
 
         .media-btn:hover {
@@ -948,6 +1005,34 @@
             border: 1px solid var(--border-color);
         }
 
+        .message-attachment {
+            display: block;
+            max-width: min(100%, 320px);
+            max-height: 260px;
+            object-fit: contain;
+            margin-top: 9px;
+            border-radius: 9px;
+            border: 1px solid var(--border-color);
+        }
+
+        .file-attachment {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-top: 8px;
+            padding: 7px 9px;
+            border: 1px solid var(--border-color);
+            border-radius: 7px;
+            font-size: 12px;
+            position: relative;
+        }
+
+        .file-attachment .remove-btn {
+            position: static;
+            margin-left: auto;
+            flex: 0 0 18px;
+        }
+
         /* MODALLER VE AÇILIR MENÜLER */
         .modal-overlay {
             position: fixed;
@@ -1057,11 +1142,35 @@
             .chat-header {
                 padding-left: 60px;
             }
+            .chat-input-wrapper {
+                padding-left: 8px;
+                padding-right: 8px;
+            }
+            .chat-input-container {
+                gap: 5px;
+                padding-left: 6px;
+                padding-right: 6px;
+            }
+            .media-menu-panel {
+                left: -5px;
+                min-width: 220px;
+            }
+            .think-btn,
+            .media-btn,
+            .send-btn {
+                width: 34px;
+                height: 34px;
+                flex: 0 0 34px;
+            }
+            .chat-input-container textarea {
+                min-width: 0;
+            }
         }
     </style>
 </head>
 <body class="theme-cyber pattern-grid">
 {% csrf_token %}
+<script id="user-settings-data" type="application/json">{{ user_settings|safe }}</script>
 
 <div class="app-container">
     <aside class="sidebar" id="appSidebar" onclick="event.stopPropagation()">
@@ -1078,7 +1187,11 @@
         <!-- Profil ve Kayan İsim Çubuğu (Sol Menü + Sol Üstte + Butonu) -->
         <div class="user-profile-bar" id="userProfileBar">
             <div class="avatar-container">
-                <div class="plus-avatar-btn" onclick="triggerAvatarSelection(event)" title="Fotoğraf Seç">+</div>
+                <div class="plus-avatar-btn" onclick="triggerAvatarSelection(event)" title="Fotoğraf Seç" aria-label="Fotoğraf seç">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14"></path>
+                    </svg>
+                </div>
                 <img src="https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz" id="userProfileImg" class="user-avatar" alt="Profil" onclick="toggleUsernameSlide(this)" style="cursor: pointer;">
             </div>
             <span class="sliding-username" id="displayUsername" onclick="toggleUsernameSlide(this)">{{ request.user.username|default:"Ayaz Kaplan" }}</span>
@@ -1088,7 +1201,11 @@
             <input type="text" id="chatSearchInput" placeholder="Sohbetlerde ara..." onkeyup="filterChats()">
         </div>
 
-        <button class="new-chat-btn" onclick="createNewChat()">+ Yeni Sohbet</button>
+        <button class="new-chat-btn" onclick="createNewChat()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align: -2px; margin-right: 4px;" aria-hidden="true">
+                <path d="M12 5v14M5 12h14"></path>
+            </svg>Yeni Sohbet
+        </button>
 
         <div class="chat-list" id="chatList"></div>
 
@@ -1146,15 +1263,46 @@
             <input type="file" id="hiddenAvatarInput" accept="image/*" style="display: none;" onchange="handleAvatarFile(this)">
 
             <div class="chat-input-container">
-                <div class="media-buttons">
-                    <button class="media-btn" id="voiceBtn" onclick="toggleVoiceRecording()" title="Ses kaydı">🎤</button>
-                    <button class="media-btn" onclick="triggerImageUpload()" title="Görsel ekle">📷</button>
-                    <button class="media-btn" onclick="triggerFileUpload()" title="Dosya ekle">📎</button>
-                    <button class="media-btn" id="imageGenBtn" onclick="generateImage()" title="Görsel oluştur">🎨</button>
+                <div class="media-buttons" id="mediaButtons">
+                    <button class="media-btn media-menu-trigger" onclick="toggleMediaMenu(event)" title="Ek seçenekler" aria-label="Ek seçenekler" aria-expanded="false">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                            <circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle>
+                        </svg>
+                    </button>
+                    <div class="media-menu-panel" role="menu">
+                        <button class="media-menu-item" id="voiceBtn" onclick="toggleVoiceRecording(); closeMediaMenu()" title="Ses kaydı" role="menuitem">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"></path>
+                            </svg> Ses kaydı
+                        </button>
+                        <button class="media-menu-item" onclick="triggerImageUpload(); closeMediaMenu()" title="Görsel ekle" role="menuitem">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m21 15-5-5L5 20"></path>
+                            </svg> Görsel ekle
+                        </button>
+                        <button class="media-menu-item" onclick="triggerFileUpload(); closeMediaMenu()" title="Dosya ekle" role="menuitem">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="M4 4h10l6 6v10H4z"></path><path d="M14 4v6h6M8 15h8M8 18h5"></path>
+                            </svg> Dosya ekle
+                        </button>
+                        <button class="media-menu-item" id="imageGenBtn" onclick="generateImage(); closeMediaMenu()" title="Görsel oluştur" role="menuitem">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="m12 3 1.4 4.1L17 9l-3.6 1.9L12 15l-1.4-4.1L7 9l3.6-1.9z"></path><path d="m19 14 .7 2.3L22 17l-2.3.7L19 20l-.7-2.3L16 17l2.3-.7z"></path>
+                            </svg> Görsel oluştur
+                        </button>
+                    </div>
                 </div>
-                <button class="think-btn" id="thinkBtn" onclick="toggleDeepThink()" title="Daha uzun düşün">🧠</button>
+                <button class="think-btn" id="thinkBtn" onclick="toggleDeepThink()" title="Daha uzun düşün" aria-label="Daha uzun düşün">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M9 4a6 6 0 0 1 6 10.4V17H9v-2.6A6 6 0 0 1 9 4Z"></path><path d="M9 20h6M10 23h4M7 7H4M20 7h-3M6.5 2.5 5 1M17.5 2.5 19 1"></path>
+                    </svg>
+                </button>
                 <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
-                <button class="send-btn" onclick="sendMessage()">➔</button>
+                <button class="send-btn" onclick="sendMessage()" title="Gönder" aria-label="Gönder">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+                        <path d="m4 4 16 8-16 8 3-8z"></path><path d="M7 12h13"></path>
+                    </svg>
+                </button>
             </div>
             
             <!-- Media Previews -->
@@ -1250,6 +1398,10 @@
 <script>
     const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
     const DJANGO_USERNAME = "{{ request.user.username|escapejs }}";
+    const DJANGO_USER_ID = "{{ request.user.id }}";
+    const DEFAULT_AVATAR = 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz';
+    const USER_STORAGE_KEY = `aslan_parcasi_${DJANGO_USER_ID}`;
+    const SERVER_SETTINGS = JSON.parse(document.getElementById('user-settings-data').textContent || '{}');
 
     function getCsrfToken() {
         const tokenInput = document.querySelector('[name=csrfmiddlewaretoken]');
@@ -1270,21 +1422,28 @@
     `;
 
     let currentMode = 'normal';
-    let chats = JSON.parse(localStorage.getItem('aslan_parcasi_chats')) || [];
+    let chats = JSON.parse(localStorage.getItem(`${USER_STORAGE_KEY}_chats`)) || [];
     let activeChatId = null;
     let editingChatId = null;
     let deletingChatId = null;
     let deepThinkEnabled = false;
     let selectedImages = [];
+    let selectedFiles = [];
     let selectedVoiceBlob = null;
     let mediaRecorder = null;
     let isRecording = false;
 
-    let userSettings = JSON.parse(localStorage.getItem('aslan_parcasi_settings')) || {
+    let userSettings = {
         username: DJANGO_USERNAME,
-        avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz',
+        avatar: DEFAULT_AVATAR,
         theme: 'theme-cyber',
         pattern: 'pattern-grid'
+    };
+    const cachedSettings = JSON.parse(localStorage.getItem(`${USER_STORAGE_KEY}_settings`) || '{}');
+    userSettings = {
+        ...userSettings,
+        ...cachedSettings,
+        ...SERVER_SETTINGS
     };
     userSettings.username = DJANGO_USERNAME || userSettings.username;
 
@@ -1292,8 +1451,8 @@
         document.getElementById('displayUsername').textContent = userSettings.username;
         
         const avatarImg = document.getElementById('userProfileImg');
-        if (avatarImg && userSettings.avatar) {
-            avatarImg.src = userSettings.avatar;
+        if (avatarImg) {
+            avatarImg.src = userSettings.avatar || DEFAULT_AVATAR;
         }
         document.body.className = `${userSettings.theme} ${userSettings.pattern}`;
     }
@@ -1305,7 +1464,7 @@
     }
 
     function toggleUsernameSlide(el) {
-        if (el) el.stopPropagation();
+        if (!el) return;
         const bar = el.closest('.user-profile-bar');
         bar.classList.toggle('active');
     }
@@ -1315,12 +1474,61 @@
             const reader = new FileReader();
             reader.onload = function(e) {
                 userSettings.avatar = e.target.result;
-                localStorage.setItem('aslan_parcasi_settings', JSON.stringify(userSettings));
+                saveProfileSettings();
                 applyUserSettings();
             };
             reader.readAsDataURL(input.files[0]);
         }
     }
+    function persistSettingsLocally() {
+        localStorage.setItem(`${USER_STORAGE_KEY}_settings`, JSON.stringify(userSettings));
+    }
+
+    async function saveProfileSettings(showError = true) {
+        persistSettingsLocally();
+        try {
+            const response = await fetch('{% url "update_profile" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken()
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    avatar: userSettings.avatar || '',
+                    theme: userSettings.theme,
+                    pattern: userSettings.pattern
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Ayarlar kaydedilemedi.');
+            userSettings = { ...userSettings, ...data.settings };
+            persistSettingsLocally();
+            applyUserSettings();
+        } catch (err) {
+            if (showError) alert(err.message || 'Profil ayarları kaydedilemedi.');
+        }
+    }
+
+    function toggleMediaMenu(event) {
+        if (event) event.stopPropagation();
+        const buttons = document.getElementById('mediaButtons');
+        const trigger = buttons.querySelector('.media-menu-trigger');
+        const isOpen = buttons.classList.toggle('open');
+        trigger.setAttribute('aria-expanded', String(isOpen));
+    }
+
+    function closeMediaMenu() {
+        const buttons = document.getElementById('mediaButtons');
+        if (!buttons) return;
+        buttons.classList.remove('open');
+        buttons.querySelector('.media-menu-trigger').setAttribute('aria-expanded', 'false');
+    }
+
+    document.addEventListener('click', (event) => {
+        if (!event.target.closest('#mediaButtons')) closeMediaMenu();
+    });
+
 
     function toggleMobileSidebar(e) {
         if (e) e.stopPropagation();
@@ -1367,7 +1575,7 @@
             return;
         }
 
-        localStorage.setItem('aslan_parcasi_settings', JSON.stringify(userSettings));
+        await saveProfileSettings();
         applyUserSettings();
         closeModal('settingsModal');
     }
@@ -1413,7 +1621,7 @@
 
     function saveToStorage() {
         const validChats = chats.filter(c => c.messages && c.messages.length > 0);
-        localStorage.setItem('aslan_parcasi_chats', JSON.stringify(validChats));
+        localStorage.setItem(`${USER_STORAGE_KEY}_chats`, JSON.stringify(validChats));
     }
 
     function setMode(mode) {
@@ -1569,7 +1777,7 @@
         } else {
             const msgs = currentChat.messages;
             msgs.forEach((msg, idx) => {
-                appendMessage(msg.text, msg.sender, false, true, idx);
+                appendMessage(msg.text, msg.sender, false, true, idx, msg);
             });
         }
         if (typingEl) {
@@ -1616,7 +1824,7 @@
     }
 
     function toggleUserUsernameSlide(avatarEl) {
-        if (avatarEl) avatarEl.stopPropagation();
+        if (!avatarEl) return;
         const header = avatarEl.closest('.user-avatar-header');
         if (header) {
             header.classList.toggle('expanded');
@@ -1705,7 +1913,24 @@
     function handleFileUpload(input) {
         if (input.files && input.files.length > 0) {
             const file = input.files[0];
-            alert(`Dosya seçildi: ${file.name}\nNot: Dosya gönderimi şu an için desteklenmiyor, sadece görsel gönderimi aktif.`);
+            if (file.size > 5 * 1024 * 1024) {
+                alert('Dosya boyutu 5 MB sınırını aşamaz.');
+                input.value = '';
+                return;
+            }
+            const textLike = file.type.startsWith('text/')
+                || /\.(txt|md|json|csv|py|js|ts|html|css|java|c|cpp|sql|xml|yaml|yml)$/i.test(file.name);
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                selectedFiles = [{
+                    name: file.name,
+                    type: file.type || 'application/octet-stream',
+                    size: file.size,
+                    text: textLike ? String(event.target.result).slice(0, 200000) : ''
+                }];
+                renderFilePreviews();
+            };
+            reader.readAsText(file);
         }
         input.value = '';
     }
@@ -1719,7 +1944,32 @@
             previewItem.className = 'media-preview-item';
             previewItem.innerHTML = `
                 <img src="data:${img.type};base64,${img.base64}" alt="Preview">
-                <button class="remove-btn" onclick="removeImage(${index})">×</button>
+                <button class="remove-btn" onclick="removeImage(${index})" aria-label="Görseli kaldır">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 6 12 12M18 6 6 18"></path>
+                    </svg>
+                </button>
+            `;
+            previewContainer.appendChild(previewItem);
+        });
+        renderFilePreviews();
+    }
+
+    function renderFilePreviews() {
+        const previewContainer = document.getElementById('imagePreview');
+        selectedFiles.forEach((file) => {
+            const previewItem = document.createElement('div');
+            previewItem.className = 'file-attachment';
+            previewItem.innerHTML = `
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 4h10l6 6v10H4z"></path><path d="M14 4v6h6"></path>
+                </svg>
+                <span>${escapeHtml(file.name)}</span>
+                <button class="remove-btn" onclick="removeFile()" aria-label="Dosyayı kaldır">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 6 12 12M18 6 6 18"></path>
+                    </svg>
+                </button>
             `;
             previewContainer.appendChild(previewItem);
         });
@@ -1727,6 +1977,11 @@
 
     function removeImage(index) {
         selectedImages.splice(index, 1);
+        renderImagePreviews();
+    }
+
+    function removeFile() {
+        selectedFiles = [];
         renderImagePreviews();
     }
 
@@ -1805,9 +2060,9 @@
         }
 
         const generateBtn = document.getElementById('imageGenBtn');
-        const originalText = generateBtn.textContent;
-        generateBtn.textContent = '⏳';
+        const originalContent = generateBtn.innerHTML;
         generateBtn.disabled = true;
+        generateBtn.setAttribute('aria-busy', 'true');
 
         try {
             const response = await fetch('{% url "api_image_generate" %}', {
@@ -1855,8 +2110,9 @@
         } catch (err) {
             alert('Görsel oluşturma sırasında hata oluştu: ' + err.message);
         } finally {
-            generateBtn.textContent = originalText;
+            generateBtn.innerHTML = originalContent;
             generateBtn.disabled = false;
+            generateBtn.removeAttribute('aria-busy');
         }
     }
 
@@ -1872,7 +2128,7 @@
         const text = customText !== null ? customText : inputEl.value.trim();
         
         // Check if there's any content to send
-        if (!text && selectedImages.length === 0 && !selectedVoiceBlob) return;
+        if (!text && selectedImages.length === 0 && selectedFiles.length === 0 && !selectedVoiceBlob) return;
 
         if (chats.length === 0 || !activeChatId) {
             createNewChat('Yeni Sohbet', false);
@@ -1887,7 +2143,20 @@
         }
 
         // Combine text with voice transcript
-        const fullMessage = text || voiceTranscript;
+        let fullMessage = text || voiceTranscript;
+        const filesForMessage = selectedFiles.map(file => ({
+            name: file.name,
+            type: file.type,
+            size: file.size
+        }));
+        const fileText = selectedFiles
+            .filter(file => file.text)
+            .map(file => `\n\n[${file.name} dosyasının içeriği]\n${file.text}`)
+            .join('');
+        if (fileText) fullMessage += fileText;
+        if (!fullMessage && selectedFiles.length) {
+            fullMessage = `[Dosya gönderildi: ${selectedFiles.map(file => file.name).join(', ')}]`;
+        }
 
         if (currentChat && !currentChat.isCustomTitle && currentChat.messages.length === 0) {
             currentChat.title = fullMessage.length > 22 ? fullMessage.substring(0, 22) + '...' : fullMessage;
@@ -1899,6 +2168,7 @@
             text: fullMessage, 
             timestamp,
             images: selectedImages.length > 0 ? selectedImages : undefined,
+            files: filesForMessage.length > 0 ? filesForMessage : undefined,
             hasVoice: !!selectedVoiceBlob
         });
         
@@ -1908,8 +2178,10 @@
 
         // Clear media after sending
         const imagesToSend = [...selectedImages];
+        const filesToSend = [...selectedFiles];
         const voiceToSend = selectedVoiceBlob;
         selectedImages = [];
+        selectedFiles = [];
         selectedVoiceBlob = null;
         renderImagePreviews();
         removeVoice();
@@ -1947,6 +2219,7 @@
                     history: previousHistory,
                     deep_think: wasDeepThink,
                     images: imagesToSend,
+                    files: filesToSend,
                     voice_transcript: voiceTranscript
                 })
             });
@@ -1956,16 +2229,19 @@
                 hideReasoningAnimation();
             }
 
-            // Handle streaming response
-            if (response.body) {
+            if (!response.ok) {
+                let errorData = {};
+                try { errorData = await response.json(); } catch (err) { /* handled below */ }
+                currentChat.messages.push({
+                    sender: 'ai',
+                    text: errorData.error || 'Yapay zekâ yanıtı alınamadı. Lütfen tekrar deneyin.',
+                    timestamp: Date.now()
+                });
+            } else if (response.body) {
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let fullResponse = '';
-                
-                // Create AI message placeholder
-                const aiMsgIndex = currentChat.messages.length;
-                currentChat.messages.push({ sender: 'ai', text: '', timestamp: Date.now() });
-                renderMessages();
+                let aiMsgIndex = -1;
                 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -1973,13 +2249,24 @@
                     
                     const chunk = decoder.decode(value);
                     fullResponse += chunk;
-                    
-                    // Update the AI message in real-time
+                    if (aiMsgIndex === -1) {
+                        aiMsgIndex = currentChat.messages.length;
+                        currentChat.messages.push({ sender: 'ai', text: '', timestamp: Date.now() });
+                    }
                     currentChat.messages[aiMsgIndex].text = fullResponse;
                     renderMessages();
                 }
-                
-                currentChat.messages[aiMsgIndex].text = fullResponse;
+                if (aiMsgIndex === -1) {
+                    currentChat.messages.push({
+                        sender: 'ai',
+                        text: 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.',
+                        timestamp: Date.now()
+                    });
+                } else {
+                    currentChat.messages[aiMsgIndex].text = fullResponse.trim()
+                        ? fullResponse
+                        : 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.';
+                }
             } else {
                 const data = await response.json();
                 if (data.status === 'success') {
@@ -2003,7 +2290,7 @@
         renderMessages();
     }
 
-    function appendMessage(text, sender, autoScroll = true, canAction = true, msgIndex = 0) {
+    function appendMessage(text, sender, autoScroll = true, canAction = true, msgIndex = 0, messageData = null) {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
@@ -2024,7 +2311,7 @@
             userHeader.className = 'user-avatar-header';
             userHeader.innerHTML = `
                 <span class="user-sliding-username">${userSettings.username}</span>
-                <img src="${userSettings.avatar}" class="user-message-avatar" onclick="toggleUserUsernameSlide(this)" title="Profili Gör">
+                <img src="${userSettings.avatar || DEFAULT_AVATAR}" class="user-message-avatar" onclick="toggleUserUsernameSlide(this)" title="Profili Gör">
             `;
             wrapper.appendChild(userHeader);
         }
@@ -2062,6 +2349,26 @@
             }
         } else {
             msgDiv.textContent = text == null ? '' : String(text);
+            const attachments = messageData || {};
+            (attachments.images || []).forEach((image) => {
+                if (!image.base64 && !image.url) return;
+                const imageEl = document.createElement('img');
+                imageEl.className = 'message-attachment';
+                imageEl.alt = image.name || 'Gönderilen görsel';
+                imageEl.src = image.url || `data:${image.type || 'image/jpeg'};base64,${image.base64}`;
+                msgDiv.appendChild(imageEl);
+            });
+            (attachments.files || []).forEach((file) => {
+                const fileEl = document.createElement('div');
+                fileEl.className = 'file-attachment';
+                fileEl.innerHTML = `
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 4h10l6 6v10H4z"></path><path d="M14 4v6h6"></path>
+                    </svg>
+                    <span>${escapeHtml(file.name || 'Dosya')}</span>
+                `;
+                msgDiv.appendChild(fileEl);
+            });
         }
         wrapper.appendChild(msgDiv);
 

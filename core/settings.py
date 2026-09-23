@@ -13,7 +13,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Quick-start development settings - unsuitable for production
 SECRET_KEY = os.environ.get(
-    'SECRET_KEY', 'django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h'
+    'SECRET_KEY',
+    os.environ.get(
+        'SESSION_SECRET',
+        'django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h',
+    ),
 )
 
 # Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
@@ -119,6 +123,8 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'index'
 LOGOUT_REDIRECT_URL = 'login'
+SESSION_COOKIE_AGE = 2592000
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 
 # Email
