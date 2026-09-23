@@ -25,6 +25,35 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
+# Replit preview/deployment proxies send the browser origin separately from
+# the request host. Trust only the known Replit proxy suffixes plus explicitly
+# configured domains so Django's CSRF middleware accepts same-app POSTs.
+_configured_origins = []
+for _domain in (
+    os.environ.get('REPLIT_DEV_DOMAIN', ''),
+    os.environ.get('REPLIT_DOMAINS', ''),
+):
+    for _value in _domain.split(','):
+        _value = _value.strip().removeprefix('https://').removeprefix('http://').rstrip('/')
+        if _value:
+            _configured_origins.append(f'https://{_value}')
+
+_extra_origins = [
+    item.strip()
+    for item in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if item.strip()
+]
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+    'https://*.replit.dev',
+    'https://*.replit.app',
+    'https://*.repl.co',
+    'http://localhost:5000',
+    'http://127.0.0.1:5000',
+    *_configured_origins,
+    *_extra_origins,
+]))
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 
 # Application definition
 
