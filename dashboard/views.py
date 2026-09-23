@@ -6,14 +6,13 @@ import re
 import time
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openai import OpenAI
-from .forms import CustomUserCreationForm
+from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
 from .models import ChatHistory, UserProfile
 
 
@@ -546,14 +545,14 @@ def login_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    form = AuthenticationForm(request, data=request.POST)
+    form = EmailOrUsernameAuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
       request.session.set_expiry(2592000)
       request.session.save()
       return redirect("index")
   else:
-    form = AuthenticationForm()
+    form = EmailOrUsernameAuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
 
 
