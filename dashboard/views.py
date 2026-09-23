@@ -1,13 +1,15 @@
 import json
 import os
 import datetime
-from django.contrib.auth import login, logout
+from django.contrib.auth import login, logout, get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from .forms import CustomUserCreationForm
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from openai import OpenAI
+
+User = get_user_model()
 
 
 def get_openai_client():
