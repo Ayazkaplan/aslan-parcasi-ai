@@ -11,17 +11,22 @@
         p { font-size: 13px; color: #94a3b8; text-align: center; }
         input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; outline: none; box-sizing: border-box; }
         button { width: 100%; padding: 10px; border-radius: 8px; border: none; background: linear-gradient(135deg, #00ffaa, #00aaff); color: #0b0f19; font-weight: bold; cursor: pointer; }
+        .form-error { font-size: 13px; color: #fca5a5; text-align: center; }
     </style>
 </head>
 <body>
     <div class="card">
         <h2>E-posta Adresi Gerekli</h2>
         <p>Eski hesabınız için lütfen bir e-posta adresi girin.</p>
+        {% if error %}
+            <div class="form-error">{{ error }}</div>
+        {% endif %}
         <form method="POST">
             {% csrf_token %}
             <input type="email" name="email" placeholder="E-posta adresiniz..." required style="margin-bottom: 15px;">
             <button type="submit">Kaydet ve Devam Et</button>
         </form>
+        <p><a href="{% url 'logout' %}" style="color:#00aaff;text-decoration:none;">Çıkış Yap</a></p>
     </div>
 </body>
 </html>

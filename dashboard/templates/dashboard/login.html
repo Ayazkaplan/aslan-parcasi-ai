@@ -175,6 +175,17 @@
         .footer-text a:hover {
             color: #00ffaa;
         }
+
+        .form-error {
+            margin-bottom: 16px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(239, 68, 68, 0.45);
+            background: rgba(239, 68, 68, 0.12);
+            color: #fca5a5;
+            font-size: 13px;
+            text-align: left;
+        }
     </style>
 </head>
 <body>
@@ -206,6 +217,15 @@
 
         <form method="POST">
             {% csrf_token %}
+            {% if form.non_field_errors %}
+                <div class="form-error">{{ form.non_field_errors.0 }}</div>
+            {% endif %}
+            {% if form.username.errors %}
+                <div class="form-error">{{ form.username.errors.0 }}</div>
+            {% endif %}
+            {% if form.password.errors %}
+                <div class="form-error">{{ form.password.errors.0 }}</div>
+            {% endif %}
             <div class="form-group">
                 <label for="username">Kullanıcı Adı</label>
                 <input type="text" name="username" id="username" placeholder="Kullanıcı adınızı girin" required>
