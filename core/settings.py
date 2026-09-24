@@ -26,9 +26,7 @@ DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 
-# Replit preview/deployment proxies send the browser origin separately from
-# the request host. Trust only the known Replit proxy suffixes plus explicitly
-# configured domains so Django's CSRF middleware accepts same-app POSTs.
+# Güvenli CSRF Origin listesini şemalarıyla birlikte hatasız oluşturuyoruz
 _configured_origins = []
 for _domain in (
     os.environ.get('REPLIT_DEV_DOMAIN', ''),
@@ -42,9 +40,12 @@ for _domain in (
 _extra_origins = [
     item.strip()
     for item in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
-    if item.strip()
+    if item.strip() and item.strip().startswith(('http://', 'https://'))
 ]
+
 CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+    'https://aslan-parcasi-ai.onrender.com',
+    'https://*.onrender.com',
     'https://*.replit.dev',
     'https://*.replit.app',
     'https://*.repl.co',
@@ -53,6 +54,7 @@ CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
     *_configured_origins,
     *_extra_origins,
 ]))
+
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
@@ -101,8 +103,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # Database
-# Replit's persistent PostgreSQL database is preferred when DATABASE_URL is
-# available. SQLite remains a local fallback for environments without it.
 database_url = os.environ.get('DATABASE_URL', '').strip()
 if database_url:
     parsed_database_url = urlparse(database_url)
@@ -157,7 +157,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Internationalization (Türkçe Dil ve Saat Ayarları)
+# Internationalization
 LANGUAGE_CODE = 'tr-tr'
 
 TIME_ZONE = 'Europe/Istanbul'
@@ -167,7 +167,7 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
+# Static files
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
