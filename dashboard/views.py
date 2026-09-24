@@ -537,6 +537,10 @@ def login_view(request):
       request.session.set_expiry(2592000)
       request.session.save()
       return redirect("index")
+    else:
+      # Form hatalarını debug için
+      print(f"Login form errors: {form.errors}")
+      print(f"POST data: {request.POST}")
   else:
     from django.contrib.auth.forms import AuthenticationForm
     form = AuthenticationForm()
