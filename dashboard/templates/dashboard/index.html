@@ -947,6 +947,41 @@
             background: #d97706;
         }
 
+        /* Voice recording stop button in preview */
+        .voice-preview .stop-recording-btn {
+            background: #f59e0b;
+            border: none;
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-left: 8px;
+            transition: 0.2s;
+        }
+
+        .voice-preview .stop-recording-btn:hover {
+            background: #d97706;
+        }
+
+        /* Recording indicator styles */
+        .recording-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #ef4444;
+            font-weight: 600;
+        }
+
+        .recording-dot {
+            width: 10px;
+            height: 10px;
+            background: #ef4444;
+            border-radius: 50%;
+            animation: pulse 1s infinite;
+        }
+
         /* MEDYA ÖNİZLEME */
         .media-preview {
             display: flex;
@@ -1063,15 +1098,11 @@
             font-size: 11px;
             cursor: pointer;
             margin-top: 4px;
-            display: none;
+            display: inline-block;
         }
 
         .retry-btn:hover {
             background: rgba(255, 165, 0, 0.3);
-        }
-
-        .message-wrapper.ai:last-child .retry-btn {
-            display: inline-block;
         }
 
         .file-attachment {
@@ -1293,12 +1324,17 @@
 
 <div class="app-container">
     <aside class="sidebar" id="appSidebar" onclick="event.stopPropagation()">
+        <button class="mobile-menu-close" onclick="toggleMobileSidebar(event)" aria-label="Menüyü kapat">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="m6 6 12 12M18 6 6 18"></path>
+            </svg>
+        </button>
         <div class="brand-header">
             <div class="brand-title">ASLAN PARÇASI AI</div>
             <button class="settings-icon-btn" onclick="openSettingsModal()" title="Ayarlar & Tema">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="3"></circle>
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                 </svg>
             </button>
         </div>
@@ -2274,6 +2310,7 @@
             mediaRecorder.start();
             isRecording = true;
             document.getElementById('voiceBtn').classList.add('recording');
+            renderVoiceRecordingPreview();
         } catch (err) {
             alert('Mikrofon erişimi reddedildi veya desteklenmiyor.');
         }
@@ -2286,6 +2323,18 @@
             document.getElementById('voiceBtn').classList.remove('recording');
         }
         return voiceStopPromise || Promise.resolve();
+    }
+
+    function renderVoiceRecordingPreview() {
+        const voicePreview = document.getElementById('voicePreview');
+        voicePreview.innerHTML = `
+            <div class="recording-indicator">
+                <span class="recording-dot"></span>
+                <span>Kayıt devam ediyor...</span>
+            </div>
+            <button class="stop-recording-btn" onclick="stopVoiceRecording()">Durdur</button>
+        `;
+        voicePreview.style.display = 'flex';
     }
 
     function renderVoicePreview() {
@@ -2425,7 +2474,9 @@
         const filesForMessage = selectedFiles.map(file => ({
             name: file.name,
             type: file.type,
-            size: file.size
+            size: file.size,
+            base64: file.base64,
+            text: file.text
         }));
         if (!fullMessage && selectedFiles.length) {
             fullMessage = `[Dosya gönderildi: ${selectedFiles.map(file => file.name).join(', ')}]`;

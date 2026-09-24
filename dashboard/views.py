@@ -4,6 +4,8 @@ import base64
 import io
 import re
 import time
+import requests
+from datetime import datetime
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -109,6 +111,189 @@ def extract_image_url(message):
   return None
 
 
+# Function definitions for AI tools
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Get the current date and time in Turkey (Europe/Istanbul timezone)",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather information for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City name (e.g., Istanbul, Ankara, Izmir)"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "Country code (default: TR)",
+                        "default": "TR"
+                    }
+                },
+                "required": ["city"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "num_results": {
+                        "type": "integer",
+                        "description": "Number of results to return (default: 5)",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+
+
+def execute_function(function_name, arguments):
+    """Execute a function call and return the result"""
+    try:
+        if function_name == "get_current_time":
+            return get_current_time()
+        elif function_name == "get_weather":
+            return get_weather(arguments.get("city"), arguments.get("country", "TR"))
+        elif function_name == "web_search":
+            return web_search(arguments.get("query"), arguments.get("num_results", 5))
+        else:
+            return {"error": f"Unknown function: {function_name}"}
+    except Exception as e:
+        return {"error": f"Function execution failed: {str(e)}"}
+
+
+def get_current_time():
+    """Get current time in Turkey"""
+    tz = timezone.get_current_timezone()
+    now = timezone.now().astimezone(tz)
+    return {
+        "time": now.strftime("%H:%M"),
+        "date": now.strftime("%d.%m.%Y"),
+        "day": now.strftime("%A"),
+        "timezone": "Europe/Istanbul (UTC+3)"
+    }
+
+
+def get_weather(city, country="TR"):
+    """Get weather information using OpenWeatherMap API"""
+    api_key = os.environ.get("OPENWEATHER_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "Weather API key not configured. Please set OPENWEATHER_API_KEY environment variable."}
+    
+    try:
+        # First, get coordinates for the city
+        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city},{country}&limit=1&appid={api_key}"
+        geo_response = requests.get(geo_url, timeout=10)
+        geo_data = geo_response.json()
+        
+        if not geo_data:
+            return {"error": f"City '{city}' not found"}
+        
+        lat = geo_data[0]["lat"]
+        lon = geo_data[0]["lon"]
+        city_name = geo_data[0].get("name", city)
+        country_name = geo_data[0].get("country", country)
+        
+        # Get weather data
+        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=tr"
+        weather_response = requests.get(weather_url, timeout=10)
+        weather_data = weather_response.json()
+        
+        if weather_response.status_code != 200:
+            return {"error": f"Weather API error: {weather_data.get('message', 'Unknown error')}"}
+        
+        return {
+            "city": city_name,
+            "country": country_name,
+            "temperature": round(weather_data["main"]["temp"]),
+            "feels_like": round(weather_data["main"]["feels_like"]),
+            "humidity": weather_data["main"]["humidity"],
+            "pressure": weather_data["main"]["pressure"],
+            "description": weather_data["weather"][0]["description"].capitalize(),
+            "wind_speed": weather_data["wind"]["speed"],
+            "wind_deg": weather_data["wind"].get("deg", 0),
+            "icon": weather_data["weather"][0]["icon"]
+        }
+    except requests.Timeout:
+        return {"error": "Weather service timeout"}
+    except requests.RequestException as e:
+        return {"error": f"Weather service error: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Weather error: {str(e)}"}
+
+
+def web_search(query, num_results=5):
+    """Search the web using DuckDuckGo HTML scraping (no API key needed)"""
+    try:
+        # Use DuckDuckGo HTML for search (no API key required)
+        url = "https://html.duckduckgo.com/html/"
+        params = {"q": query}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = requests.post(url, data=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        results = []
+        for result in soup.select('.result__snippet')[:num_results]:
+            text = result.get_text(strip=True)
+            if text:
+                results.append(text)
+        
+        # Also get titles and links
+        for result in soup.select('.result__title')[:num_results]:
+            link = result.find('a')
+            if link:
+                title = link.get_text(strip=True)
+                href = link.get('href', '')
+                if title and results:
+                    # Combine title with snippet
+                    pass
+        
+        if not results:
+            # Try alternative selectors
+            for result in soup.select('.web-result-description')[:num_results]:
+                text = result.get_text(strip=True)
+                if text:
+                    results.append(text)
+        
+        return {
+            "query": query,
+            "results": results[:num_results] if results else ["Arama sonucu bulunamadı."]
+        }
+    except Exception as e:
+        return {"error": f"Web search failed: {str(e)}", "results": []}
+
+
 def profile_payload(user):
   profile = get_user_profile(user)
   return {
@@ -132,10 +317,11 @@ def friendly_api_error(error):
   return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
-def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, stream=False, deep_think=False):
+def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, stream=False, deep_think=False, tools=None):
     """
     Safe model call with retry logic and fallback models.
     Handles 404 (model not found) and 429 (rate limit) errors.
+    Supports function calling via tools parameter.
     """
     configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
     models = [model, configured_fallback, "openrouter/auto"]
@@ -145,13 +331,18 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
     
     for attempt_model in models:
         try:
-            completion = client.chat.completions.create(
-                model=attempt_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=stream
-            )
+            kwargs = {
+                "model": attempt_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": stream
+            }
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            
+            completion = client.chat.completions.create(**kwargs)
             return completion
         except Exception as e:
             last_error = e
@@ -161,13 +352,7 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
                 for retry in range(2):
                     time.sleep(1 + retry)
                     try:
-                        completion = client.chat.completions.create(
-                            model=attempt_model,
-                            messages=messages,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            stream=stream
-                        )
+                        completion = client.chat.completions.create(**kwargs)
                         return completion
                     except Exception as retry_e:
                         last_error = retry_e
@@ -175,6 +360,53 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
             continue
     
     raise last_error or Exception("Tüm modeller başarısız oldu")
+
+
+def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7, max_tokens=4096):
+    """
+    Two-step deep thinking process:
+    1. First, ask the model to think/reason about the problem
+    2. Then, generate the final response with the reasoning included
+    """
+    # Step 1: Get reasoning/thinking from the model
+    thinking_prompt = (
+        "Sen derin düşünme modundasın. Kullanıcının sorusunu/isteğini dikkatlice analiz et. "
+        "Soruyu parçalara ayır, varsayımları kontrol et, kanıt ve karşı örnekleri değerlendir. "
+        "Düşünce sürecini adım adım yaz. SADECE düşünce sürecini yaz, final cevabı verme. "
+        "Türkçe düşün ve yaz."
+    )
+    
+    thinking_messages = [
+        {"role": "system", "content": thinking_prompt},
+        *messages[1:]  # Skip the original system prompt, use user messages
+    ]
+    
+    try:
+        thinking_completion = client.chat.completions.create(
+            model=model,
+            messages=thinking_messages,
+            temperature=0.3,  # Lower temperature for more structured thinking
+            max_tokens=min(max_tokens, 4096),
+            stream=False
+        )
+        reasoning = thinking_completion.choices[0].message.content if thinking_completion.choices else ""
+    except Exception as e:
+        reasoning = f"Düşünme sürecinde hata: {str(e)}"
+    
+    # Step 2: Generate final response with reasoning included
+    final_messages = [
+        messages[0],  # Original system prompt
+        *messages[1:-1],  # History
+        {"role": "user", "content": f"[Düşünce Süreci]\n{reasoning}\n\n[Orijinal İstek]\n{messages[-1].get('content', '')}"}
+    ]
+    
+    return client.chat.completions.create(
+        model=model,
+        messages=final_messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True
+    )
 
 
 @login_required(login_url="login")
@@ -373,6 +605,9 @@ def api_chat(request):
       extracted = extract_uploaded_file_text(file_item)
       if extracted:
         extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
+      # Also include base64 and text for multimodal models
+      if file_item.get("base64") or file_item.get("text"):
+        pass  # Will be included in user_content below
     if extracted_files:
       full_message += "".join(extracted_files)
     if file_names and not full_message:
@@ -467,6 +702,22 @@ def api_chat(request):
         image_type = img.get("type") or "image/jpeg"
         user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
 
+    # Add files with base64 and text for multimodal models
+    for file_item in files:
+      if not isinstance(file_item, dict):
+        continue
+      if file_item.get("base64"):
+        file_type = file_item.get("type") or "application/octet-stream"
+        user_content.append({
+          "type": "file",
+          "file": {
+            "filename": file_item.get("name", "dosya"),
+            "file_data": f"data:{file_type};base64,{file_item['base64']}"
+          }
+        })
+      elif file_item.get("text"):
+        user_content.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
+
     if isinstance(voice, dict) and voice.get("base64"):
       audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
       audio_format = audio_type.split("/")[-1] or "webm"
@@ -492,25 +743,112 @@ def api_chat(request):
 
     try:
       request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
-      completion = safe_model_call(
-        client,
-        messages,
-        request_model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=True,
-        deep_think=deep_think,
-      )
+      
+      if deep_think:
+        completion = deep_think_call(
+          client,
+          messages,
+          request_model,
+          deep_think_seconds,
+          temperature=temperature,
+          max_tokens=max_tokens,
+        )
+      else:
+        # For normal mode, use function calling
+        completion = safe_model_call(
+          client,
+          messages,
+          request_model,
+          temperature=temperature,
+          max_tokens=max_tokens,
+          stream=True,
+          deep_think=False,
+          tools=TOOLS,
+        )
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
 
     def generate():
       try:
         yielded = False
+        tool_calls_buffer = []
+        
         for chunk in completion:
           if chunk.choices and chunk.choices[0].delta.content:
             yielded = True
             yield chunk.choices[0].delta.content
+          
+          # Handle tool calls in streaming
+          if chunk.choices and chunk.choices[0].delta.tool_calls:
+            for tool_call in chunk.choices[0].delta.tool_calls:
+              if len(tool_calls_buffer) <= tool_call.index:
+                tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
+              
+              if tool_calls_buffer[tool_call.index] is None:
+                tool_calls_buffer[tool_call.index] = {
+                  "id": tool_call.id,
+                  "name": tool_call.function.name if tool_call.function else "",
+                  "arguments": tool_call.function.arguments if tool_call.function else ""
+                }
+              else:
+                if tool_call.function and tool_call.function.arguments:
+                  tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
+        
+        # Execute tool calls if any
+        if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
+          # Add assistant message with tool calls
+          assistant_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": []
+          }
+          
+          for tc in tool_calls_buffer:
+            if tc:
+              assistant_message["tool_calls"].append({
+                "id": tc["id"],
+                "type": "function",
+                "function": {
+                  "name": tc["name"],
+                  "arguments": tc["arguments"]
+                }
+              })
+          
+          messages.append(assistant_message)
+          
+          # Execute each tool call
+          for tc in tool_calls_buffer:
+            if tc:
+              try:
+                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+              except json.JSONDecodeError:
+                args = {}
+              
+              result = execute_function(tc["name"], args)
+              messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps(result, ensure_ascii=False)
+              })
+          
+          # Get final response after tool execution
+          try:
+            final_completion = safe_model_call(
+              client,
+              messages,
+              request_model,
+              temperature=temperature,
+              max_tokens=max_tokens,
+              stream=True,
+              deep_think=False,
+            )
+            
+            for chunk in final_completion:
+              if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+          except Exception as e:
+            yield friendly_api_error(e)
+      
       except Exception as e:
         yield friendly_api_error(e)
       else:
