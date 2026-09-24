@@ -545,7 +545,9 @@ def login_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    form = EmailOrUsernameAuthenticationForm(request, data=request.POST)
+    # Geçici olarak standart AuthenticationForm kullan
+    from django.contrib.auth.forms import AuthenticationForm
+    form = AuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
       request.session.set_expiry(2592000)  # 30 gün
@@ -556,7 +558,8 @@ def login_view(request):
       print(f"Login form errors: {form.errors}")
       print(f"POST data: {request.POST}")
   else:
-    form = EmailOrUsernameAuthenticationForm()
+    from django.contrib.auth.forms import AuthenticationForm
+    form = AuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
 
 
