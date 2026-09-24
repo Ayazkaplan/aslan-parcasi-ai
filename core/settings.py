@@ -22,37 +22,21 @@ SECRET_KEY = os.environ.get(
 )
 
 # Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+DEBUG = True
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+ALLOWED_HOSTS = ['*']
 
-# Replit preview/deployment proxies send the browser origin separately from
-# the request host. Trust only the known Replit proxy suffixes plus explicitly
-# configured domains so Django's CSRF middleware accepts same-app POSTs.
-_configured_origins = []
-for _domain in (
-    os.environ.get('REPLIT_DEV_DOMAIN', ''),
-    os.environ.get('REPLIT_DOMAINS', ''),
-):
-    for _value in _domain.split(','):
-        _value = _value.strip().removeprefix('https://').removeprefix('http://').rstrip('/')
-        if _value:
-            _configured_origins.append(f'https://{_value}')
-
-_extra_origins = [
-    item.strip()
-    for item in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
-    if item.strip()
-]
-CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+# CSRF hatalarını kökten çözmek için listeyi tamamen sabit ve güvenli tutuyoruz
+CSRF_TRUSTED_ORIGINS = [
+    'https://aslan-parcasi-ai.onrender.com',
+    'https://*.onrender.com',
     'https://*.replit.dev',
     'https://*.replit.app',
     'https://*.repl.co',
     'http://localhost:5000',
     'http://127.0.0.1:5000',
-    *_configured_origins,
-    *_extra_origins,
-]))
+]
+
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
@@ -101,8 +85,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # Database
-# Replit's persistent PostgreSQL database is preferred when DATABASE_URL is
-# available. SQLite remains a local fallback for environments without it.
 database_url = os.environ.get('DATABASE_URL', '').strip()
 if database_url:
     parsed_database_url = urlparse(database_url)
@@ -157,7 +139,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Internationalization (Türkçe Dil ve Saat Ayarları)
+# Internationalization
 LANGUAGE_CODE = 'tr-tr'
 
 TIME_ZONE = 'Europe/Istanbul'
@@ -167,7 +149,7 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
+# Static files
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
@@ -182,16 +164,3 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 # Email
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
-
-# Session ve CSRF Ayarları
-SESSION_COOKIE_SECURE = False  # HTTP için False, HTTPS için True olmalı
-SESSION_COOKIE_HTTPONLY = True  # XSS koruması için
-SESSION_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
-SESSION_COOKIE_AGE = 30 * 24 * 60 * 60  # 30 gün
-SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Tarayıcı kapanınca session silinmez
-
-CSRF_COOKIE_SECURE = False  # HTTP için False, HTTPS için True olmalı
-CSRF_COOKIE_HTTPONLY = True  # XSS koruması için
-CSRF_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
-CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
