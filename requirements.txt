@@ -5,3 +5,4 @@ gunicorn>=21.0.0
 pypdf
 python-docx
 psycopg[binary]
+requests
