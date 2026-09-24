@@ -554,6 +554,7 @@ def login_view(request):
     else:
       # Form hatalarını debug için
       print(f"Login form errors: {form.errors}")
+      print(f"POST data: {request.POST}")
   else:
     form = EmailOrUsernameAuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
