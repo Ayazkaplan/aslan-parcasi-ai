@@ -5,17 +5,28 @@ import io
 import re
 import time
 import requests
-from datetime import datetime
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openai import OpenAI
-from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
+from .forms import CustomUserCreationForm
 from .models import ChatHistory, UserProfile
+
+# Dosya okuma kütüphaneleri en tepeye taşındı
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
+try:
+    from docx import Document
+except ImportError:
+    Document = None
 
 
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
@@ -64,12 +75,10 @@ def extract_uploaded_file_text(file_item):
         name,
     ):
       return raw.decode("utf-8", errors="replace")[:MAX_EXTRACTED_TEXT]
-    if name.endswith(".pdf") or content_type == "application/pdf":
-      from pypdf import PdfReader
+    if (name.endswith(".pdf") or content_type == "application/pdf") and PdfReader:
       pages = PdfReader(io.BytesIO(raw)).pages
       return "\n\n".join((page.extract_text() or "") for page in pages)[:MAX_EXTRACTED_TEXT]
-    if name.endswith(".docx") or content_type.endswith("wordprocessingml.document"):
-      from docx import Document
+    if (name.endswith(".docx") or content_type.endswith("wordprocessingml.document")) and Document:
       document = Document(io.BytesIO(raw))
       return "\n".join(paragraph.text for paragraph in document.paragraphs)[:MAX_EXTRACTED_TEXT]
   except Exception:
@@ -206,7 +215,6 @@ def get_weather(city, country="TR"):
         return {"error": "Weather API key not configured. Please set OPENWEATHER_API_KEY environment variable."}
     
     try:
-        # First, get coordinates for the city
         geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city},{country}&limit=1&appid={api_key}"
         geo_response = requests.get(geo_url, timeout=10)
         geo_data = geo_response.json()
@@ -219,7 +227,6 @@ def get_weather(city, country="TR"):
         city_name = geo_data[0].get("name", city)
         country_name = geo_data[0].get("country", country)
         
-        # Get weather data
         weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=tr"
         weather_response = requests.get(weather_url, timeout=10)
         weather_data = weather_response.json()
@@ -250,7 +257,6 @@ def get_weather(city, country="TR"):
 def web_search(query, num_results=5):
     """Search the web using DuckDuckGo HTML scraping (no API key needed)"""
     try:
-        # Use DuckDuckGo HTML for search (no API key required)
         url = "https://html.duckduckgo.com/html/"
         params = {"q": query}
         headers = {
@@ -269,18 +275,7 @@ def web_search(query, num_results=5):
             if text:
                 results.append(text)
         
-        # Also get titles and links
-        for result in soup.select('.result__title')[:num_results]:
-            link = result.find('a')
-            if link:
-                title = link.get_text(strip=True)
-                href = link.get('href', '')
-                if title and results:
-                    # Combine title with snippet
-                    pass
-        
         if not results:
-            # Try alternative selectors
             for result in soup.select('.web-result-description')[:num_results]:
                 text = result.get_text(strip=True)
                 if text:
@@ -318,11 +313,6 @@ def friendly_api_error(error):
 
 
 def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, stream=False, deep_think=False, tools=None):
-    """
-    Safe model call with retry logic and fallback models.
-    Handles 404 (model not found) and 429 (rate limit) errors.
-    Supports function calling via tools parameter.
-    """
     configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
     models = [model, configured_fallback, "openrouter/auto"]
     models = list(dict.fromkeys(item for item in models if item))
@@ -363,12 +353,6 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
 
 
 def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7, max_tokens=4096):
-    """
-    Two-step deep thinking process:
-    1. First, ask the model to think/reason about the problem
-    2. Then, generate the final response with the reasoning included
-    """
-    # Step 1: Get reasoning/thinking from the model
     thinking_prompt = (
         "Sen derin düşünme modundasın. Kullanıcının sorusunu/isteğini dikkatlice analiz et. "
         "Soruyu parçalara ayır, varsayımları kontrol et, kanıt ve karşı örnekleri değerlendir. "
@@ -378,14 +362,14 @@ def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7
     
     thinking_messages = [
         {"role": "system", "content": thinking_prompt},
-        *messages[1:]  # Skip the original system prompt, use user messages
+        *messages[1:]
     ]
     
     try:
         thinking_completion = client.chat.completions.create(
             model=model,
             messages=thinking_messages,
-            temperature=0.3,  # Lower temperature for more structured thinking
+            temperature=0.3,
             max_tokens=min(max_tokens, 4096),
             stream=False
         )
@@ -393,10 +377,9 @@ def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7
     except Exception as e:
         reasoning = f"Düşünme sürecinde hata: {str(e)}"
     
-    # Step 2: Generate final response with reasoning included
     final_messages = [
-        messages[0],  # Original system prompt
-        *messages[1:-1],  # History
+        messages[0],
+        *messages[1:-1],
         {"role": "user", "content": f"[Düşünce Süreci]\n{reasoning}\n\n[Orijinal İstek]\n{messages[-1].get('content', '')}"}
     ]
     
@@ -502,7 +485,6 @@ def delete_account_view(request):
 @login_required(login_url="login")
 @require_POST  
 def api_image_generate(request):
-  """Image generation endpoint"""
   try:
     data = json.loads(request.body or "{}")
     prompt = (data.get("prompt") or "").strip()
@@ -582,43 +564,37 @@ def api_chat(request):
     voice_transcript = data.get("voice_transcript", "")
     voice = data.get("voice") or {}
 
-    if not user_message and not voice_transcript and not images and not files:
-      return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
+    if not user_message and not voice_transcript and not images and not files and not (isinstance(voice, dict) and voice.get("base64")):
+        return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
     full_message = user_message
-    if voice_transcript:
-      if full_message:
-        full_message = f"{voice_transcript} {full_message}"
-      else:
-        full_message = voice_transcript
+
     file_names = [str(item.get("name", "dosya")) for item in files if isinstance(item, dict)]
     extracted_files = []
     for file_item in files:
-      if not isinstance(file_item, dict):
-        continue
-      try:
-        file_size = int(file_item.get("size") or 0)
-      except (TypeError, ValueError):
-        file_size = 0
-      if file_size > MAX_CHAT_FILE_BYTES:
-        return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
-      extracted = extract_uploaded_file_text(file_item)
-      if extracted:
-        extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
-      # Also include base64 and text for multimodal models
-      if file_item.get("base64") or file_item.get("text"):
-        pass  # Will be included in user_content below
+        if not isinstance(file_item, dict):
+            continue
+        try:
+            file_size = int(file_item.get("size") or 0)
+        except (TypeError, ValueError):
+            file_size = 0
+        if file_size > MAX_CHAT_FILE_BYTES:
+            return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
+        extracted = extract_uploaded_file_text(file_item)
+        if extracted:
+            extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
+
     if extracted_files:
-      full_message += "".join(extracted_files)
+        full_message += "".join(extracted_files)
     if file_names and not full_message:
-      full_message = "Dosya gönderildi: " + ", ".join(file_names)
+        full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     client = get_openai_client()
     if client is None:
-      return JsonResponse(
-          {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
-          status=503,
-      )
+        return JsonResponse(
+            {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
+            status=503,
+        )
 
     base_prompt = (
         "Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş bilgi birikimine sahip bir yapay zeka asistanısın. "
@@ -630,155 +606,155 @@ def api_chat(request):
     )
 
     if mode == "normal":
-      system_instruction = (
-        base_prompt +
-        " "
-        "Genel asistan modundasın. Kullanıcıya samimi, yardımsever ve kapsamlı bir şekilde yardımcı ol. "
-        "Konuları derinlemesine ara, bağlamı iyi anla ve net, yapılandırılmış yanıtlar ver. "
-        "Mümkün olduğunca pratik çözümler sun ve adım adım açıklamalar yap. "
-        "Eğer bir soru bilginin dışındaysa, dürüstçe söyle ve alternatif yaklaşım öner."
-      )
-      model = "openai/gpt-4o"
-      temperature = 0.7
-      max_tokens = 2048
+        system_instruction = (
+            base_prompt +
+            " Genel asistan modundasın. Kullanıcıya samimi, yardımsever ve kapsamlı bir şekilde yardımcı ol. "
+            "Konuları derinlemesine ara, bağlamı iyi anla ve net, yapılandırılmış yanıtlar ver. "
+            "Mümkün oldukça pratik çözümler sun ve adım adım açıklamalar yap. "
+            "Eğer bir soru bilginin dışındaysa, dürüstçe söyle ve alternatif yaklaşım öner."
+        )
+        model = "openai/gpt-4o"
+        temperature = 0.7
+        max_tokens = 2048
 
     elif mode == "code":
-      system_instruction = (
-        "Sen Aslan Parçası AI'nın Kod Asistanı modusundasın. "
-        "Tam bir kod yazma ustasisin - Cursor ve Replit tarzı agent kişiliğine sahipsin. "
-        "Kullanıcının kod ihtiyaçlarını eksiksiz, modern, çalıştırılabilir ve profesyonel kod blokları (markdown formatında) olarak karşıla. "
-        "Her kod bloğunda tam çözümler sun, açıklamalar ekle ve en iyi pratikleri uygula. "
-        "GitHub/GitLab entegrasyon iş akışlarına dair yardım et, commit mesajları öner, branch stratejileri danış. "
-        "Farklı programlama dillerinde uzmanlaş, hata ayıklama, optimizasyon ve refactoring konularında yardımcı ol. "
-        "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
-        "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
-      )
-      model = "openai/gpt-4o"
-      temperature = 0.3
-      max_tokens = 4096
+        system_instruction = (
+            "Sen Aslan Parçası AI'nın Kod Asistanı modundasın. "
+            "Tam bir kod yazma ustasisin - Cursor ve Replit tarzı agent kişiliğine sahipsin. "
+            "Kullanıcının kod ihtiyaçlarını eksiksiz, modern, çalıştırılabilir ve profesyonel kod blokları (markdown formatında) olarak karşıla. "
+            "Her kod bloğunda tam çözümler sun, açıklamalar ekle ve en iyi pratikleri uygula. "
+            "GitHub/GitLab entegrasyon iş akışlarına dair yardım et, commit mesajları öner, branch stratejileri danış. "
+            "Farklı programlama dillerinde uzmanlaş, hata ayıklama, optimizasyon ve refactoring konularında yardımcı ol. "
+            "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
+            "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
+        )
+        model = "openai/gpt-4o"
+        temperature = 0.3
+        max_tokens = 4096
 
     elif mode == "fast":
-      system_instruction = (
-        "Sen Aslan Parçası AI'nın Hızlı Analiz modundasın. "
-        "Işık hızında, çok kısa ve öz cevaplar ver. "
-        "Gereksiz detaylardan kaçın, doğrudan noktaya odaklan. "
-        "Normal moddan belirgin daha hızlı ve kısa yanıtlar üret. "
-        "Karmaşık konuları basitleştir, hızlı özetler ve hızlı kararlar ver. "
-        "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
-      )
-      model = "openai/gpt-4o-mini"
-      temperature = 0.5
-      max_tokens = 2048
+        system_instruction = (
+            "Sen Aslan Parçası AI'nın Hızlı Analiz modundasın. "
+            "Işık hızında, çok kısa ve öz cevaplar ver. "
+            "Gereksiz detaylardan kaçın, doğrudan noktaya odaklan. "
+            "Normal moddan belirgin daha hızlı ve kısa yanıtlar üret. "
+            "Karmaşık konuları basitleştir, hızlı özetler ve hızlı kararlar ver. "
+            "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
+        )
+        model = "openai/gpt-4o-mini"
+        temperature = 0.5
+        max_tokens = 2048
 
     else:
-      system_instruction = base_prompt
-      model = "openai/gpt-4o"
-      temperature = 0.7
-      max_tokens = 4096
+        system_instruction = base_prompt
+        model = "openai/gpt-4o"
+        temperature = 0.7
+        max_tokens = 4096
 
     if deep_think:
-      minutes = deep_think_seconds // 60
-      seconds = deep_think_seconds % 60
-      budget_label = f"{minutes} dakika {seconds} saniye" if minutes else f"{seconds} saniye"
-      system_instruction += (
-        f" Kapsamlı araştırma modu açık; kullanıcı sana {budget_label} düşünme bütçesi verdi. "
-        "Bu süreyi boş beklemek için değil, soruyu parçalara ayırmak, varsayımları kontrol etmek, "
-        "kanıt ve karşı örnekleri değerlendirmek ve sonunda net bir araştırma özeti üretmek için kullan. "
-        "Canlı internet erişimin yoksa bunu dürüstçe belirt; kaynak uydurma. "
-        "Yanıt vermeden önce kısa bir araştırma planı ve bulgularını zihinsel olarak kontrol et."
-      )
-      max_tokens = min(max_tokens * 2, 8192)
+        minutes = deep_think_seconds // 60
+        seconds = deep_think_seconds % 60
+        budget_label = f"{minutes} dakika {seconds} saniye" if minutes else f"{seconds} saniye"
+        system_instruction += (
+            f" Kapsamlı araştırma modu açık; kullanıcı sana {budget_label} düşünme bütçesi verdi. "
+            "Bu süreyi boş beklemek için değil, soruyu parçalara ayırmak, varsayımları kontrol etmek, "
+            "kanıt ve karşı örnekleri değerlendirmek ve sonunda net bir araştırma özeti üretmek için kullan. "
+            "Canlı internet erişimin yoksa bunu dürüstçe belirt; kaynak uydurma. "
+            "Yanıt vermeden önce kısa bir araştırma planı ve bulgularını zihinsel olarak kontrol et."
+        )
+        max_tokens = min(max_tokens * 2, 8192)
 
     messages = [{"role": "system", "content": system_instruction}]
 
     user_content = []
     if full_message:
-      user_content.append({"type": "text", "text": full_message})
+        user_content.append({"type": "text", "text": full_message})
     
-    for img in images:
-      if img.get("url"):
-        user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
-      elif img.get("base64"):
-        image_type = img.get("type") or "image/jpeg"
-        user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
+    if voice_transcript:
+        if full_message:
+            user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
+        else:
+            user_content.append({"type": "text", "text": voice_transcript})
 
-    # Add files with base64 and text for multimodal models
+    for img in images:
+        if img.get("url"):
+            user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
+        elif img.get("base64"):
+            image_type = img.get("type") or "image/jpeg"
+            user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
+
     for file_item in files:
-      if not isinstance(file_item, dict):
-        continue
-      if file_item.get("base64"):
-        file_type = file_item.get("type") or "application/octet-stream"
-        user_content.append({
-          "type": "file",
-          "file": {
-            "filename": file_item.get("name", "dosya"),
-            "file_data": f"data:{file_type};base64,{file_item['base64']}"
-          }
-        })
-      elif file_item.get("text"):
-        user_content.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
+        if not isinstance(file_item, dict):
+            continue
+        if file_item.get("base64"):
+            file_type = file_item.get("type") or "application/octet-stream"
+            user_content.append({
+                "type": "file",
+                "file": {
+                    "filename": file_item.get("name", "dosya"),
+                    "file_data": f"data:{file_type};base64,{file_item['base64']}"
+                }
+            })
+        elif file_item.get("text"):
+            user_content.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
 
     if isinstance(voice, dict) and voice.get("base64"):
-      audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
-      audio_format = audio_type.split("/")[-1] or "webm"
-      user_content.append({
-        "type": "input_audio",
-        "input_audio": {"data": voice["base64"], "format": audio_format},
-      })
-      if voice_transcript:
-        user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
+        audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
+        audio_format = audio_type.split("/")[-1] or "webm"
+        user_content.append({
+            "type": "input_audio",
+            "input_audio": {"data": voice["base64"], "format": audio_format},
+        })
 
     for h in history:
-      if not isinstance(h, dict):
-        continue
-      role = "user" if h.get("sender") == "user" else "assistant"
-      content = h.get("text") or ""
-      if content:
-        messages.append({"role": role, "content": content})
+        if not isinstance(h, dict):
+            continue
+        role = "user" if h.get("sender") == "user" else "assistant"
+        content = h.get("text") or ""
+        if content:
+            messages.append({"role": role, "content": content})
 
     if user_content:
-      messages.append({"role": "user", "content": user_content})
+        messages.append({"role": "user", "content": user_content})
     else:
-      messages.append({"role": "user", "content": full_message})
+        messages.append({"role": "user", "content": full_message})
 
     try:
-      request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
-      
-      if deep_think:
-        completion = deep_think_call(
-          client,
-          messages,
-          request_model,
-          deep_think_seconds,
-          temperature=temperature,
-          max_tokens=max_tokens,
-        )
-      else:
-        # For normal mode, use function calling
-        completion = safe_model_call(
-          client,
-          messages,
-          request_model,
-          temperature=temperature,
-          max_tokens=max_tokens,
-          stream=True,
-          deep_think=False,
-          tools=TOOLS,
-        )
+        request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
+        
+        if deep_think:
+            completion = deep_think_call(
+                client,
+                messages,
+                request_model,
+                deep_think_seconds,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            completion = safe_model_call(
+                client,
+                messages,
+                request_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                deep_think=False,
+                tools=TOOLS,
+            )
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
 
     def generate():
+      yielded_count = 0
       try:
-        yielded = False
         tool_calls_buffer = []
         
         for chunk in completion:
           if chunk.choices and chunk.choices[0].delta.content:
-            yielded = True
+            yielded_count += 1
             yield chunk.choices[0].delta.content
           
-          # Handle tool calls in streaming
           if chunk.choices and chunk.choices[0].delta.tool_calls:
             for tool_call in chunk.choices[0].delta.tool_calls:
               if len(tool_calls_buffer) <= tool_call.index:
@@ -794,9 +770,7 @@ def api_chat(request):
                 if tool_call.function and tool_call.function.arguments:
                   tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
         
-        # Execute tool calls if any
         if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
-          # Add assistant message with tool calls
           assistant_message = {
             "role": "assistant",
             "content": "",
@@ -816,7 +790,6 @@ def api_chat(request):
           
           messages.append(assistant_message)
           
-          # Execute each tool call
           for tc in tool_calls_buffer:
             if tc:
               try:
@@ -831,7 +804,6 @@ def api_chat(request):
                 "content": json.dumps(result, ensure_ascii=False)
               })
           
-          # Get final response after tool execution
           try:
             final_completion = safe_model_call(
               client,
@@ -845,15 +817,16 @@ def api_chat(request):
             
             for chunk in final_completion:
               if chunk.choices and chunk.choices[0].delta.content:
+                yielded_count += 1
                 yield chunk.choices[0].delta.content
           except Exception as e:
             yield friendly_api_error(e)
       
       except Exception as e:
         yield friendly_api_error(e)
-      else:
-        if not yielded:
-          yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
+      
+      if yielded_count == 0:
+        yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 
@@ -867,8 +840,6 @@ def login_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    # Geçici olarak standart AuthenticationForm kullan
-    from django.contrib.auth.forms import AuthenticationForm
     form = AuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
@@ -876,11 +847,9 @@ def login_view(request):
       request.session.save()
       return redirect("index")
     else:
-      # Form hatalarını debug için
       print(f"Login form errors: {form.errors}")
       print(f"POST data: {request.POST}")
   else:
-    from django.contrib.auth.forms import AuthenticationForm
     form = AuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
 
