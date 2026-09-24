@@ -137,7 +137,6 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
     Safe model call with retry logic and fallback models.
     Handles 404 (model not found) and 429 (rate limit) errors.
     """
-    # Primary model and fallback models
     configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
     models = [model, configured_fallback, "openrouter/auto"]
     models = list(dict.fromkeys(item for item in models if item))
@@ -158,10 +157,9 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
             last_error = e
             error_str = str(e).lower()
             
-            # Handle rate limit (429) with retry
             if "429" in error_str or "rate limit" in error_str:
-                for retry in range(2):  # Retry 1-2 times
-                    time.sleep(1 + retry)  # Exponential backoff
+                for retry in range(2):
+                    time.sleep(1 + retry)
                     try:
                         completion = client.chat.completions.create(
                             model=attempt_model,
@@ -174,11 +172,8 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
                     except Exception as retry_e:
                         last_error = retry_e
                         continue
-            
-            # The next configured model is attempted for provider/model errors.
             continue
     
-    # All models failed
     raise last_error or Exception("Tüm modeller başarısız oldu")
 
 
@@ -295,8 +290,6 @@ def api_image_generate(request):
         "google/gemini-2.5-flash-image-preview",
     ).strip()
     try:
-      # OpenRouter exposes current image models through chat completions. The
-      # old openai/dall-e-3 name returned 404 on this deployment.
       response = client.chat.completions.create(
           model=image_model,
           messages=[{"role": "user", "content": prompt}],
@@ -330,7 +323,6 @@ def api_chats(request):
   chats = data.get("chats")
   if not isinstance(chats, list):
     return JsonResponse({"error": "Geçersiz sohbet verisi."}, status=400)
-  # Keep the sync endpoint bounded and only accept the fields the UI uses.
   if len(json.dumps(chats, ensure_ascii=False)) > 80 * 1024 * 1024:
     return JsonResponse({"error": "Sohbet geçmişi çok büyük."}, status=413)
   history.chats = chats
@@ -361,7 +353,6 @@ def api_chat(request):
     if not user_message and not voice_transcript and not images and not files:
       return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
-    # Combine voice transcript with text message
     full_message = user_message
     if voice_transcript:
       if full_message:
@@ -394,9 +385,6 @@ def api_chat(request):
           status=503,
       )
 
-    current_time = timezone.localtime(timezone.now()).strftime("%d %B %Y, %A - %H:%M")
-
-    # Mode-specific system prompts
     base_prompt = (
         "Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş bilgi birikimine sahip bir yapay zeka asistanısın. "
         "Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
@@ -453,7 +441,6 @@ def api_chat(request):
       temperature = 0.7
       max_tokens = 4096
 
-    # Keep requests within the available provider limits.
     if deep_think:
       minutes = deep_think_seconds // 60
       seconds = deep_think_seconds % 60
@@ -469,7 +456,6 @@ def api_chat(request):
 
     messages = [{"role": "system", "content": system_instruction}]
 
-    # Handle multimodal content (images)
     user_content = []
     if full_message:
       user_content.append({"type": "text", "text": full_message})
@@ -518,8 +504,6 @@ def api_chat(request):
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
 
-    # Use streaming response after the provider accepts the request. This
-    # prevents an API exception from becoming a fake successful blank bubble.
     def generate():
       try:
         yielded = False
@@ -548,13 +532,9 @@ def login_view(request):
     form = EmailOrUsernameAuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
-      request.session.set_expiry(2592000)  # 30 gün
+      request.session.set_expiry(2592000)
       request.session.save()
       return redirect("index")
-    else:
-      # Form hatalarını debug için
-      print(f"Login form errors: {form.errors}")
-      print(f"POST data: {request.POST}")
   else:
     form = EmailOrUsernameAuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})

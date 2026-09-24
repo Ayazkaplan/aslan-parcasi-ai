@@ -22,28 +22,12 @@ SECRET_KEY = os.environ.get(
 )
 
 # Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+DEBUG = True
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+ALLOWED_HOSTS = ['*']
 
-# Güvenli CSRF Origin listesini şemalarıyla birlikte hatasız oluşturuyoruz
-_configured_origins = []
-for _domain in (
-    os.environ.get('REPLIT_DEV_DOMAIN', ''),
-    os.environ.get('REPLIT_DOMAINS', ''),
-):
-    for _value in _domain.split(','):
-        _value = _value.strip().removeprefix('https://').removeprefix('http://').rstrip('/')
-        if _value:
-            _configured_origins.append(f'https://{_value}')
-
-_extra_origins = [
-    item.strip()
-    for item in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
-    if item.strip() and item.strip().startswith(('http://', 'https://'))
-]
-
-CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
+# CSRF hatalarını kökten çözmek için listeyi tamamen sabit ve güvenli tutuyoruz
+CSRF_TRUSTED_ORIGINS = [
     'https://aslan-parcasi-ai.onrender.com',
     'https://*.onrender.com',
     'https://*.replit.dev',
@@ -51,9 +35,7 @@ CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([
     'https://*.repl.co',
     'http://localhost:5000',
     'http://127.0.0.1:5000',
-    *_configured_origins,
-    *_extra_origins,
-]))
+]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
@@ -182,16 +164,3 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 # Email
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
-
-# Session ve CSRF Ayarları
-SESSION_COOKIE_SECURE = False  # HTTP için False, HTTPS için True olmalı
-SESSION_COOKIE_HTTPONLY = True  # XSS koruması için
-SESSION_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
-SESSION_COOKIE_AGE = 30 * 24 * 60 * 60  # 30 gün
-SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Tarayıcı kapanınca session silinmez
-
-CSRF_COOKIE_SECURE = False  # HTTP için False, HTTPS için True olmalı
-CSRF_COOKIE_HTTPONLY = True  # XSS koruması için
-CSRF_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
-CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
