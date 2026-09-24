@@ -1,0 +1,6 @@
+db.sqlite3
+*.py[cod]
+__pycache__/
+.pythonlibs/
+staticfiles/
+attached_assets/

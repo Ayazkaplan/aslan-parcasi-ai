@@ -1,0 +1,1 @@
+- [Imported Django setup](imported-django-setup.md) — Imported Python projects can have a valid requirements file but still need package installation before workflow debugging.

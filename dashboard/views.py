@@ -1,16 +1,23 @@
 import json
 import os
+import base64
+import io
+import re
 import time
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openai import OpenAI
-from .forms import CustomUserCreationForm
+from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
+from .models import ChatHistory, UserProfile
+
+
+MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
+MAX_EXTRACTED_TEXT = 300_000
 
 
 def get_openai_client():
@@ -23,20 +30,117 @@ def get_openai_client():
   )
 
 
+def get_user_profile(user):
+  profile, _ = UserProfile.objects.get_or_create(user=user)
+  return profile
+
+
+def get_chat_history(user):
+  history, _ = ChatHistory.objects.get_or_create(user=user)
+  return history
+
+
+def extract_uploaded_file_text(file_item):
+  """Extract useful text from common uploaded formats before sending to AI."""
+  if not isinstance(file_item, dict):
+    return ""
+  encoded = file_item.get("base64") or ""
+  if file_item.get("text"):
+    return str(file_item.get("text"))[:MAX_EXTRACTED_TEXT]
+  if not encoded:
+    return ""
+  try:
+    raw = base64.b64decode(encoded, validate=True)
+  except (ValueError, TypeError):
+    return ""
+
+  name = str(file_item.get("name") or "").lower()
+  content_type = str(file_item.get("type") or "").lower()
+  try:
+    if content_type.startswith("text/") or re.search(
+        r"\.(txt|md|json|csv|py|js|ts|html|css|java|c|cpp|sql|xml|yaml|yml|log)$",
+        name,
+    ):
+      return raw.decode("utf-8", errors="replace")[:MAX_EXTRACTED_TEXT]
+    if name.endswith(".pdf") or content_type == "application/pdf":
+      from pypdf import PdfReader
+      pages = PdfReader(io.BytesIO(raw)).pages
+      return "\n\n".join((page.extract_text() or "") for page in pages)[:MAX_EXTRACTED_TEXT]
+    if name.endswith(".docx") or content_type.endswith("wordprocessingml.document"):
+      from docx import Document
+      document = Document(io.BytesIO(raw))
+      return "\n".join(paragraph.text for paragraph in document.paragraphs)[:MAX_EXTRACTED_TEXT]
+  except Exception:
+    return ""
+  return ""
+
+
+def extract_image_url(message):
+  """Accept the different image shapes returned by OpenRouter models."""
+  images = getattr(message, "images", None) if message else None
+  if images:
+    for image in images:
+      image_url = getattr(image, "image_url", None)
+      if isinstance(image_url, dict):
+        image_url = image_url.get("url")
+      elif image_url:
+        image_url = getattr(image_url, "url", image_url)
+      if image_url:
+        return image_url
+
+  content = getattr(message, "content", None) if message else None
+  if isinstance(content, list):
+    for part in content:
+      if not isinstance(part, dict):
+        continue
+      if part.get("type") == "image_url":
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+          image_url = image_url.get("url")
+        if image_url:
+          return image_url
+  if isinstance(content, str):
+    match = re.search(r"!\[[^\]]*\]\(([^)]+)\)", content)
+    if match:
+      return match.group(1)
+    match = re.search(r"(https?://\S+|data:image/[^\s]+)", content)
+    if match:
+      return match.group(1).rstrip(").,")
+  return None
+
+
+def profile_payload(user):
+  profile = get_user_profile(user)
+  return {
+      "username": user.username,
+      "avatar": profile.avatar,
+      "theme": profile.theme,
+      "pattern": profile.pattern,
+  }
+
+
+def friendly_api_error(error):
+  error_text = str(error).lower()
+  if "402" in error_text or "credit" in error_text or "max_tokens" in error_text:
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+  if "401" in error_text or "403" in error_text or "unauthorized" in error_text:
+    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
+  if "404" in error_text or "not found" in error_text:
+    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
+  if "429" in error_text or "rate limit" in error_text:
+    return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
+  return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
+
+
 def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, stream=False, deep_think=False):
     """
     Safe model call with retry logic and fallback models.
     Handles 404 (model not found) and 429 (rate limit) errors.
     """
     # Primary model and fallback models
-    if deep_think:
-        models = [model, "anthropic/claude-3.5-sonnet", "openai/gpt-4o"]
-        max_tokens = 8192
-    elif model == "fast":
-        models = ["openai/gpt-4o-mini", "anthropic/claude-3-haiku", "openrouter/auto"]
-        max_tokens = 2048
-    else:
-        models = [model, "openai/gpt-4o", "anthropic/claude-3.5-sonnet", "openrouter/auto"]
+    configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+    models = [model, configured_fallback, "openrouter/auto"]
+    models = list(dict.fromkeys(item for item in models if item))
     
     last_error = None
     
@@ -71,11 +175,7 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
                         last_error = retry_e
                         continue
             
-            # If model not found (404), try next model
-            if "404" in error_str or "not found" in error_str or "model" in error_str:
-                continue
-            
-            # For other errors, try next model
+            # The next configured model is attempted for provider/model errors.
             continue
     
     # All models failed
@@ -86,7 +186,41 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
 def index(request):
   if not request.user.email:
     return redirect("update_email")
-  return render(request, "dashboard/index.html")
+  profile = get_user_profile(request.user)
+  return render(
+      request,
+      "dashboard/index.html",
+      {"user_settings": json.dumps(profile_payload(request.user))},
+  )
+
+
+@login_required(login_url="login")
+@require_POST
+def update_profile_view(request):
+  try:
+    data = json.loads(request.body or "{}")
+  except json.JSONDecodeError:
+    return JsonResponse({"error": "Geçersiz JSON."}, status=400)
+
+  profile = get_user_profile(request.user)
+  avatar = data.get("avatar")
+  theme = (data.get("theme") or profile.theme).strip()
+  pattern = (data.get("pattern") or profile.pattern).strip()
+
+  allowed_themes = {"theme-cyber", "theme-matrix", "theme-sunset", "theme-deepspace", "theme-minimal"}
+  allowed_patterns = {"pattern-grid", "pattern-dots", "pattern-lines", "pattern-gradient", "pattern-plain"}
+  if theme not in allowed_themes or pattern not in allowed_patterns:
+    return JsonResponse({"error": "Geçersiz tema veya arka plan deseni."}, status=400)
+  if avatar is not None:
+    if avatar and (not isinstance(avatar, str) or not avatar.startswith(("data:image/", "http://", "https://"))):
+      return JsonResponse({"error": "Geçersiz profil fotoğrafı."}, status=400)
+    if isinstance(avatar, str) and len(avatar) > 5_000_000:
+      return JsonResponse({"error": "Profil fotoğrafı çok büyük. Daha küçük bir görsel seçin."}, status=400)
+    profile.avatar = avatar
+  profile.theme = theme
+  profile.pattern = pattern
+  profile.save()
+  return JsonResponse({"status": "success", "settings": profile_payload(request.user)})
 
 
 @login_required(login_url="login")
@@ -156,31 +290,52 @@ def api_image_generate(request):
           status=503,
       )
     
+    image_model = os.environ.get(
+        "OPENROUTER_IMAGE_MODEL",
+        "google/gemini-2.5-flash-image-preview",
+    ).strip()
     try:
-      # Try to use an image generation model via OpenRouter
-      response = client.images.generate(
-        model="openai/dall-e-3",
-        prompt=prompt,
-        n=1,
-        size="1024x1024"
+      # OpenRouter exposes current image models through chat completions. The
+      # old openai/dall-e-3 name returned 404 on this deployment.
+      response = client.chat.completions.create(
+          model=image_model,
+          messages=[{"role": "user", "content": prompt}],
+          modalities=["text", "image"],
       )
-      
-      if response.data and len(response.data) > 0:
-        image_url = response.data[0].url
+      message = response.choices[0].message if response.choices else None
+      image_url = extract_image_url(message)
+      if image_url:
         return JsonResponse({"status": "success", "image_url": image_url})
-      else:
-        return JsonResponse({"error": "Görsel oluşturulamadı."}, status=500)
-        
+      return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
     except Exception as img_error:
-      return JsonResponse(
-          {"error": f"Görsel oluşturma hatası: {str(img_error)}. API erişimi olmayabilir."},
-          status=500
-      )
+      return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
       
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   except Exception as e:
     return JsonResponse({"error": str(e)}, status=500)
+
+
+@login_required(login_url="login")
+def api_chats(request):
+  history = get_chat_history(request.user)
+  if request.method == "GET":
+    return JsonResponse({"chats": history.chats, "updated_at": history.updated_at.isoformat()})
+  if request.method != "POST":
+    return JsonResponse({"error": "Geçersiz istek."}, status=405)
+  try:
+    data = json.loads(request.body or "{}")
+  except json.JSONDecodeError:
+    return JsonResponse({"error": "Geçersiz JSON."}, status=400)
+  chats = data.get("chats")
+  if not isinstance(chats, list):
+    return JsonResponse({"error": "Geçersiz sohbet verisi."}, status=400)
+  # Keep the sync endpoint bounded and only accept the fields the UI uses.
+  if len(json.dumps(chats, ensure_ascii=False)) > 80 * 1024 * 1024:
+    return JsonResponse({"error": "Sohbet geçmişi çok büyük."}, status=413)
+  history.chats = chats
+  history.save(update_fields=["chats", "updated_at"])
+  return JsonResponse({"status": "success", "updated_at": history.updated_at.isoformat()})
 
 
 @login_required(login_url="login")
@@ -194,10 +349,16 @@ def api_chat(request):
     mode = data.get("mode", "normal")
     history = data.get("history") or []
     deep_think = data.get("deep_think", False)
+    try:
+      deep_think_seconds = max(30, min(1800, int(data.get("deep_think_seconds") or 300)))
+    except (TypeError, ValueError):
+      deep_think_seconds = 300
     images = data.get("images", [])
+    files = data.get("files", [])
     voice_transcript = data.get("voice_transcript", "")
+    voice = data.get("voice") or {}
 
-    if not user_message and not voice_transcript:
+    if not user_message and not voice_transcript and not images and not files:
       return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
     # Combine voice transcript with text message
@@ -207,6 +368,24 @@ def api_chat(request):
         full_message = f"{voice_transcript} {full_message}"
       else:
         full_message = voice_transcript
+    file_names = [str(item.get("name", "dosya")) for item in files if isinstance(item, dict)]
+    extracted_files = []
+    for file_item in files:
+      if not isinstance(file_item, dict):
+        continue
+      try:
+        file_size = int(file_item.get("size") or 0)
+      except (TypeError, ValueError):
+        file_size = 0
+      if file_size > MAX_CHAT_FILE_BYTES:
+        return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
+      extracted = extract_uploaded_file_text(file_item)
+      if extracted:
+        extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
+    if extracted_files:
+      full_message += "".join(extracted_files)
+    if file_names and not full_message:
+      full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     client = get_openai_client()
     if client is None:
@@ -238,7 +417,7 @@ def api_chat(request):
       )
       model = "openai/gpt-4o"
       temperature = 0.7
-      max_tokens = 4096
+      max_tokens = 2048
 
     elif mode == "code":
       system_instruction = (
@@ -253,7 +432,7 @@ def api_chat(request):
       )
       model = "openai/gpt-4o"
       temperature = 0.3
-      max_tokens = 8192
+      max_tokens = 4096
 
     elif mode == "fast":
       system_instruction = (
@@ -274,10 +453,19 @@ def api_chat(request):
       temperature = 0.7
       max_tokens = 4096
 
-    # Adjust for deep think mode
+    # Keep requests within the available provider limits.
     if deep_think:
-      system_instruction += " Kapsamlı düşünme modundasın. Konuyu derinlemesine analiz et, farklı açıları değerlendir ve detaylı reasoning yap."
-      max_tokens = 8192
+      minutes = deep_think_seconds // 60
+      seconds = deep_think_seconds % 60
+      budget_label = f"{minutes} dakika {seconds} saniye" if minutes else f"{seconds} saniye"
+      system_instruction += (
+        f" Kapsamlı araştırma modu açık; kullanıcı sana {budget_label} düşünme bütçesi verdi. "
+        "Bu süreyi boş beklemek için değil, soruyu parçalara ayırmak, varsayımları kontrol etmek, "
+        "kanıt ve karşı örnekleri değerlendirmek ve sonunda net bir araştırma özeti üretmek için kullan. "
+        "Canlı internet erişimin yoksa bunu dürüstçe belirt; kaynak uydurma. "
+        "Yanıt vermeden önce kısa bir araştırma planı ve bulgularını zihinsel olarak kontrol et."
+      )
+      max_tokens = min(max_tokens * 2, 8192)
 
     messages = [{"role": "system", "content": system_instruction}]
 
@@ -290,7 +478,18 @@ def api_chat(request):
       if img.get("url"):
         user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
       elif img.get("base64"):
-        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img['base64']}"}})
+        image_type = img.get("type") or "image/jpeg"
+        user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
+
+    if isinstance(voice, dict) and voice.get("base64"):
+      audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
+      audio_format = audio_type.split("/")[-1] or "webm"
+      user_content.append({
+        "type": "input_audio",
+        "input_audio": {"data": voice["base64"], "format": audio_format},
+      })
+      if voice_transcript:
+        user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
 
     for h in history:
       if not isinstance(h, dict):
@@ -305,25 +504,34 @@ def api_chat(request):
     else:
       messages.append({"role": "user", "content": full_message})
 
-    # Use streaming response
+    try:
+      request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
+      completion = safe_model_call(
+        client,
+        messages,
+        request_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True,
+        deep_think=deep_think,
+      )
+    except Exception as api_error:
+      return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
+
+    # Use streaming response after the provider accepts the request. This
+    # prevents an API exception from becoming a fake successful blank bubble.
     def generate():
       try:
-        completion = safe_model_call(
-          client, 
-          messages, 
-          model, 
-          temperature=temperature, 
-          max_tokens=max_tokens, 
-          stream=True,
-          deep_think=deep_think
-        )
-        
+        yielded = False
         for chunk in completion:
           if chunk.choices and chunk.choices[0].delta.content:
+            yielded = True
             yield chunk.choices[0].delta.content
       except Exception as e:
-        error_msg = f"Hata: {str(e)}"
-        yield error_msg
+        yield friendly_api_error(e)
+      else:
+        if not yielded:
+          yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 
@@ -337,7 +545,7 @@ def login_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    form = AuthenticationForm(request, data=request.POST)
+    form = EmailOrUsernameAuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
       request.session.set_expiry(2592000)  # 30 gün
@@ -347,7 +555,7 @@ def login_view(request):
       # Form hatalarını debug için
       print(f"Login form errors: {form.errors}")
   else:
-    form = AuthenticationForm()
+    form = EmailOrUsernameAuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
 
 

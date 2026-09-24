@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 
 class Proje(models.Model):
     baslik = models.CharField(max_length=200, verbose_name="Proje Başlığı")
@@ -12,3 +13,35 @@ class Proje(models.Model):
     class Meta:
         verbose_name = "Proje"
         verbose_name_plural = "Projeler"
+
+
+class UserProfile(models.Model):
+    """Per-user settings that must survive new devices and deployments."""
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="profile",
+    )
+    avatar = models.TextField(blank=True, default="")
+    theme = models.CharField(max_length=40, default="theme-cyber")
+    pattern = models.CharField(max_length=40, default="pattern-grid")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} profili"
+
+
+class ChatHistory(models.Model):
+    """The user's chats, shared by every authenticated device."""
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="chat_history",
+    )
+    chats = models.JSONField(default=list)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} sohbetleri"
