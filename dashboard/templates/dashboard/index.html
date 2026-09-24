@@ -1057,6 +1057,44 @@
             .chat-header {
                 padding-left: 60px;
             }
+            .chat-input-container {
+                flex-wrap: wrap;
+            }
+            .media-buttons {
+                order: 2;
+                width: 100%;
+                justify-content: center;
+                margin-top: 8px;
+            }
+            .user-avatar-header,
+            .ai-header-container {
+                font-size: 12px;
+            }
+            .user-avatar-header .user-message-avatar,
+            .ai-header-container .lion-avatar {
+                width: 30px;
+                height: 30px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .sidebar {
+                width: 100%;
+                transform: translateX(-100%);
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .message-wrapper {
+                max-width: 95%;
+            }
+            .mode-btn {
+                padding: 5px 10px;
+                font-size: 12px;
+            }
+            .chat-input-container textarea {
+                font-size: 16px; /* iOS zoom önlemi */
+            }
         }
     </style>
 </head>
@@ -1254,8 +1292,7 @@
     function getCsrfToken() {
         const tokenInput = document.querySelector('[name=csrfmiddlewaretoken]');
         if (tokenInput && tokenInput.value) return tokenInput.value;
-        const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
-        return match ? decodeURIComponent(match[1]) : '{{ csrf_token }}';
+        return '{{ csrf_token }}';
     }
 
     const LION_SVG_HTML = `

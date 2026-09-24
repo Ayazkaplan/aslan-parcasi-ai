@@ -17,9 +17,9 @@ SECRET_KEY = os.environ.get(
 )
 
 # Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 
 
 # Application definition
@@ -123,3 +123,16 @@ LOGOUT_REDIRECT_URL = 'login'
 
 # Email
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+
+# Session ve CSRF Ayarları
+SESSION_COOKIE_SECURE = False  # HTTP için False, HTTPS için True olmalı
+SESSION_COOKIE_HTTPONLY = True  # XSS koruması için
+SESSION_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
+SESSION_COOKIE_AGE = 30 * 24 * 60 * 60  # 30 gün
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Tarayıcı kapanınca session silinmez
+
+CSRF_COOKIE_SECURE = False  # HTTP için False, HTTPS için True olmalı
+CSRF_COOKIE_HTTPONLY = True  # XSS koruması için
+CSRF_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
+CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')

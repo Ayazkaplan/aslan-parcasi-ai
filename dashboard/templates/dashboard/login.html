@@ -186,6 +186,24 @@
             font-size: 13px;
             text-align: left;
         }
+
+        /* Mobil Uyumluluk */
+        @media (max-width: 480px) {
+            .login-card {
+                padding: 30px 20px;
+                max-width: 90%;
+            }
+            .title {
+                font-size: 22px;
+            }
+            .lion-icon {
+                width: 70px;
+                height: 70px;
+            }
+            .form-group input {
+                font-size: 16px; /* iOS zoom önlemi */
+            }
+        }
     </style>
 </head>
 <body>

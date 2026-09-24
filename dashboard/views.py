@@ -340,9 +340,12 @@ def login_view(request):
     form = AuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
-      request.session.set_expiry(2592000)
+      request.session.set_expiry(2592000)  # 30 gün
       request.session.save()
       return redirect("index")
+    else:
+      # Form hatalarını debug için
+      print(f"Login form errors: {form.errors}")
   else:
     form = AuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
