@@ -13,16 +13,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # Quick-start development settings - unsuitable for production
+# Her deploy'da SESSION_SECRET'in değişmesini önlemek için ortam değişkeni kullanılmalı.
+# Ortam değişkeni ayarlanmamışsa, sabit bir SECRET_KEY kullanılmalı (bu üretim için güvenli değildir!).
 SECRET_KEY = os.environ.get(
     'SECRET_KEY',
     os.environ.get(
         'SESSION_SECRET',
-        'django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h',
+        'super-secret-key-that-should-be-in-environment-variables-not-hardcoded', # Üretim ortamında ortam değişkeni olarak ayarlanmalı!
     ),
 )
 
-# Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
-DEBUG = True
+# Hata ayıklama modunu üretimde False yapın.
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() == 'true'
 
 ALLOWED_HOSTS = ['*']
 
@@ -158,8 +160,12 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'index'
 LOGOUT_REDIRECT_URL = 'login'
-SESSION_COOKIE_AGE = 2592000
+SESSION_COOKIE_AGE = 2592000 # 30 gün
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+SESSION_COOKIE_SECURE = not DEBUG # HTTPS üzerinden gönderilsin (üretimde True olmalı)
+CSRF_COOKIE_SECURE = not DEBUG # HTTPS üzerinden gönderilsin (üretimde True olmalı)
+SESSION_COOKIE_HTTPONLY = True # JavaScript erişimini engelle
+CSRF_COOKIE_HTTPONLY = True # JavaScript erişimini engelle
 
 
 # Email

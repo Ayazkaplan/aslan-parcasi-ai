@@ -198,7 +198,7 @@
             font-weight: 700;
             font-size: 13px;
             overflow: hidden;
-            transition: max-width 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+            transition: max-width 0.4s ease-out, opacity 0.3s ease;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -677,7 +677,7 @@
             font-weight: 700;
             font-size: 13px;
             overflow: hidden;
-            transition: max-width 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+            transition: max-width 0.4s ease-out, opacity 0.3s ease;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -1453,7 +1453,14 @@
                     </svg>
                 </button>
                 <div class="think-settings" id="thinkSettings">
-                    <strong>Ne kadar uzun düşünsün?</strong>
+                    <div class="think-settings-header">
+                        <strong>Ne kadar uzun düşünsün?</strong>
+                        <button class="think-settings-close-btn" onclick="toggleDeepThink()" title="Kapat">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="m6 6 12 12M18 6 6 18"></path>
+                            </svg>
+                        </button>
+                    </div>
                     <small>Aslan Parçası seçtiğin süreyi araştırma ve kontrol bütçesi olarak kullanır.</small>
                     <input id="thinkSeconds" type="range" min="30" max="1800" step="30" value="300" oninput="updateThinkDuration(this.value)">
                     <div class="think-duration">
@@ -2039,11 +2046,11 @@
         const currentChat = chats.find(c => c.id === activeChatId);
 
         if (!currentChat || currentChat.messages.length === 0) {
-            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, 0);
+            appendMessage(DEFAULT_AI_MSG, 'ai', false, 0);
         } else {
             const msgs = currentChat.messages;
             msgs.forEach((msg, idx) => {
-                appendMessage(msg.text, msg.sender, false, true, idx, msg);
+                appendMessage(msg.text, msg.sender, false, idx, msg);
             });
         }
         if (typingEl) {
@@ -2491,30 +2498,27 @@
             sender: 'user', 
             text: fullMessage, 
             timestamp,
-            images: selectedImages.length > 0 ? selectedImages : undefined,
-            files: filesForMessage.length > 0 ? filesForMessage : undefined,
-            hasVoice: !!selectedVoiceBlob,
-            voice: voiceDataUrl || undefined
+            images: imagesToSend, # Gönderilecek görselleri doğrudan kullan
+            files: filesToSend,   # Gönderilecek dosyaları doğrudan kullan
+            hasVoice: !!voiceToSend,
+            voice: voiceDataUrl || undefined # voiceDataUrl, base64 data URL'yi içerir
         });
         
         if (customText === null) {
             inputEl.value = '';
         }
 
-        // Clear media after sending
-        const imagesToSend = [...selectedImages];
-        const filesToSend = [...selectedFiles];
-        const voiceToSend = selectedVoiceBlob;
+        // Medya gönderildikten sonra temizle
         selectedImages = [];
         selectedFiles = [];
         selectedVoiceBlob = null;
         renderImagePreviews();
         removeVoice();
 
-        // Store deep think state before disabling
+        // Derin düşünme durumunu kaydet
         const wasDeepThink = deepThinkEnabled;
         
-        // Disable deep think after sending
+        // Gönderdikten sonra derin düşünmeyi devre dışı bırak
         if (deepThinkEnabled) {
             deepThinkEnabled = false;
             document.getElementById('thinkBtn').classList.remove('active');
@@ -2532,6 +2536,7 @@
         }
 
         try {
+            activeRequestController = new AbortController();
             const response = await fetch('{% url "api_chat" %}', {
                 method: 'POST',
                 headers: {
@@ -2553,7 +2558,7 @@
                         base64: voiceDataUrl.split(',')[1] || ''
                     } : null
                 }),
-                signal: (activeRequestController = new AbortController()).signal
+                signal: activeRequestController.signal
             });
 
             hideTypingIndicator();
@@ -2563,10 +2568,11 @@
 
             if (!response.ok) {
                 let errorData = {};
-                try { errorData = await response.json(); } catch (err) { /* handled below */ }
+                try { errorData = await response.json(); } catch (err) { /* JSON parse hatasını yoksay */ }
+                const errorMessage = errorData.error || 'Yapay zekâ yanıtı alınamadı. Lütfen tekrar deneyin.';
                 currentChat.messages.push({
                     sender: 'ai',
-                    text: errorData.error || 'Yapay zekâ yanıtı alınamadı. Lütfen tekrar deneyin.',
+                    text: errorMessage,
                     timestamp: Date.now()
                 });
             } else if (response.body) {
@@ -2614,7 +2620,7 @@
                 hideReasoningAnimation();
             }
             if (err.name === 'AbortError') {
-                return;
+                return; // İstek iptal edildiğinde hata fırlatma
             }
             const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
@@ -2642,7 +2648,7 @@
         sendMessage(userMessage.text);
     }
 
-    function appendMessage(text, sender, autoScroll = true, canAction = true, msgIndex = 0, messageData = null) {
+    function appendMessage(text, sender, autoScroll = true, msgIndex = 0, messageData = null) {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
@@ -2679,7 +2685,7 @@
                 });
             }
             
-            // Add copy buttons to code blocks in code mode
+            // Kod bloklarına kopyalama düğmeleri ekle (yalnızca kod modunda)
             if (currentMode === 'code') {
                 msgDiv.querySelectorAll('pre').forEach((pre) => {
                     if (!pre.querySelector('.code-copy-btn')) {
@@ -2731,49 +2737,51 @@
         }
         wrapper.appendChild(msgDiv);
 
-        if (canAction) {
-            const actionBrd = document.createElement('div');
-            actionBrd.className = 'msg-action-bar';
-            
-            const currentChat = chats.find(c => c.id === activeChatId);
-            const lastUserIndex = currentChat
-                ? currentChat.messages.reduce((last, message, index) => message.sender === 'user' ? index : last, -1)
-                : -1;
-            let actionHtml = '';
-            if (sender === 'ai') {
-                actionHtml = `
-                    <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
-                            <path d="M20 11a8.1 8.1 0 0 0-15.5-3M4 5v4h4"></path>
-                            <path d="M4 13a8.1 8.1 0 0 0 15.5 3M20 19v-4h-4"></path>
-                        </svg>
-                    </button>
-                `;
-            } else if (sender === 'user' && msgIndex === lastUserIndex) {
-                actionHtml = `
-                <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
-                        <polyline points="3 6 5 6 21 6"></polyline>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                    </svg>
-                    Sil
-                </button>
-            `;
+        const currentChat = chats.find(c => c.id === activeChatId);
+        if (currentChat && currentChat.messages.length > 0) {
+            const lastMessageIndex = currentChat.messages.length - 1;
+            const isLastMessage = (msgIndex === lastMessageIndex);
 
-                actionHtml += `
-                    <button class="action-btn" onclick="editMessage(${msgIndex})" title="Düzenle">
+            if (isLastMessage) {
+                const actionBrd = document.createElement('div');
+                actionBrd.className = 'msg-action-bar';
+                
+                let actionHtml = '';
+                if (sender === 'ai') {
+                    actionHtml = `
+                        <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
+                                <path d="M20 11a8.1 8.1 0 0 0-15.5-3M4 5v4h4"></path>
+                                <path d="M4 13a8.1 8.1 0 0 0 15.5 3M20 19v-4h-4"></path>
+                            </svg>
+                        </button>
+                    `;
+                } else if (sender === 'user') {
+                    actionHtml = `
+                    <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                         </svg>
-                        Düzenle
+                        Sil
                     </button>
                 `;
-            }
 
-            if (actionHtml) {
-                actionBrd.innerHTML = actionHtml;
-                wrapper.appendChild(actionBrd);
+                    actionHtml += `
+                        <button class="action-btn" onclick="editMessage(${msgIndex})" title="Düzenle">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                            Düzenle
+                        </button>
+                    `;
+                }
+
+                if (actionHtml) {
+                    actionBrd.innerHTML = actionHtml;
+                    wrapper.appendChild(actionBrd);
+                }
             }
         }
 

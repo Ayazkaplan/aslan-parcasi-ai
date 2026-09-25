@@ -357,14 +357,22 @@ def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7
         "Sen derin düşünme modundasın. Kullanıcının sorusunu/isteğini dikkatlice analiz et. "
         "Soruyu parçalara ayır, varsayımları kontrol et, kanıt ve karşı örnekleri değerlendir. "
         "Düşünce sürecini adım adım yaz. SADECE düşünce sürecini yaz, final cevabı verme. "
-        "Türkçe düşün ve yaz."
+        "Türkçe düşün ve yaz. Cevabın sonunda kullanıcının orijinal isteğine atıfta bulunarak düşünme sürecini tamamla."
     )
     
+    # Derin düşünme için sistem mesajını en başa ekleyelim
+    # Kullanıcının mevcut mesajlarını da almalı
+    # Eğer messages listesi multimodal içerik içeriyorsa bunu da uygun şekilde aktarmalıyız.
+    
+    # Kullanıcının son isteği
+    user_request_message = messages[-1] if messages else {"role": "user", "content": ""}
+
     thinking_messages = [
         {"role": "system", "content": thinking_prompt},
-        *messages[1:]
+    ] + [msg for msg in messages[:-1] if msg.get('role') != 'system' or msg.get('content') != base_prompt] + [
+        {"role": user_request_message['role'], "content": user_request_message['content']}
     ]
-    
+
     try:
         thinking_completion = client.chat.completions.create(
             model=model,
@@ -373,14 +381,15 @@ def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7
             max_tokens=min(max_tokens, 4096),
             stream=False
         )
-        reasoning = thinking_completion.choices[0].message.content if thinking_completion.choices else ""
+        reasoning = thinking_completion.choices[0].message.content if thinking_completion.choices else "Düşünme süreci boş."
     except Exception as e:
         reasoning = f"Düşünme sürecinde hata: {str(e)}"
     
+    # Orijinal sistem mesajını geri ekle ve düşünme sürecini son kullanıcı mesajına dahil et
     final_messages = [
-        messages[0],
-        *messages[1:-1],
-        {"role": "user", "content": f"[Düşünce Süreci]\n{reasoning}\n\n[Orijinal İstek]\n{messages[-1].get('content', '')}"}
+        messages[0], # Orijinal sistem mesajı
+    ] + [msg for msg in messages[1:-1]] + [ # Geçmiş mesajlar (son kullanıcı mesajı hariç)
+        {"role": "user", "content": f"[Düşünme Süreci]\n{reasoning}\n\n[Orijinal İstek]\n" + (user_request_message.get('content') if isinstance(user_request_message.get('content'), str) else json.dumps(user_request_message.get('content'), ensure_ascii=False))}
     ]
     
     return client.chat.completions.create(
@@ -388,7 +397,9 @@ def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7
         messages=final_messages,
         temperature=temperature,
         max_tokens=max_tokens,
-        stream=True
+        stream=True,
+        tools=TOOLS, # Derin düşünme modunda da araçları kullanabilmeli
+        tool_choice="auto",
     )
 
 
@@ -584,10 +595,11 @@ def api_chat(request):
         if extracted:
             extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
 
-    if extracted_files:
-        full_message += "".join(extracted_files)
-    if file_names and not full_message:
-        full_message = "Dosya gönderildi: " + ", ".join(file_names)
+    # Extracted files are now handled as separate content parts, not appended to full_message
+    # if extracted_files:
+    #     full_message += "".join(extracted_files)
+    # if file_names and not full_message:
+    #     full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     client = get_openai_client()
     if client is None:
@@ -601,8 +613,16 @@ def api_chat(request):
         "Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
         "KRİTİK KURAL: Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kim olduğu bilgisini KENDİLİĞİNDEN söyleme. "
         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
-        "Gerçek zamanlı internet veya hava durumu erişimin yok; uydurma güncel veri verme. "
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
+    )
+    
+    # AI'ın araçları kullanma konusunda daha bilinçli olması için prompt'u güncelleyelim.
+    # Kullanıcıdan gelen bir soruya doğrudan cevap vermek yerine, uygun araçları kullanarak doğruluk ve güncellik sağlamalıdır.
+    base_prompt += (
+        " Sana belirli görevleri yerine getirmek için araçlar (fonksiyonlar) sağlandı. "
+        "Kullanıcının isteği güncel bilgi, web araması veya hava durumu gibi konuları içeriyorsa, bu araçları KESİNLİKLE kullanmalısın. "
+        "Araç kullanırken bilgiyi doğruladığından emin ol ve ardından yanıtını oluştur. "
+        "Eğer araç kullanman gerekiyorsa, bunu kullanıcıya belirten bir yanıt döndürme; doğrudan aracı kullan ve sonucunu özetle."
     )
 
     if mode == "normal":
@@ -698,29 +718,61 @@ def api_chat(request):
         elif file_item.get("text"):
             user_content.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
 
-    if isinstance(voice, dict) and voice.get("base64"):
-        audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
-        audio_format = audio_type.split("/")[-1] or "webm"
-        user_content.append({
-            "type": "input_audio",
-            "input_audio": {"data": voice["base64"], "format": audio_format},
-        })
-
     for h in history:
         if not isinstance(h, dict):
             continue
         role = "user" if h.get("sender") == "user" else "assistant"
         content = h.get("text") or ""
-        if content:
+        # Geçmiş mesajlarda ekli dosyaları da ekle
+        if h.get("files") and isinstance(h["files"], list):
+            file_parts = []
+            for file_item in h["files"]:
+                if file_item.get("base64"):
+                    file_type = file_item.get("type") or "application/octet-stream"
+                    file_parts.append({
+                        "type": "file",
+                        "file": {
+                            "filename": file_item.get("name", "dosya"),
+                            "file_data": f"data:{file_type};base64,{file_item['base64']}"
+                        }
+                    })
+                elif file_item.get("text"):
+                    file_parts.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
+            if content:
+                file_parts.insert(0, {"type": "text", "text": content})
+            messages.append({"role": role, "content": file_parts if file_parts else content})
+        elif content:
             messages.append({"role": role, "content": content})
 
+
     if user_content:
+        if isinstance(voice, dict) and voice.get("base64"):
+            audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
+            audio_format = audio_type.split("/")[-1] or "webm"
+            user_content.append({
+                "type": "input_audio",
+                "input_audio": {"data": voice["base64"], "format": audio_format},
+            })
         messages.append({"role": "user", "content": user_content})
     else:
-        messages.append({"role": "user", "content": full_message})
+        # If user_content is empty (e.g. only voice was sent without explicit text)
+        if isinstance(voice, dict) and voice.get("base64"):
+            audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
+            audio_format = audio_type.split("/")[-1] or "webm"
+            messages.append({"role": "user", "content": [
+                {"type": "input_audio", "input_audio": {"data": voice["base64"], "format": audio_format}}
+            ]})
+        else:
+            messages.append({"role": "user", "content": full_message})
 
     try:
-        request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
+        # Eğer mesajda input_audio varsa, multimodal audio modelini kullan
+        has_audio_input = any(
+            part.get("type") == "input_audio"
+            for part in (user_content if user_content and isinstance(user_content, list) else [])
+        ) or (isinstance(voice, dict) and voice.get("base64"))
+        
+        request_model = "openai/gpt-4o-audio-preview" if has_audio_input else model
         
         if deep_think:
             completion = deep_think_call(
@@ -749,84 +801,101 @@ def api_chat(request):
       yielded_count = 0
       try:
         tool_calls_buffer = []
-        
+        # Düşünme modunda veya normal modda gelen chunk'ları işle
         for chunk in completion:
-          if chunk.choices and chunk.choices[0].delta.content:
-            yielded_count += 1
-            yield chunk.choices[0].delta.content
-          
-          if chunk.choices and chunk.choices[0].delta.tool_calls:
-            for tool_call in chunk.choices[0].delta.tool_calls:
-              if len(tool_calls_buffer) <= tool_call.index:
-                tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
-              
-              if tool_calls_buffer[tool_call.index] is None:
-                tool_calls_buffer[tool_call.index] = {
-                  "id": tool_call.id,
-                  "name": tool_call.function.name if tool_call.function else "",
-                  "arguments": tool_call.function.arguments if tool_call.function else ""
-                }
-              else:
-                if tool_call.function and tool_call.function.arguments:
-                  tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                
+                # Metin içeriği
+                if delta.content:
+                    yielded_count += 1
+                    yield delta.content
+                
+                # Araç çağrıları
+                if delta.tool_calls:
+                    for tool_call in delta.tool_calls:
+                        if len(tool_calls_buffer) <= tool_call.index:
+                            tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
+                        
+                        if tool_calls_buffer[tool_call.index] is None:
+                            tool_calls_buffer[tool_call.index] = {
+                                "id": tool_call.id,
+                                "name": tool_call.function.name if tool_call.function else "",
+                                "arguments": tool_call.function.arguments if tool_call.function else ""
+                            }
+                        else:
+                            if tool_call.function and tool_call.function.arguments:
+                                tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
         
+        # Eğer araç çağrıları varsa, bunları işle ve modeli tekrar çağır
         if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
-          assistant_message = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": []
-          }
-          
-          for tc in tool_calls_buffer:
-            if tc:
-              assistant_message["tool_calls"].append({
-                "id": tc["id"],
-                "type": "function",
-                "function": {
-                  "name": tc["name"],
-                  "arguments": tc["arguments"]
-                }
-              })
-          
-          messages.append(assistant_message)
-          
-          for tc in tool_calls_buffer:
-            if tc:
-              try:
-                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-              except json.JSONDecodeError:
-                args = {}
-              
-              result = execute_function(tc["name"], args)
-              messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": json.dumps(result, ensure_ascii=False)
-              })
-          
-          try:
-            final_completion = safe_model_call(
-              client,
-              messages,
-              request_model,
-              temperature=temperature,
-              max_tokens=max_tokens,
-              stream=True,
-              deep_think=False,
-            )
+            # İlk olarak, AI'ın araç çağrısı mesajını messages listesine ekleyelim
+            assistant_message = {
+                "role": "assistant",
+                "content": "", # Araç çağrısı yapılırken içerik boş olabilir
+                "tool_calls": []
+            }
             
-            for chunk in final_completion:
-              if chunk.choices and chunk.choices[0].delta.content:
-                yielded_count += 1
-                yield chunk.choices[0].delta.content
-          except Exception as e:
-            yield friendly_api_error(e)
-      
-      except Exception as e:
+            for tc in tool_calls_buffer:
+                if tc:
+                    assistant_message["tool_calls"].append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"]
+                        }
+                    })
+            
+            messages.append(assistant_message)
+            
+            # Her bir araç çağrısını sırayla yürüt
+            for tc in tool_calls_buffer:
+                if tc:
+                    try:
+                        args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {} # JSON ayrıştırma hatası durumunda boş argümanlar
+                    
+                    # Fonksiyonu yürüt
+                    result = execute_function(tc["name"], args)
+                    
+                    # Fonksiyon sonucunu messages listesine "tool" rolüyle ekle
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(result, ensure_ascii=False) # Sonucu JSON olarak stringleştir
+                    })
+            
+            # Fonksiyon yürütme sonuçları ile modeli tekrar çağır
+            try:
+                final_completion = safe_model_call(
+                    client,
+                    messages,
+                    request_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    deep_think=False, # Zaten derin düşünme yapıldıysa burada tekrar yapma
+                    tools=TOOLS, # Araçları tekrar sun
+                    tool_choice="auto",
+                )
+                
+                # Tekrar çağrılan modelin yanıtını akışa dahil et
+                for chunk in final_completion:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yielded_count += 1
+                        yield chunk.choices[0].delta.content
+                    # İkinci çağrıda tekrar araç çağrısı gelirse de işlenecektir.
+            except Exception as e:
+                yield friendly_api_error(e)
+        
+        # Eğer hiçbir şey döndürülmediyse, varsayılan hata mesajı
+        if yielded_count == 0:
+            yield "Yapay zekâ boş yanıt verdi veya araçlar kullanılamadı. Lütfen mesajınızı yeniden gönderin."
+
+    except Exception as e:
         yield friendly_api_error(e)
-      
-      if yielded_count == 0:
-        yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 
