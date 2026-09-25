@@ -318,6 +318,7 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
     models = list(dict.fromkeys(item for item in models if item))
     
     last_error = None
+    kwargs = {}
     
     for attempt_model in models:
         try:
@@ -360,53 +361,15 @@ def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, te
         "Türkçe düşün ve yaz. Cevabın sonunda kullanıcının orijinal isteğine atıfta bulunarak düşünme sürecini tamamla."
     )
     
-    # Derin düşünme için sistem mesajını en başa ekleyelim
-    # Kullanıcının mevcut mesajlarını da almalı
-    # Eğer messages listesi multimodal içerik içeriyorsa bunu da uygun şekilde aktarmalıyız.
-    
-    # Kullanıcının son isteği
     user_request_message = messages[-1] if messages else {"role": "user", "content": ""}
 
-    # base_prompt'u kontrol ederken, eğer messages listesindeki ilk mesajın içeriği ile eşleşiyorsa onu filtrele.
-    # Ancak deep_think_call'a gelen messages listesi zaten api_chat'taki işlemden geçmiş olmalı, 
-    # yani base_prompt zaten ilk sistem mesajı olarak eklenmiş olmalı.
-    # Bu nedenle, thinking_messages oluşturulurken mevcut sistem mesajını (base_prompt'u) korumak yerine,
-    # düşünme prompt'unu en başa koyup, orijinal base_prompt'u temizleyip
-    # kullanıcının önceki mesajlarını ve şimdiki isteğini eklemeliyiz.
-    thinking_messages = [
-        {"role": "system", "content": thinking_prompt}, # Derin düşünme sistem prompt'u
-    ] + [msg for msg in messages if msg.get('role') != 'system'] + [ # Orijinal sistem mesajını filtrele
-        {"role": user_request_message['role'], "content": user_request_message['content']} # Kullanıcının mevcut isteği
-    ]
-    
-    # Ancak, yukarıdaki filtreleme, eğer geçmiş mesajlar arasında başka sistem mesajları varsa onları da kaldırabilir.
-    # En güvenli yaklaşım, sadece ana sistem mesajını ele almaktır.
-    # Orijinal base_prompt'un ilk eleman olarak geldiğini varsayarak, onu filtreleyip yerine thinking_prompt'u koyarız.
-    # Eğer orijinal `messages` listesinin ilk elemanı bir sistem mesajıysa ve `base_prompt`'a eşitse,
-    # onu `thinking_prompt` ile değiştir. Aksi takdirde, `thinking_prompt`'u en başa ekle.
-
-    # Daha basit bir yaklaşımla, sadece deep_think_call'ın kendi düşünme prompt'unu ekleyip,
-    # diğer tüm mesajları korumak, `base_prompt`'u mesajlar listesinden filtreleme ihtiyacını ortadan kaldırır.
-    # `deep_think_call` içine girmeden önce `messages` listesine `base_prompt` zaten eklenmişti.
-    # `thinking_messages` oluştururken `base_prompt`'u bilerek filtrelemeyeceğiz,
-    # sadece `thinking_prompt`'u ekleyeceğiz ve AI'ın hem `base_prompt` hem de `thinking_prompt` ile düşünmesini sağlayacağız.
-    # Veya daha iyi bir yaklaşım: `thinking_prompt`'u ana sistem prompt'unun yerine koyup, sonra AI'ın düşünme süreci bittikten sonra
-    # orijinal `base_prompt`'u tekrar yerine koymak. Mevcut kod bu ikinci yaklaşıma daha yakın.
-
-    # Düzeltilmiş düşünce mesajları listesi:
-    # Düşünme modu için ana sistem mesajı (thinking_prompt)
-    # Mevcut mesaj geçmişi (ilk sistem mesajı hariç, çünkü onu değiştireceğiz)
-    # Kullanıcının son isteği
-    
-    # Eğer messages listesi, `base_prompt` ile başlayan bir sistem mesajı içeriyorsa,
-    # onu `thinking_prompt` ile değiştirerek başlayın.
     temp_messages = []
     if messages and messages[0].get('role') == 'system' and messages[0].get('content') == base_prompt:
         temp_messages.append({"role": "system", "content": thinking_prompt})
-        temp_messages.extend(messages[1:]) # Geri kalan mesajları ekle
-    else: # Eğer ilk mesaj system base_prompt değilse, sadece thinking_prompt'u ekle
+        temp_messages.extend(messages[1:])
+    else:
         temp_messages.append({"role": "system", "content": thinking_prompt})
-        temp_messages.extend(messages) # Tüm orijinal mesajları ekle
+        temp_messages.extend(messages)
 
     thinking_messages = temp_messages
     
@@ -414,7 +377,7 @@ def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, te
         thinking_completion = client.chat.completions.create(
             model=model,
             messages=thinking_messages,
-            temperature=0.3, # Daha deterministik bir düşünme süreci için düşük sıcaklık
+            temperature=0.3,
             max_tokens=min(max_tokens, 4096),
             stream=False
         )
@@ -422,10 +385,9 @@ def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, te
     except Exception as e:
         reasoning = f"Düşünme sürecinde hata: {str(e)}"
     
-    # Orijinal sistem mesajını geri ekle ve düşünme sürecini son kullanıcı mesajına dahil et
     final_messages = [
-        messages[0], # Orijinal sistem mesajı
-    ] + [msg for msg in messages[1:-1]] + [ # Geçmiş mesajlar (son kullanıcı mesajı hariç)
+        messages[0],
+    ] + [msg for msg in messages[1:-1]] + [
         {"role": "user", "content": f"[Düşünme Süreci]\n{reasoning}\n\n[Orijinal İstek]\n" + (user_request_message.get('content') if isinstance(user_request_message.get('content'), str) else json.dumps(user_request_message.get('content'), ensure_ascii=False))}
     ]
     
@@ -435,7 +397,7 @@ def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, te
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,
-        tools=TOOLS, # Derin düşünme modunda da araçları kullanabilmeli
+        tools=TOOLS,
         tool_choice="auto",
     )
 
@@ -555,7 +517,7 @@ def api_image_generate(request):
       response = client.chat.completions.create(
           model=image_model,
           messages=[{"role": "user", "content": prompt}],
-          modalities=["text", "image"], # Modalities parametresi, modelin görsel oluşturabilmesi için gerekli olabilir.
+          modalities=["text", "image"],
       )
       message = response.choices[0].message if response.choices else None
       image_url = extract_image_url(message)
@@ -563,7 +525,6 @@ def api_image_generate(request):
         return JsonResponse({"status": "success", "image_url": image_url})
       return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
     except Exception as img_error:
-      # API hataları friendly_api_error fonksiyonu ile düzgün bir şekilde işleniyor.
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
       
   except json.JSONDecodeError:
@@ -618,8 +579,6 @@ def api_chat(request):
 
     full_message = user_message
 
-    file_names = [str(item.get("name", "dosya")) for item in files if isinstance(item, dict)]
-    extracted_files = []
     for file_item in files:
         if not isinstance(file_item, dict):
             continue
@@ -631,13 +590,7 @@ def api_chat(request):
             return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
         extracted = extract_uploaded_file_text(file_item)
         if extracted:
-            extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
-
-    # Extracted files are now handled as separate content parts, not appended to full_message
-    # if extracted_files:
-    #     full_message += "".join(extracted_files)
-    # if file_names and not full_message:
-    #     full_message = "Dosya gönderildi: " + ", ".join(file_names)
+            pass
 
     client = get_openai_client()
     if client is None:
@@ -654,8 +607,6 @@ def api_chat(request):
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
     )
     
-    # AI'ın araçları kullanma konusunda daha bilinçli olması için prompt'u güncelleyelim.
-    # Kullanıcıdan gelen bir soruya doğrudan cevap vermek yerine, uygun araçları kullanarak doğruluk ve güncellik sağlamalıdır.
     base_prompt += (
         " Sana belirli görevleri yerine getirmek için araçlar (fonksiyonlar) sağlandı. "
         "Kullanıcının isteği güncel bilgi, web araması veya hava durumu gibi konuları içeriyorsa, bu araçları KESİNLİKLE kullanmalısın. "
@@ -761,7 +712,6 @@ def api_chat(request):
             continue
         role = "user" if h.get("sender") == "user" else "assistant"
         content = h.get("text") or ""
-        # Geçmiş mesajlarda ekli dosyaları da ekle
         if h.get("files") and isinstance(h["files"], list):
             file_parts = []
             for file_item in h["files"]:
@@ -782,7 +732,6 @@ def api_chat(request):
         elif content:
             messages.append({"role": role, "content": content})
 
-
     if user_content:
         if isinstance(voice, dict) and voice.get("base64"):
             audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
@@ -793,7 +742,6 @@ def api_chat(request):
             })
         messages.append({"role": "user", "content": user_content})
     else:
-        # If user_content is empty (e.g. only voice was sent without explicit text)
         if isinstance(voice, dict) and voice.get("base64"):
             audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
             audio_format = audio_type.split("/")[-1] or "webm"
@@ -804,7 +752,6 @@ def api_chat(request):
             messages.append({"role": "user", "content": full_message})
 
     try:
-        # Eğer mesajda input_audio varsa, multimodal audio modelini kullan
         has_audio_input = any(
             part.get("type") == "input_audio"
             for part in (user_content if user_content and isinstance(user_content, list) else [])
@@ -818,7 +765,7 @@ def api_chat(request):
                 messages,
                 request_model,
                 deep_think_seconds,
-                base_prompt, # base_prompt'u buraya ekledik
+                base_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -840,17 +787,14 @@ def api_chat(request):
       yielded_count = 0
       try:
         tool_calls_buffer = []
-        # Düşünme modunda veya normal modda gelen chunk'ları işle
         for chunk in completion:
             if chunk.choices:
                 delta = chunk.choices[0].delta
                 
-                # Metin içeriği
                 if delta.content:
                     yielded_count += 1
                     yield delta.content
                 
-                # Araç çağrıları
                 if delta.tool_calls:
                     for tool_call in delta.tool_calls:
                         if len(tool_calls_buffer) <= tool_call.index:
@@ -866,12 +810,10 @@ def api_chat(request):
                             if tool_call.function and tool_call.function.arguments:
                                 tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
         
-        # Eğer araç çağrıları varsa, bunları işle ve modeli tekrar çağır
         if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
-            # İlk olarak, AI'ın araç çağrısı mesajını messages listesine ekleyelim
             assistant_message = {
                 "role": "assistant",
-                "content": "", # Araç çağrısı yapılırken içerik boş olabilir
+                "content": "",
                 "tool_calls": []
             }
             
@@ -888,25 +830,21 @@ def api_chat(request):
             
             messages.append(assistant_message)
             
-            # Her bir araç çağrısını sırayla yürüt
             for tc in tool_calls_buffer:
                 if tc:
                     try:
                         args = json.loads(tc["arguments"]) if tc["arguments"] else {}
                     except json.JSONDecodeError:
-                        args = {} # JSON ayrıştırma hatası durumunda boş argümanlar
+                        args = {}
                     
-                    # Fonksiyonu yürüt
                     result = execute_function(tc["name"], args)
                     
-                    # Fonksiyon sonucunu messages listesine "tool" rolüyle ekle
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": json.dumps(result, ensure_ascii=False) # Sonucu JSON olarak stringleştir
+                        "content": json.dumps(result, ensure_ascii=False)
                     })
             
-            # Fonksiyon yürütme sonuçları ile modeli tekrar çağır
             try:
                 final_completion = safe_model_call(
                     client,
@@ -915,21 +853,17 @@ def api_chat(request):
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,
-                    deep_think=False, # Zaten derin düşünme yapıldıysa burada tekrar yapma
-                    tools=TOOLS, # Araçları tekrar sun
-                    tool_choice="auto",
+                    deep_think=False,
+                    tools=TOOLS,
                 )
                 
-                # Tekrar çağrılan modelin yanıtını akışa dahil et
                 for chunk in final_completion:
                     if chunk.choices and chunk.choices[0].delta.content:
                         yielded_count += 1
                         yield chunk.choices[0].delta.content
-                    # İkinci çağrıda tekrar araç çağrısı gelirse de işlenecektir.
             except Exception as e:
                 yield friendly_api_error(e)
         
-        # Eğer hiçbir şey döndürülmediyse, varsayılan hata mesajı
         if yielded_count == 0:
             yield "Yapay zekâ boş yanıt verdi veya araçlar kullanılamadı. Lütfen mesajınızı yeniden gönderin."
       except Exception as e:
