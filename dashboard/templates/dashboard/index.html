@@ -2519,10 +2519,10 @@
             sender: 'user', 
             text: fullMessage, 
             timestamp,
-            images: imagesToSend, # Gönderilecek görselleri doğrudan kullan
-            files: filesToSend,   # Gönderilecek dosyaları doğrudan kullan
-            hasVoice: !!voiceToSend,
-            voice: voiceDataUrl || undefined # voiceDataUrl, base64 data URL'yi içerir
+            images: selectedImages, // Gönderilecek görselleri doğrudan kullan
+            files: selectedFiles,   // Gönderilecek dosyaları doğrudan kullan
+            hasVoice: !!selectedVoiceBlob,
+            voice: voiceDataUrl || undefined // voiceDataUrl, base64 data URL'yi içerir
         });
         
         if (customText === null) {
@@ -2571,11 +2571,11 @@
                     history: previousHistory,
                     deep_think: wasDeepThink,
                     deep_think_seconds: deepThinkSeconds,
-                    images: imagesToSend,
-                    files: filesToSend,
+                    images: selectedImages,
+                    files: selectedFiles,
                     voice_transcript: voiceTranscript,
-                    voice: voiceToSend && voiceDataUrl ? {
-                        type: voiceToSend.type || 'audio/webm',
+                    voice: selectedVoiceBlob && voiceDataUrl ? {
+                        type: selectedVoiceBlob.type || 'audio/webm',
                         base64: voiceDataUrl.split(',')[1] || ''
                     } : null
                 }),
