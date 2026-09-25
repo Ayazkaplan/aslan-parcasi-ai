@@ -1,7 +1,52 @@
+# Django-specific files
+*.sqlite3
 db.sqlite3
-*.py[cod]
-__pycache__/
-.pythonlibs/
+db.sqlite3-journal
+media/
 staticfiles/
-attached_assets/
+
+# Python / Virtual Environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments (venv, .venv vb.)
+venv/
+.venv/
+ENV/
+env/
+
+# IDEs and Editors (VS Code, PyCharm vb.)
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment Variables & Secrets
+.env
+.env.*
+
+# AI Tools & Logs (Aider, Continue vb.)
 .aider*
+.agents/
+.continue/
+.kilo/
