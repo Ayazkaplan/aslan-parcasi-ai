@@ -512,13 +512,13 @@ def api_image_generate(request):
     
     image_model = os.environ.get(
         "OPENROUTER_IMAGE_MODEL",
-        "google/gemini-2.5-flash-image-preview",
+        "google/gemini-pro-vision",
     ).strip()
     try:
       response = client.chat.completions.create(
           model=image_model,
           messages=[{"role": "user", "content": prompt}],
-          modalities=["text", "image"],
+          modalities=["text", "image"], # Modalities parametresi, modelin görsel oluşturabilmesi için gerekli olabilir.
       )
       message = response.choices[0].message if response.choices else None
       image_url = extract_image_url(message)
@@ -526,6 +526,7 @@ def api_image_generate(request):
         return JsonResponse({"status": "success", "image_url": image_url})
       return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
     except Exception as img_error:
+      # API hataları friendly_api_error fonksiyonu ile düzgün bir şekilde işleniyor.
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
       
   except json.JSONDecodeError:
