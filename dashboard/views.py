@@ -894,8 +894,7 @@ def api_chat(request):
         # Eğer hiçbir şey döndürülmediyse, varsayılan hata mesajı
         if yielded_count == 0:
             yield "Yapay zekâ boş yanıt verdi veya araçlar kullanılamadı. Lütfen mesajınızı yeniden gönderin."
-
-    except Exception as e:
+      except Exception as e:
         yield friendly_api_error(e)
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
