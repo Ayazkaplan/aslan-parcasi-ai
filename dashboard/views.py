@@ -352,7 +352,7 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
     raise last_error or Exception("Tüm modeller başarısız oldu")
 
 
-def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7, max_tokens=4096):
+def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, temperature=0.7, max_tokens=4096):
     thinking_prompt = (
         "Sen derin düşünme modundasın. Kullanıcının sorusunu/isteğini dikkatlice analiz et. "
         "Soruyu parçalara ayır, varsayımları kontrol et, kanıt ve karşı örnekleri değerlendir. "
@@ -367,17 +367,54 @@ def deep_think_call(client, messages, model, deep_think_seconds, temperature=0.7
     # Kullanıcının son isteği
     user_request_message = messages[-1] if messages else {"role": "user", "content": ""}
 
+    # base_prompt'u kontrol ederken, eğer messages listesindeki ilk mesajın içeriği ile eşleşiyorsa onu filtrele.
+    # Ancak deep_think_call'a gelen messages listesi zaten api_chat'taki işlemden geçmiş olmalı, 
+    # yani base_prompt zaten ilk sistem mesajı olarak eklenmiş olmalı.
+    # Bu nedenle, thinking_messages oluşturulurken mevcut sistem mesajını (base_prompt'u) korumak yerine,
+    # düşünme prompt'unu en başa koyup, orijinal base_prompt'u temizleyip
+    # kullanıcının önceki mesajlarını ve şimdiki isteğini eklemeliyiz.
     thinking_messages = [
-        {"role": "system", "content": thinking_prompt},
-    ] + [msg for msg in messages[:-1] if msg.get('role') != 'system' or msg.get('content') != base_prompt] + [
-        {"role": user_request_message['role'], "content": user_request_message['content']}
+        {"role": "system", "content": thinking_prompt}, # Derin düşünme sistem prompt'u
+    ] + [msg for msg in messages if msg.get('role') != 'system'] + [ # Orijinal sistem mesajını filtrele
+        {"role": user_request_message['role'], "content": user_request_message['content']} # Kullanıcının mevcut isteği
     ]
+    
+    # Ancak, yukarıdaki filtreleme, eğer geçmiş mesajlar arasında başka sistem mesajları varsa onları da kaldırabilir.
+    # En güvenli yaklaşım, sadece ana sistem mesajını ele almaktır.
+    # Orijinal base_prompt'un ilk eleman olarak geldiğini varsayarak, onu filtreleyip yerine thinking_prompt'u koyarız.
+    # Eğer orijinal `messages` listesinin ilk elemanı bir sistem mesajıysa ve `base_prompt`'a eşitse,
+    # onu `thinking_prompt` ile değiştir. Aksi takdirde, `thinking_prompt`'u en başa ekle.
 
+    # Daha basit bir yaklaşımla, sadece deep_think_call'ın kendi düşünme prompt'unu ekleyip,
+    # diğer tüm mesajları korumak, `base_prompt`'u mesajlar listesinden filtreleme ihtiyacını ortadan kaldırır.
+    # `deep_think_call` içine girmeden önce `messages` listesine `base_prompt` zaten eklenmişti.
+    # `thinking_messages` oluştururken `base_prompt`'u bilerek filtrelemeyeceğiz,
+    # sadece `thinking_prompt`'u ekleyeceğiz ve AI'ın hem `base_prompt` hem de `thinking_prompt` ile düşünmesini sağlayacağız.
+    # Veya daha iyi bir yaklaşım: `thinking_prompt`'u ana sistem prompt'unun yerine koyup, sonra AI'ın düşünme süreci bittikten sonra
+    # orijinal `base_prompt`'u tekrar yerine koymak. Mevcut kod bu ikinci yaklaşıma daha yakın.
+
+    # Düzeltilmiş düşünce mesajları listesi:
+    # Düşünme modu için ana sistem mesajı (thinking_prompt)
+    # Mevcut mesaj geçmişi (ilk sistem mesajı hariç, çünkü onu değiştireceğiz)
+    # Kullanıcının son isteği
+    
+    # Eğer messages listesi, `base_prompt` ile başlayan bir sistem mesajı içeriyorsa,
+    # onu `thinking_prompt` ile değiştirerek başlayın.
+    temp_messages = []
+    if messages and messages[0].get('role') == 'system' and messages[0].get('content') == base_prompt:
+        temp_messages.append({"role": "system", "content": thinking_prompt})
+        temp_messages.extend(messages[1:]) # Geri kalan mesajları ekle
+    else: # Eğer ilk mesaj system base_prompt değilse, sadece thinking_prompt'u ekle
+        temp_messages.append({"role": "system", "content": thinking_prompt})
+        temp_messages.extend(messages) # Tüm orijinal mesajları ekle
+
+    thinking_messages = temp_messages
+    
     try:
         thinking_completion = client.chat.completions.create(
             model=model,
             messages=thinking_messages,
-            temperature=0.3,
+            temperature=0.3, # Daha deterministik bir düşünme süreci için düşük sıcaklık
             max_tokens=min(max_tokens, 4096),
             stream=False
         )
@@ -781,6 +818,7 @@ def api_chat(request):
                 messages,
                 request_model,
                 deep_think_seconds,
+                base_prompt, # base_prompt'u buraya ekledik
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
