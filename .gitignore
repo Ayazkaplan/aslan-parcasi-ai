@@ -4,3 +4,4 @@ __pycache__/
 .pythonlibs/
 staticfiles/
 attached_assets/
+.aider*
