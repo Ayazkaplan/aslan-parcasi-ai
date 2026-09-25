@@ -671,23 +671,30 @@
         }
 
         .user-sliding-username {
-            max-width: 0;
-            opacity: 0;
+            display: grid;
+            grid-template-columns: 0fr;
+            max-width: none;
+            opacity: 1;
+            overflow: hidden;
+            transition: grid-template-columns 0.35s ease;
+            margin-right: 0;
+            cursor: pointer;
+        }
+
+        .user-sliding-username span {
+            min-width: 0;
+            overflow: hidden;
             white-space: nowrap;
             font-weight: 700;
             font-size: 13px;
-            overflow: hidden;
-            transition: max-width 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
-            cursor: pointer;
-            margin-right: 0;
         }
 
         .user-avatar-header.expanded .user-sliding-username {
-            max-width: 150px;
-            opacity: 1;
+            grid-template-columns: 1fr;
             margin-right: 8px;
         }
 
@@ -937,6 +944,16 @@
             animation: pulse 1s infinite;
         }
 
+        .media-btn.stop-recording {
+            background: #f59e0b;
+            border-color: #f59e0b;
+            color: #fff;
+        }
+
+        .media-btn.stop-recording:hover {
+            background: #d97706;
+        }
+
         /* MEDYA ÖNİZLEME */
         .media-preview {
             display: flex;
@@ -1044,6 +1061,31 @@
             border: 1px solid var(--border-color);
         }
 
+        .think-settings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .think-close {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 4px;
+        }
+        .think-close:hover { color: #fff; }
+
+        .retry-btn,
+        .retry-msg-btn {
+            display: none;
+        }
+        .message-wrapper.ai.is-latest .retry-msg-btn {
+            display: inline-flex;
+        }
+
         .file-attachment {
             display: flex;
             align-items: center;
@@ -1141,12 +1183,34 @@
             color: #fff;
         }
 
+        /* MOBİL MENÜ ÇIKIŞ BUTONU */
+        .mobile-menu-close {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: rgba(239, 68, 68, 0.9);
+            border: none;
+            color: #fff;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            font-size: 18px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+        }
+
         /* MOBİL UYUMLULUK */
         @media (max-width: 768px) {
             .mobile-menu-btn {
                 display: flex;
                 align-items: center;
                 justify-content: center;
+            }
+            .mobile-menu-close {
+                display: flex;
             }
             .sidebar {
                 position: fixed;
@@ -1365,7 +1429,10 @@
                     </svg>
                 </button>
                 <div class="think-settings" id="thinkSettings">
-                    <strong>Ne kadar uzun düşünsün?</strong>
+                    <div class="think-settings-header">
+                        <strong>Ne kadar uzun düşünsün?</strong>
+                        <button type="button" class="think-close" onclick="closeDeepThink(event)" aria-label="Kapat">×</button>
+                    </div>
                     <small>Aslan Parçası seçtiğin süreyi araştırma ve kontrol bütçesi olarak kullanır.</small>
                     <input id="thinkSeconds" type="range" min="30" max="1800" step="30" value="300" oninput="updateThinkDuration(this.value)">
                     <div class="think-duration">
@@ -2017,16 +2084,27 @@
     function toggleUserUsernameSlide(avatarEl) {
         if (!avatarEl) return;
         const header = avatarEl.closest('.user-avatar-header');
-        if (header) {
-            header.classList.toggle('expanded');
-        }
+        if (!header || header.dataset.animating === '1') return;
+        header.dataset.animating = '1';
+        header.classList.toggle('expanded');
+        setTimeout(() => { header.dataset.animating = '0'; }, 380);
+    }
+
+    function closeDeepThink(event) {
+        if (event) event.stopPropagation();
+        deepThinkEnabled = false;
+        document.getElementById('thinkBtn').classList.remove('active');
+        document.getElementById('thinkSettings').classList.remove('open');
     }
 
     function toggleDeepThink() {
-        deepThinkEnabled = !deepThinkEnabled;
-        const thinkBtn = document.getElementById('thinkBtn');
-        thinkBtn.classList.toggle('active', deepThinkEnabled);
-        document.getElementById('thinkSettings').classList.toggle('open', deepThinkEnabled);
+        if (deepThinkEnabled) {
+            closeDeepThink();
+            return;
+        }
+        deepThinkEnabled = true;
+        document.getElementById('thinkBtn').classList.add('active');
+        document.getElementById('thinkSettings').classList.add('open');
     }
 
     function showReasoningAnimation() {
@@ -2112,7 +2190,7 @@
                 return;
             }
             const textLike = file.type.startsWith('text/')
-                || /\.(txt|md|json|csv|py|js|ts|html|css|java|c|cpp|sql|xml|yaml|yml)$/i.test(file.name);
+                || /\.(txt|md|json|csv|py|js|ts|html|css|java|c|cpp|sql|xml|yaml|yml|log|pdf|docx)$/i.test(file.name);
             const reader = new FileReader();
             reader.onload = function(event) {
                 const bytes = new Uint8Array(event.target.result);
@@ -2221,6 +2299,7 @@
 
             mediaRecorder.start();
             isRecording = true;
+            startLiveSpeechRecognition();
             document.getElementById('voiceBtn').classList.add('recording');
         } catch (err) {
             alert('Mikrofon erişimi reddedildi veya desteklenmiyor.');
@@ -2229,6 +2308,7 @@
 
     function stopVoiceRecording() {
         if (mediaRecorder && isRecording) {
+            stopLiveSpeechRecognition();
             mediaRecorder.stop();
             isRecording = false;
             document.getElementById('voiceBtn').classList.remove('recording');
@@ -2255,10 +2335,43 @@
         document.getElementById('voicePreview').innerHTML = '';
     }
 
+    let liveSpeechTranscript = '';
+    let speechRecognition = null;
+
     async function transcribeVoice(audioBlob) {
-        // The audio itself is sent to the multimodal model. Browser speech recognition
-        // is only an optional convenience and must not block sending the recording.
+        if (liveSpeechTranscript.trim()) {
+            return liveSpeechTranscript.trim();
+        }
         return "";
+    }
+
+    function startLiveSpeechRecognition() {
+        liveSpeechTranscript = '';
+        const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechAPI) return;
+        try {
+            speechRecognition = new SpeechAPI();
+            speechRecognition.lang = 'tr-TR';
+            speechRecognition.continuous = true;
+            speechRecognition.interimResults = true;
+            speechRecognition.onresult = (event) => {
+                let finalText = '';
+                for (let i = 0; i < event.results.length; i += 1) {
+                    finalText += event.results[i][0].transcript;
+                }
+                liveSpeechTranscript = finalText.trim();
+            };
+            speechRecognition.start();
+        } catch (err) {
+            speechRecognition = null;
+        }
+    }
+
+    function stopLiveSpeechRecognition() {
+        if (speechRecognition) {
+            try { speechRecognition.stop(); } catch (err) { /* ignore */ }
+            speechRecognition = null;
+        }
     }
 
     function blobToDataUrl(blob) {
@@ -2275,7 +2388,13 @@
         const prompt = inputEl.value.trim();
         
         if (!prompt) {
-            alert('Lütfen görsel oluşturmak için bir prompt girin.');
+            const lastUser = [...(chats.find(c => c.id === activeChatId)?.messages || [])]
+                .reverse()
+                .find(m => m.sender === 'user' && m.text);
+            prompt = (lastUser && lastUser.text) ? lastUser.text : '';
+        }
+        if (!prompt) {
+            alert('Lütfen görsel oluşturmak için bir prompt girin. Örnek: kedi çiz');
             return;
         }
 
@@ -2316,7 +2435,7 @@
                 // Add AI message with generated image
                 currentChat.messages.push({ 
                     sender: 'ai', 
-                    text: `İşte oluşturulan görsel:\n\n![Generated Image](${data.image_url})`, 
+                    text: `İşte oluşturulan görsel:\n\n![Oluşturulan görsel](${data.image_url})`, 
                     timestamp 
                 });
                 
@@ -2439,13 +2558,16 @@
                 body: JSON.stringify({ 
                     message: fullMessage, 
                     mode: currentMode,
-                    history: previousHistory,
+                    history: previousHistory.map((item) => ({
+                        sender: item.sender,
+                        text: item.text || ''
+                    })),
                     deep_think: wasDeepThink,
                     deep_think_seconds: deepThinkSeconds,
                     images: imagesToSend,
                     files: filesToSend,
                     voice_transcript: voiceTranscript,
-                    voice: voiceToSend && voiceDataUrl ? {
+                    voice: (!voiceTranscript && voiceToSend && voiceDataUrl) ? {
                         type: voiceToSend.type || 'audio/webm',
                         base64: voiceDataUrl.split(',')[1] || ''
                     } : null
@@ -2454,9 +2576,6 @@
             });
 
             hideTypingIndicator();
-            if (wasDeepThink) {
-                hideReasoningAnimation();
-            }
 
             if (!response.ok) {
                 let errorData = {};
@@ -2478,6 +2597,7 @@
                     
                     const chunk = decoder.decode(value);
                     fullResponse += chunk;
+                    if (wasDeepThink) hideReasoningAnimation();
                     if (aiMsgIndex === -1) {
                         aiMsgIndex = currentChat.messages.length;
                         currentChat.messages.push({ sender: 'ai', text: '', timestamp: Date.now() });
@@ -2544,6 +2664,13 @@
         const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
         wrapper.className = `message-wrapper ${sender}`;
+        const currentChatForActions = chats.find(c => c.id === activeChatId);
+        const lastAiIndex = currentChatForActions
+            ? currentChatForActions.messages.reduce((last, message, index) => message.sender === 'ai' ? index : last, -1)
+            : -1;
+        if (sender === 'ai' && msgIndex === lastAiIndex) {
+            wrapper.classList.add('is-latest');
+        }
 
         if (sender === 'ai') {
             const aiHeader = document.createElement('div');
@@ -2559,7 +2686,7 @@
             const userHeader = document.createElement('div');
             userHeader.className = 'user-avatar-header';
             userHeader.innerHTML = `
-                <span class="user-sliding-username">${userSettings.username}</span>
+                <span class="user-sliding-username"><span>${escapeHtml(userSettings.username)}</span></span>
                 <img src="${userSettings.avatar || DEFAULT_AVATAR}" class="user-message-avatar" onclick="toggleUserUsernameSlide(this)" title="Profili Gör">
             `;
             wrapper.appendChild(userHeader);
@@ -2637,7 +2764,7 @@
                 ? currentChat.messages.reduce((last, message, index) => message.sender === 'user' ? index : last, -1)
                 : -1;
             let actionHtml = '';
-            if (sender === 'ai') {
+            if (sender === 'ai' && msgIndex === lastAiIndex) {
                 actionHtml = `
                     <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
@@ -2700,7 +2827,12 @@
         }
         try {
             if (window.DOMPurify) {
-                html = DOMPurify.sanitize(html);
+                html = DOMPurify.sanitize(html, {
+                    USE_PROFILES: { html: true },
+                    ADD_TAGS: ['img'],
+                    ADD_ATTR: ['src', 'alt', 'title'],
+                    ALLOW_UNKNOWN_PROTOCOLS: false
+                });
             }
         } catch (err) {
             html = escapeHtml(raw).replace(/\n/g, '<br>');

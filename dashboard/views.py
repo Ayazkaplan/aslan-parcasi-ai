@@ -14,6 +14,7 @@ from django.views.decorators.http import require_POST
 from openai import OpenAI
 from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
 from .models import ChatHistory, UserProfile
+from .web_tools import build_live_context, needs_live_data, pollinations_image_url
 
 
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
@@ -28,6 +29,36 @@ def get_openai_client():
       base_url="https://openrouter.ai/api/v1",
       api_key=api_key,
   )
+
+
+def transcribe_voice(client, voice):
+  if not client or not isinstance(voice, dict) or not voice.get("base64"):
+    return ""
+  try:
+    raw = base64.b64decode(voice.get("base64"), validate=False)
+  except (ValueError, TypeError):
+    return ""
+  if not raw:
+    return ""
+  audio_file = io.BytesIO(raw)
+  audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
+  ext = "webm" if "webm" in audio_type else ("mp4" if "mp4" in audio_type else "wav")
+  audio_file.name = f"recording.{ext}"
+  models = [
+      os.environ.get("OPENROUTER_WHISPER_MODEL", "").strip(),
+      "openai/whisper-large-v3",
+      "openai/whisper-1",
+  ]
+  for model in dict.fromkeys(item for item in models if item):
+    try:
+      audio_file.seek(0)
+      result = client.audio.transcriptions.create(model=model, file=audio_file)
+      text = getattr(result, "text", "") or ""
+      if text.strip():
+        return text.strip()
+    except Exception:
+      continue
+  return ""
 
 
 def get_user_profile(user):
@@ -138,7 +169,7 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
     Handles 404 (model not found) and 429 (rate limit) errors.
     """
     configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
-    models = [model, configured_fallback, "openrouter/auto"]
+    models = [model, configured_fallback, "openai/gpt-4o-mini", "openrouter/auto"]
     models = list(dict.fromkeys(item for item in models if item))
     
     last_error = None
@@ -179,8 +210,6 @@ def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, s
 
 @login_required(login_url="login")
 def index(request):
-  if not request.user.email:
-    return redirect("update_email")
   profile = get_user_profile(request.user)
   return render(
       request,
@@ -277,31 +306,24 @@ def api_image_generate(request):
     
     if not prompt:
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
-    
+
+    image_url = pollinations_image_url(prompt)
     client = get_openai_client()
-    if client is None:
-      return JsonResponse(
-          {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
-          status=503,
-      )
-    
-    image_model = os.environ.get(
-        "OPENROUTER_IMAGE_MODEL",
-        "google/gemini-2.5-flash-image-preview",
-    ).strip()
-    try:
-      response = client.chat.completions.create(
-          model=image_model,
-          messages=[{"role": "user", "content": prompt}],
-          modalities=["text", "image"],
-      )
-      message = response.choices[0].message if response.choices else None
-      image_url = extract_image_url(message)
-      if image_url:
-        return JsonResponse({"status": "success", "image_url": image_url})
-      return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
-    except Exception as img_error:
-      return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
+    image_model = os.environ.get("OPENROUTER_IMAGE_MODEL", "").strip()
+    if client and image_model:
+      try:
+        response = client.chat.completions.create(
+            model=image_model,
+            messages=[{"role": "user", "content": f"Generate an image: {prompt}"}],
+            extra_body={"modalities": ["text", "image"]},
+        )
+        message = response.choices[0].message if response.choices else None
+        generated = extract_image_url(message)
+        if generated:
+          image_url = generated
+      except Exception:
+        pass
+    return JsonResponse({"status": "success", "image_url": image_url, "prompt": prompt})
       
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
@@ -347,10 +369,25 @@ def api_chat(request):
       deep_think_seconds = 300
     images = data.get("images", [])
     files = data.get("files", [])
-    voice_transcript = data.get("voice_transcript", "")
+    voice_transcript = (data.get("voice_transcript") or "").strip()
     voice = data.get("voice") or {}
 
+    client = get_openai_client()
+    if client is None:
+      return JsonResponse(
+          {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
+          status=503,
+      )
+
+    if isinstance(voice, dict) and voice.get("base64") and not voice_transcript:
+      voice_transcript = transcribe_voice(client, voice)
+
     if not user_message and not voice_transcript and not images and not files:
+      if isinstance(voice, dict) and voice.get("base64"):
+        return JsonResponse(
+            {"error": "Ses kaydı yazıya çevrilemedi. Lütfen kısaca yazarak tekrar dene."},
+            status=400,
+        )
       return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
     full_message = user_message
@@ -361,6 +398,8 @@ def api_chat(request):
         full_message = voice_transcript
     file_names = [str(item.get("name", "dosya")) for item in files if isinstance(item, dict)]
     extracted_files = []
+    file_images = []
+    unread_files = []
     for file_item in files:
       if not isinstance(file_item, dict):
         continue
@@ -370,19 +409,32 @@ def api_chat(request):
         file_size = 0
       if file_size > MAX_CHAT_FILE_BYTES:
         return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
+      file_type = str(file_item.get("type") or "")
+      file_name = str(file_item.get("name") or "")
+      if file_type.startswith("image/") or re.search(r"\.(png|jpe?g|gif|webp|bmp)$", file_name, re.I):
+        file_images.append(file_item)
+        continue
       extracted = extract_uploaded_file_text(file_item)
       if extracted:
         extracted_files.append(f"\n\n[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}")
+      else:
+        unread_files.append(file_name or "dosya")
     if extracted_files:
       full_message += "".join(extracted_files)
+    if unread_files:
+      full_message += (
+          "\n\n[Okunamayan dosyalar: "
+          + ", ".join(unread_files)
+          + ". Kullanıcı bu dosyayı gönderdi; içeriği çıkarılamadı.]"
+      )
     if file_names and not full_message:
       full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
-    client = get_openai_client()
-    if client is None:
-      return JsonResponse(
-          {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
-          status=503,
+    live_context = ""
+    if deep_think or needs_live_data(full_message):
+      live_context = build_live_context(
+          full_message,
+          deep_think=bool(deep_think),
       )
 
     base_prompt = (
@@ -390,7 +442,9 @@ def api_chat(request):
         "Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
         "KRİTİK KURAL: Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kim olduğu bilgisini KENDİLİĞİNDEN söyleme. "
         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
-        "Gerçek zamanlı internet veya hava durumu erişimin yok; uydurma güncel veri verme. "
+        "Sana verilen GÜNCEL ARAŞTIRMA bloğu az önce internetten çekildi. "
+        "Bu blok varsa internetin yok deme, kullanıcıyı Google'a yönlendirme; skoru, sıcaklığı ve haberi oradan net söyle. "
+        "Blok yoksa uydurma sayı verme. "
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
     )
 
@@ -447,12 +501,13 @@ def api_chat(request):
       budget_label = f"{minutes} dakika {seconds} saniye" if minutes else f"{seconds} saniye"
       system_instruction += (
         f" Kapsamlı araştırma modu açık; kullanıcı sana {budget_label} düşünme bütçesi verdi. "
-        "Bu süreyi boş beklemek için değil, soruyu parçalara ayırmak, varsayımları kontrol etmek, "
-        "kanıt ve karşı örnekleri değerlendirmek ve sonunda net bir araştırma özeti üretmek için kullan. "
-        "Canlı internet erişimin yoksa bunu dürüstçe belirt; kaynak uydurma. "
-        "Yanıt vermeden önce kısa bir araştırma planı ve bulgularını zihinsel olarak kontrol et."
+        "Sana verilen canlı araştırma sonuçlarını kullan, internetin yok deme. "
+        "Soruyu parçalara ayır, çelişen bilgileri belirt ve net bir sonuç ver."
       )
-      max_tokens = min(max_tokens * 2, 8192)
+      max_tokens = min(max_tokens * 2, 4096)
+
+    if live_context:
+      system_instruction += "\n\nGÜNCEL ARAŞTIRMA:\n" + live_context
 
     messages = [{"role": "system", "content": system_instruction}]
 
@@ -460,22 +515,15 @@ def api_chat(request):
     if full_message:
       user_content.append({"type": "text", "text": full_message})
     
-    for img in images:
+    for img in list(images) + file_images:
       if img.get("url"):
         user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
       elif img.get("base64"):
         image_type = img.get("type") or "image/jpeg"
         user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
 
-    if isinstance(voice, dict) and voice.get("base64"):
-      audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
-      audio_format = audio_type.split("/")[-1] or "webm"
-      user_content.append({
-        "type": "input_audio",
-        "input_audio": {"data": voice["base64"], "format": audio_format},
-      })
-      if voice_transcript:
-        user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
+    if voice_transcript:
+      user_content.append({"type": "text", "text": f"[Kullanıcının ses kaydı yazıya çevrildi]\n{voice_transcript}"})
 
     for h in history:
       if not isinstance(h, dict):
@@ -483,7 +531,7 @@ def api_chat(request):
       role = "user" if h.get("sender") == "user" else "assistant"
       content = h.get("text") or ""
       if content:
-        messages.append({"role": role, "content": content})
+        messages.append({"role": role, "content": content[:4000]})
 
     if user_content:
       messages.append({"role": "user", "content": user_content})
@@ -491,11 +539,10 @@ def api_chat(request):
       messages.append({"role": "user", "content": full_message})
 
     try:
-      request_model = "openai/gpt-4o-audio-preview" if isinstance(voice, dict) and voice.get("base64") else model
       completion = safe_model_call(
         client,
         messages,
-        request_model,
+        model,
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,
@@ -529,21 +576,14 @@ def login_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    # Geçici olarak standart AuthenticationForm kullan
-    from django.contrib.auth.forms import AuthenticationForm
-    form = AuthenticationForm(request, data=request.POST)
+    form = EmailOrUsernameAuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
       request.session.set_expiry(2592000)
       request.session.save()
       return redirect("index")
-    else:
-      # Form hatalarını debug için
-      print(f"Login form errors: {form.errors}")
-      print(f"POST data: {request.POST}")
   else:
-    from django.contrib.auth.forms import AuthenticationForm
-    form = AuthenticationForm()
+    form = EmailOrUsernameAuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
 
 

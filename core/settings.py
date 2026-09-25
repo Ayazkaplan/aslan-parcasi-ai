@@ -13,13 +13,31 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # Quick-start development settings - unsuitable for production
-SECRET_KEY = os.environ.get(
-    'SECRET_KEY',
-    os.environ.get(
-        'SESSION_SECRET',
-        'django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h',
-    ),
-)
+def _load_secret_key():
+    env_key = (
+        os.environ.get("SECRET_KEY")
+        or os.environ.get("SESSION_SECRET")
+        or ""
+    ).strip()
+    if env_key:
+        return env_key
+    secret_file = BASE_DIR / ".django_secret_key"
+    try:
+        if secret_file.exists():
+            stored = secret_file.read_text(encoding="utf-8").strip()
+            if stored:
+                return stored
+    except OSError:
+        pass
+    fallback = "django-insecure-1r$7e=e96k6eq&7upd!li4s%%24(=f4x+r!va8nkg3dg2@!y(h"
+    try:
+        secret_file.write_text(fallback, encoding="utf-8")
+    except OSError:
+        pass
+    return fallback
+
+
+SECRET_KEY = _load_secret_key()
 
 # Hatayı ekranda net görebilmek için geçici olarak True yapıyoruz
 DEBUG = True
@@ -53,6 +71,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'core.middleware.TrustRequestOriginMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -106,10 +125,15 @@ if database_url:
         }
     }
 else:
+    data_dir = Path(os.environ.get("DATA_DIR", BASE_DIR))
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        data_dir = BASE_DIR
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+            'NAME': data_dir / 'db.sqlite3',
         }
     }
 
@@ -158,8 +182,13 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'index'
 LOGOUT_REDIRECT_URL = 'login'
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_AGE = 2592000
+SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
 
 
 # Email
