@@ -7,14 +7,14 @@ import time
 import requests
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import User
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openai import OpenAI
-from .forms import CustomUserCreationForm
+from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
+from .middleware import clear_remember_cookie, set_remember_cookie
 from .models import ChatHistory, UserProfile
 
 # Dosya okuma kütüphaneleri en tepeye taşındı
@@ -489,7 +489,7 @@ def delete_account_view(request):
   user = request.user
   logout(request)
   user.delete()
-  return JsonResponse({"status": "success"})
+  return clear_remember_cookie(JsonResponse({"status": "success"}))
 
 
 @login_required(login_url="login")
@@ -881,17 +881,15 @@ def login_view(request):
   if request.user.is_authenticated:
     return redirect("index")
   if request.method == "POST":
-    form = AuthenticationForm(request, data=request.POST)
+    form = EmailOrUsernameAuthenticationForm(request, data=request.POST)
     if form.is_valid():
       login(request, form.get_user())
       request.session.set_expiry(2592000)
       request.session.save()
-      return redirect("index")
-    else:
-      print(f"Login form errors: {form.errors}")
-      print(f"POST data: {request.POST}")
+      response = redirect("index")
+      return set_remember_cookie(response, request.user)
   else:
-    form = AuthenticationForm()
+    form = EmailOrUsernameAuthenticationForm()
   return render(request, "dashboard/login.html", {"form": form})
 
 
@@ -905,7 +903,8 @@ def register_view(request):
       login(request, user)
       request.session.set_expiry(2592000)
       request.session.save()
-      return redirect("index")
+      response = redirect("index")
+      return set_remember_cookie(response, user)
   else:
     form = CustomUserCreationForm()
   return render(request, "dashboard/register.html", {"form": form})
@@ -913,4 +912,5 @@ def register_view(request):
 
 def logout_view(request):
   logout(request)
-  return redirect("login")
+  response = redirect("login")
+  return clear_remember_cookie(response)
