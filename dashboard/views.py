@@ -3,7 +3,9 @@ import os
 import base64
 import io
 import re
+import time
 import requests
+from urllib.parse import quote
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -208,42 +210,51 @@ def get_current_time():
 
 
 def get_weather(city, country="TR"):
-    """Get weather information using OpenWeatherMap API"""
-    api_key = os.environ.get("OPENWEATHER_API_KEY", "").strip()
-    if not api_key:
-        return {"error": "Weather API key not configured. Please set OPENWEATHER_API_KEY environment variable."}
-    
+    """Get weather information using Open-Meteo (no API key required)."""
+    weather_codes = {
+        0: "Açık", 1: "Çoğunlukla açık", 2: "Parçalı bulutlu", 3: "Kapalı",
+        45: "Sisli", 48: "Sisli", 51: "Hafif çisenti", 53: "Çisenti", 55: "Yoğun çisenti",
+        61: "Hafif yağmur", 63: "Yağmur", 65: "Şiddetli yağmur",
+        71: "Hafif kar", 73: "Kar", 75: "Yoğun kar",
+        80: "Sağanak yağış", 81: "Sağanak yağış", 82: "Şiddetli sağanak",
+        95: "Gök gürültülü fırtına", 96: "Gök gürültülü fırtına", 99: "Gök gürültülü fırtına",
+    }
     try:
-        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city},{country}&limit=1&appid={api_key}"
-        geo_response = requests.get(geo_url, timeout=10)
-        geo_data = geo_response.json()
-        
-        if not geo_data:
+        geo_response = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city, "count": 1, "language": "tr", "format": "json"},
+            timeout=10,
+        )
+        geo_results = (geo_response.json() or {}).get("results") or []
+        if not geo_results:
             return {"error": f"City '{city}' not found"}
-        
-        lat = geo_data[0]["lat"]
-        lon = geo_data[0]["lon"]
-        city_name = geo_data[0].get("name", city)
-        country_name = geo_data[0].get("country", country)
-        
-        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=tr"
-        weather_response = requests.get(weather_url, timeout=10)
-        weather_data = weather_response.json()
-        
+        place = geo_results[0]
+        lat, lon = place["latitude"], place["longitude"]
+
+        weather_response = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,relative_humidity_2m,apparent_temperature,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code",
+                "timezone": "auto",
+            },
+            timeout=10,
+        )
         if weather_response.status_code != 200:
-            return {"error": f"Weather API error: {weather_data.get('message', 'Unknown error')}"}
-        
+            return {"error": f"Weather API error: {weather_response.status_code}"}
+        current = (weather_response.json() or {}).get("current") or {}
+
         return {
-            "city": city_name,
-            "country": country_name,
-            "temperature": round(weather_data["main"]["temp"]),
-            "feels_like": round(weather_data["main"]["feels_like"]),
-            "humidity": weather_data["main"]["humidity"],
-            "pressure": weather_data["main"]["pressure"],
-            "description": weather_data["weather"][0]["description"].capitalize(),
-            "wind_speed": weather_data["wind"]["speed"],
-            "wind_deg": weather_data["wind"].get("deg", 0),
-            "icon": weather_data["weather"][0]["icon"]
+            "city": place.get("name", city),
+            "country": place.get("country", country),
+            "temperature": round(current.get("temperature_2m", 0)),
+            "feels_like": round(current.get("apparent_temperature", 0)),
+            "humidity": current.get("relative_humidity_2m"),
+            "pressure": current.get("pressure_msl"),
+            "description": weather_codes.get(current.get("weather_code"), "Bilinmeyen"),
+            "wind_speed": current.get("wind_speed_10m"),
+            "wind_deg": current.get("wind_direction_10m", 0),
         }
     except requests.Timeout:
         return {"error": "Weather service timeout"}
@@ -254,38 +265,50 @@ def get_weather(city, country="TR"):
 
 
 def web_search(query, num_results=5):
-    """Search the web using DuckDuckGo HTML scraping (no API key needed)"""
+    """Search the web using DuckDuckGo scraping (no API key needed).
+
+    html.duckduckgo.com denenir; başarısız olursa lite.duckduckgo.com'a düşülür.
+    """
     try:
-        url = "https://html.duckduckgo.com/html/"
-        params = {"q": query}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        response = requests.post(url, data=params, headers=headers, timeout=10)
-        response.raise_for_status()
-        
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        results = []
-        for result in soup.select('.result__snippet')[:num_results]:
-            text = result.get_text(strip=True)
-            if text:
-                results.append(text)
-        
-        if not results:
-            for result in soup.select('.web-result-description')[:num_results]:
-                text = result.get_text(strip=True)
-                if text:
-                    results.append(text)
-        
-        return {
-            "query": query,
-            "results": results[:num_results] if results else ["Arama sonucu bulunamadı."]
-        }
-    except Exception as e:
-        return {"error": f"Web search failed: {str(e)}", "results": []}
+    except ImportError:
+        BeautifulSoup = None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    endpoints = [
+        ("https://html.duckduckgo.com/html/", {"q": query}),
+        ("https://lite.duckduckgo.com/lite/", {"q": query}),
+    ]
+
+    for url, data in endpoints:
+        try:
+            response = requests.post(url, data=data, headers=headers, timeout=12)
+            response.raise_for_status()
+            if not BeautifulSoup:
+                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+            results = []
+            for selector in (".result__snippet", ".web-result-description", ".result-snippet", "td.result-snippet"):
+                for result in soup.select(selector)[:num_results]:
+                    text = result.get_text(" ", strip=True)
+                    if text and text not in results:
+                        results.append(text)
+                if results:
+                    break
+            if results:
+                return {
+                    "query": query,
+                    "results": results[:num_results],
+                }
+        except Exception:
+            continue
+
+    return {
+        "query": query,
+        "results": ["Arama sonucu bulunamadı."],
+    }
 
 
 def profile_payload(user):
@@ -311,15 +334,16 @@ def friendly_api_error(error):
   return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
-def build_provider_pool(openrouter_models=None, only_openrouter=False):
+def build_provider_pool(openrouter_models=None, only_openrouter=False, vision=False):
     """Yedeklemeli sağlayıcı havuzu: hata veren model/sağlayıcı atlanıp sıradakine geçilir.
 
     OpenRouter en sonda tutulur ki ücretli kota yalnızca diğerleri tükenince harcansın.
+    vision=True ise yalnızca görsel anlayabilen modeller kullanılır.
     """
     pool = []
     if not only_openrouter:
         groq_key = (os.environ.get("GROQ_API_KEY") or "").strip()
-        if groq_key:
+        if groq_key and not vision:
             pool.append({
                 "name": "groq",
                 "client": OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key),
@@ -330,20 +354,23 @@ def build_provider_pool(openrouter_models=None, only_openrouter=False):
             pool.append({
                 "name": "mistral",
                 "client": OpenAI(base_url="https://api.mistral.ai/v1", api_key=mistral_key),
-                "models": ["open-mistral-nemo", "mistral-small-latest"],
+                "models": ["pixtral-12b-2409"] if vision else ["open-mistral-nemo", "mistral-small-latest"],
             })
         cohere_key = (os.environ.get("COHERE_API_KEY") or "").strip()
         if cohere_key:
             pool.append({
                 "name": "cohere",
                 "client": OpenAI(base_url="https://api.cohere.com/compatibility/v1", api_key=cohere_key),
-                "models": ["command-r-plus-08-2024", "command-r-08-2024"],
+                "models": ["command-a-vision-07-2025"] if vision else ["command-r-plus-08-2024", "command-r-08-2024"],
             })
     openrouter_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
     if openrouter_key and openrouter_key != "gecici_anahtar":
-        models = list(dict.fromkeys(item for item in (openrouter_models or []) if item))
-        models.append("openrouter/auto")
-        models = list(dict.fromkeys(models))
+        if vision:
+            models = ["google/gemini-2.0-flash-001", "openai/gpt-4o-mini"]
+        else:
+            models = list(dict.fromkeys(item for item in (openrouter_models or []) if item))
+            models.append("openrouter/auto")
+            models = list(dict.fromkeys(models))
         pool.append({
             "name": "openrouter",
             "client": OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key),
@@ -352,9 +379,9 @@ def build_provider_pool(openrouter_models=None, only_openrouter=False):
     return pool
 
 
-def pool_chat_completion(messages, temperature=0.7, max_tokens=4096, stream=False, tools=None, openrouter_models=None, only_openrouter=False):
+def pool_chat_completion(messages, temperature=0.7, max_tokens=4096, stream=False, tools=None, openrouter_models=None, only_openrouter=False, vision=False):
     last_error = None
-    for provider in build_provider_pool(openrouter_models, only_openrouter):
+    for provider in build_provider_pool(openrouter_models, only_openrouter, vision=vision):
         for model in provider["models"]:
             kwargs = {
                 "model": model,
@@ -374,49 +401,133 @@ def pool_chat_completion(messages, temperature=0.7, max_tokens=4096, stream=Fals
     raise last_error or Exception("Tüm sağlayıcılar başarısız oldu")
 
 
-def deep_think_call(messages, deep_think_seconds, base_prompt, temperature=0.7, max_tokens=4096):
-    thinking_prompt = (
-        "Sen derin düşünme modundasın. Kullanıcının sorusunu/isteğini dikkatlice analiz et. "
-        "Soruyu parçalara ayır, varsayımları kontrol et, kanıt ve karşı örnekleri değerlendir. "
-        "Düşünce sürecini adım adım yaz. SADECE düşünce sürecini yaz, final cevabı verme. "
-        "Türkçe düşün ve yaz. Cevabın sonunda kullanıcının orijinal isteğine atıfta bulunarak düşünme sürecini tamamla."
-    )
-    
-    user_request_message = messages[-1] if messages else {"role": "user", "content": ""}
-
-    temp_messages = []
-    if messages and messages[0].get('role') == 'system' and messages[0].get('content') == base_prompt:
-        temp_messages.append({"role": "system", "content": thinking_prompt})
-        temp_messages.extend(messages[1:])
-    else:
-        temp_messages.append({"role": "system", "content": thinking_prompt})
-        temp_messages.extend(messages)
-
-    thinking_messages = temp_messages
-    
+def transcribe_audio(voice_item):
+    """Groq whisper-large-v3 ile ses kaydını metne çevirir. Başarısızsa boş string."""
+    if not isinstance(voice_item, dict):
+        return ""
+    encoded = voice_item.get("base64") or ""
+    if not encoded:
+        return ""
+    groq_key = (os.environ.get("GROQ_API_KEY") or "").strip()
+    if not groq_key:
+        return ""
     try:
-        thinking_completion = pool_chat_completion(
-            thinking_messages,
-            temperature=0.3,
-            max_tokens=min(max_tokens, 4096),
-            stream=False,
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return ""
+    audio_type = str(voice_item.get("type") or "audio/webm").split(";")[0]
+    fmt = audio_type.split("/")[-1] or "webm"
+    audio_buffer = io.BytesIO(raw)
+    audio_buffer.name = f"voice.{fmt}"
+    try:
+        client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+        result = client.audio.transcriptions.create(
+            file=audio_buffer,
+            model="whisper-large-v3",
         )
-        reasoning = thinking_completion.choices[0].message.content if thinking_completion.choices else "Düşünme süreci boş."
-    except Exception as e:
-        reasoning = f"Düşünme sürecinde hata: {str(e)}"
-    
-    final_messages = [
-        messages[0],
-    ] + [msg for msg in messages[1:-1]] + [
-        {"role": "user", "content": f"[Düşünme Süreci]\n{reasoning}\n\n[Orijinal İstek]\n" + (user_request_message.get('content') if isinstance(user_request_message.get('content'), str) else json.dumps(user_request_message.get('content'), ensure_ascii=False))}
-    ]
-    
+        return (getattr(result, "text", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def deep_think_call(messages, deep_think_seconds, temperature=0.7, max_tokens=4096, vision=False):
+    """Gerçek araştırma döngüsü: verilen süre boyunca araçları kullanarak araştırır,
+    bulguları notlara ekler, sonunda tüm notları birleştirip akıcı yanıt üretir.
+    """
+    deadline = time.time() + max(5, deep_think_seconds)
+    max_iterations = 10
+
+    base_messages = list(messages)
+    research_messages = list(base_messages)
+    research_messages.append({
+        "role": "system",
+        "content": (
+            "Derin düşünme ve araştırma modundasın. Kullanıcının sorusunu yanıtlamak için "
+            "gerekiyorsa web_search, get_weather veya get_current_time araçlarını KULLAN. "
+            "Her turda kısa bir analiz yap ve gerekiyorsa yeni bir araç çağır. "
+            "Yeterli bilgiye ulaşınca araç çağırmayı bırakıp 'HAZIRIM' yaz."
+        ),
+    })
+
+    notes = []
+    for _ in range(max_iterations):
+        if time.time() >= deadline:
+            break
+        try:
+            completion = pool_chat_completion(
+                research_messages,
+                temperature=0.3,
+                max_tokens=min(max_tokens, 2048),
+                stream=False,
+                tools=TOOLS,
+                vision=vision,
+            )
+        except Exception:
+            break
+        if not completion.choices:
+            break
+        message = completion.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+        content = (message.content or "").strip()
+
+        if tool_calls:
+            research_messages.append({
+                "role": "assistant",
+                "content": content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
+                    }
+                    for tc in tool_calls
+                ],
+            })
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
+                result = execute_function(tc.function.name, args)
+                research_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+                notes.append(f"[{tc.function.name}] {json.dumps(result, ensure_ascii=False)}")
+        else:
+            if content:
+                notes.append(content)
+            if content and "HAZIRIM" in content.upper():
+                break
+            research_messages.append({"role": "assistant", "content": content or ""})
+            research_messages.append({
+                "role": "user",
+                "content": "Devam et. Gerekiyorsa araç kullanarak daha fazla araştır, değilse HAZIRIM yaz.",
+            })
+
+    research_summary = "\n\n".join(notes) if notes else "(Ek bulgu toplanmadı.)"
+
+    last_user = base_messages[-1] if base_messages else {"role": "user", "content": ""}
+    last_content = last_user.get("content")
+    if isinstance(last_content, str):
+        merged_text = f"{last_content}\n\n[Araştırma Bulguları]\n{research_summary}"
+        final_last = {"role": "user", "content": merged_text}
+    elif isinstance(last_content, list):
+        parts = list(last_content) + [{"type": "text", "text": f"\n\n[Araştırma Bulguları]\n{research_summary}"}]
+        final_last = {"role": "user", "content": parts}
+    else:
+        final_last = {"role": "user", "content": f"[Araştırma Bulguları]\n{research_summary}"}
+
+    final_messages = base_messages[:-1] + [final_last] if base_messages else [final_last]
+
     return pool_chat_completion(
         final_messages,
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,
         tools=TOOLS,
+        vision=vision,
     )
 
 
@@ -513,6 +624,9 @@ def delete_account_view(request):
 @login_required(login_url="login")
 @require_POST  
 def api_image_generate(request):
+  def pollinations_url(prompt_text):
+    return f"https://image.pollinations.ai/prompt/{quote(prompt_text)}?width=1024&height=1024&nologo=true"
+
   try:
     data = json.loads(request.body or "{}")
     prompt = (data.get("prompt") or "").strip()
@@ -522,14 +636,11 @@ def api_image_generate(request):
     
     client = get_openai_client()
     if client is None:
-      return JsonResponse(
-          {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
-          status=503,
-      )
+      return JsonResponse({"status": "success", "image_url": pollinations_url(prompt)})
     
     image_model = os.environ.get(
         "OPENROUTER_IMAGE_MODEL",
-        "google/gemini-pro-vision",
+        "google/gemini-2.5-flash-image-preview",
     ).strip()
     try:
       response = client.chat.completions.create(
@@ -541,9 +652,9 @@ def api_image_generate(request):
       image_url = extract_image_url(message)
       if image_url:
         return JsonResponse({"status": "success", "image_url": image_url})
-      return JsonResponse({"error": "Görsel modeli yanıtında görsel bulunamadı."}, status=502)
-    except Exception as img_error:
-      return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
+      return JsonResponse({"status": "success", "image_url": pollinations_url(prompt)})
+    except Exception:
+      return JsonResponse({"status": "success", "image_url": pollinations_url(prompt)})
       
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
@@ -597,6 +708,7 @@ def api_chat(request):
 
     full_message = user_message
 
+    file_texts = []
     for file_item in files:
         if not isinstance(file_item, dict):
             continue
@@ -608,7 +720,18 @@ def api_chat(request):
             return JsonResponse({"error": "Dosya boyutu 50 MB sınırını aşamaz."}, status=413)
         extracted = extract_uploaded_file_text(file_item)
         if extracted:
-            pass
+            name = file_item.get("name", "Dosya")
+            file_texts.append((name, extracted))
+
+    voice_audio = voice if isinstance(voice, dict) and voice.get("base64") else None
+    if voice_audio and not voice_transcript:
+        voice_transcript = transcribe_audio(voice_audio)
+    has_audio_input = bool(voice_audio) and not voice_transcript
+
+    has_images = any(
+        (isinstance(img, dict) and (img.get("url") or img.get("base64")))
+        for img in images
+    )
 
     if not build_provider_pool():
         return JsonResponse(
@@ -695,34 +818,22 @@ def api_chat(request):
     user_content = []
     if full_message:
         user_content.append({"type": "text", "text": full_message})
-    
+
     if voice_transcript:
-        if full_message:
-            user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
-        else:
-            user_content.append({"type": "text", "text": voice_transcript})
+        label = "[Ses kaydı metni]\n" if full_message else ""
+        user_content.append({"type": "text", "text": f"{label}{voice_transcript}"})
+
+    for name, text in file_texts:
+        user_content.append({"type": "text", "text": f"[{name} içeriği]\n{text}"})
 
     for img in images:
+        if not isinstance(img, dict):
+            continue
         if img.get("url"):
             user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
         elif img.get("base64"):
             image_type = img.get("type") or "image/jpeg"
             user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
-
-    for file_item in files:
-        if not isinstance(file_item, dict):
-            continue
-        if file_item.get("base64"):
-            file_type = file_item.get("type") or "application/octet-stream"
-            user_content.append({
-                "type": "file",
-                "file": {
-                    "filename": file_item.get("name", "dosya"),
-                    "file_data": f"data:{file_type};base64,{file_item['base64']}"
-                }
-            })
-        elif file_item.get("text"):
-            user_content.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
 
     for h in history:
         if not isinstance(h, dict):
@@ -732,16 +843,10 @@ def api_chat(request):
         if h.get("files") and isinstance(h["files"], list):
             file_parts = []
             for file_item in h["files"]:
-                if file_item.get("base64"):
-                    file_type = file_item.get("type") or "application/octet-stream"
-                    file_parts.append({
-                        "type": "file",
-                        "file": {
-                            "filename": file_item.get("name", "dosya"),
-                            "file_data": f"data:{file_type};base64,{file_item['base64']}"
-                        }
-                    })
-                elif file_item.get("text"):
+                extracted = extract_uploaded_file_text(file_item) if isinstance(file_item, dict) else ""
+                if extracted:
+                    file_parts.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{extracted}"})
+                elif isinstance(file_item, dict) and file_item.get("text"):
                     file_parts.append({"type": "text", "text": f"[{file_item.get('name', 'Dosya')} içeriği]\n{file_item['text']}"})
             if content:
                 file_parts.insert(0, {"type": "text", "text": content})
@@ -750,39 +855,26 @@ def api_chat(request):
             messages.append({"role": role, "content": content})
 
     if user_content:
-        if isinstance(voice, dict) and voice.get("base64"):
-            audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
-            audio_format = audio_type.split("/")[-1] or "webm"
-            user_content.append({
-                "type": "input_audio",
-                "input_audio": {"data": voice["base64"], "format": audio_format},
-            })
         messages.append({"role": "user", "content": user_content})
+    elif has_audio_input:
+        audio_type = str(voice_audio.get("type") or "audio/webm").split(";")[0]
+        audio_format = audio_type.split("/")[-1] or "webm"
+        messages.append({"role": "user", "content": [
+            {"type": "input_audio", "input_audio": {"data": voice_audio["base64"], "format": audio_format}}
+        ]})
     else:
-        if isinstance(voice, dict) and voice.get("base64"):
-            audio_type = str(voice.get("type") or "audio/webm").split(";")[0]
-            audio_format = audio_type.split("/")[-1] or "webm"
-            messages.append({"role": "user", "content": [
-                {"type": "input_audio", "input_audio": {"data": voice["base64"], "format": audio_format}}
-            ]})
-        else:
-            messages.append({"role": "user", "content": full_message})
+        messages.append({"role": "user", "content": full_message})
 
     try:
-        has_audio_input = any(
-            part.get("type") == "input_audio"
-            for part in (user_content if user_content and isinstance(user_content, list) else [])
-        ) or (isinstance(voice, dict) and voice.get("base64"))
-        
-        request_model = "openai/gpt-4o-audio-preview" if has_audio_input else model
+        request_model = model
         
         if deep_think:
             completion = deep_think_call(
                 messages,
                 deep_think_seconds,
-                base_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                vision=has_images,
             )
         else:
             completion = pool_chat_completion(
@@ -793,6 +885,7 @@ def api_chat(request):
                 tools=TOOLS,
                 openrouter_models=[request_model],
                 only_openrouter=has_audio_input,
+                vision=has_images,
             )
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
@@ -868,6 +961,7 @@ def api_chat(request):
                     tools=TOOLS,
                     openrouter_models=[request_model],
                     only_openrouter=has_audio_input,
+                    vision=has_images,
                 )
                 
                 for chunk in final_completion:

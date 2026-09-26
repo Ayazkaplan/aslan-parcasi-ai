@@ -198,7 +198,7 @@
             font-weight: 700;
             font-size: 13px;
             overflow: hidden;
-            transition: max-width 0.4s ease-out, opacity 0.3s ease;
+            transition: max-width 0.3s ease-in, opacity 0.2s ease-in;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -208,6 +208,7 @@
         .user-profile-bar.active .sliding-username {
             max-width: 150px;
             opacity: 1;
+            transition: max-width 0.4s ease-out, opacity 0.3s ease-out;
         }
 
         .search-box {
@@ -677,7 +678,7 @@
             font-weight: 700;
             font-size: 13px;
             overflow: hidden;
-            transition: max-width 0.4s ease-out, opacity 0.3s ease;
+            transition: max-width 0.3s ease-in, opacity 0.2s ease-in, margin-right 0.3s ease-in;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -689,6 +690,7 @@
             max-width: 150px;
             opacity: 1;
             margin-right: 8px;
+            transition: max-width 0.4s ease-out, opacity 0.3s ease-out, margin-right 0.3s ease-out;
         }
 
         /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (ASLAN PARÇASI DÜZENİ & + BUTONU) */
@@ -864,6 +866,24 @@
             background: #ff0080;
             border-radius: 50%;
             animation: pulse 1.5s infinite;
+        }
+
+        .cancel-request-btn {
+            margin-left: auto;
+            padding: 4px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(239, 68, 68, 0.6);
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .cancel-request-btn:hover {
+            background: rgba(239, 68, 68, 0.3);
+            color: #fff;
         }
 
         @keyframes pulse {
@@ -1293,6 +1313,10 @@
                 width: 30px;
                 height: 30px;
             }
+            /* Mobilde ayarlar dişlisi, menü kapatma butonuyla üst üste binmesin */
+            .brand-header .settings-icon-btn {
+                margin-right: 44px;
+            }
         }
 
         @media (max-width: 480px) {
@@ -1432,6 +1456,7 @@
                     <div class="typing-dot"></div>
                     <div class="typing-dot"></div>
                 </div>
+                <button type="button" class="cancel-request-btn" onclick="cancelPendingResponse()">İptal Et</button>
             </div>
         </div>
 
@@ -2152,10 +2177,12 @@
         const reasoningContainer = document.createElement('div');
         reasoningContainer.className = 'reasoning-container';
         reasoningContainer.id = 'reasoningContainer';
+        reasoningContainer.style.display = 'block';
         reasoningContainer.innerHTML = `
             <div class="reasoning-header">
                 <div class="reasoning-dot"></div>
                 <span>Düşünüyor...</span>
+                <button type="button" class="cancel-request-btn" onclick="cancelPendingResponse()">İptal Et</button>
             </div>
             <div class="reasoning-content" id="reasoningContent"></div>
         `;
@@ -2497,17 +2524,23 @@
         }
         const voiceDataUrl = selectedVoiceBlob ? await blobToDataUrl(selectedVoiceBlob) : '';
 
+        // Temizlemeden önce gönderilecek medyayı yakala (body'de kullanılacak)
+        const imagesToSend = selectedImages.slice();
+        const filesToSend = selectedFiles.slice();
+        const voiceBlobToSend = selectedVoiceBlob;
+        const voiceTypeToSend = voiceBlobToSend ? (voiceBlobToSend.type || 'audio/webm') : '';
+
         // Combine text with voice transcript
         let fullMessage = text || voiceTranscript;
-        const filesForMessage = selectedFiles.map(file => ({
+        const filesForMessage = filesToSend.map(file => ({
             name: file.name,
             type: file.type,
             size: file.size,
             base64: file.base64,
             text: file.text
         }));
-        if (!fullMessage && selectedFiles.length) {
-            fullMessage = `[Dosya gönderildi: ${selectedFiles.map(file => file.name).join(', ')}]`;
+        if (!fullMessage && filesToSend.length) {
+            fullMessage = `[Dosya gönderildi: ${filesToSend.map(file => file.name).join(', ')}]`;
         }
 
         if (currentChat && !currentChat.isCustomTitle && currentChat.messages.length === 0) {
@@ -2519,9 +2552,9 @@
             sender: 'user', 
             text: fullMessage, 
             timestamp,
-            images: selectedImages, // Gönderilecek görselleri doğrudan kullan
-            files: selectedFiles,   // Gönderilecek dosyaları doğrudan kullan
-            hasVoice: !!selectedVoiceBlob,
+            images: imagesToSend, // Gönderilecek görselleri doğrudan kullan
+            files: filesToSend,   // Gönderilecek dosyaları doğrudan kullan
+            hasVoice: !!voiceBlobToSend,
             voice: voiceDataUrl || undefined // voiceDataUrl, base64 data URL'yi içerir
         });
         
@@ -2571,11 +2604,11 @@
                     history: previousHistory,
                     deep_think: wasDeepThink,
                     deep_think_seconds: deepThinkSeconds,
-                    images: selectedImages,
-                    files: selectedFiles,
+                    images: imagesToSend,
+                    files: filesToSend,
                     voice_transcript: voiceTranscript,
-                    voice: selectedVoiceBlob && voiceDataUrl ? {
-                        type: selectedVoiceBlob.type || 'audio/webm',
+                    voice: voiceBlobToSend && voiceDataUrl ? {
+                        type: voiceTypeToSend,
                         base64: voiceDataUrl.split(',')[1] || ''
                     } : null
                 }),
@@ -2760,15 +2793,24 @@
 
         const currentChat = chats.find(c => c.id === activeChatId);
         if (currentChat && currentChat.messages.length > 0) {
-            const lastMessageIndex = currentChat.messages.length - 1;
-            const isLastMessage = (msgIndex === lastMessageIndex);
+            let lastAiIndex = -1;
+            let lastUserIndex = -1;
+            for (let i = currentChat.messages.length - 1; i >= 0; i--) {
+                const s = currentChat.messages[i].sender;
+                if (lastAiIndex === -1 && s === 'ai') lastAiIndex = i;
+                if (lastUserIndex === -1 && s === 'user') lastUserIndex = i;
+                if (lastAiIndex !== -1 && lastUserIndex !== -1) break;
+            }
 
-            if (isLastMessage) {
+            const showRetry = (sender === 'ai' && msgIndex === lastAiIndex);
+            const showUserActions = (sender === 'user' && msgIndex === lastUserIndex);
+
+            if (showRetry || showUserActions) {
                 const actionBrd = document.createElement('div');
                 actionBrd.className = 'msg-action-bar';
                 
                 let actionHtml = '';
-                if (sender === 'ai') {
+                if (showRetry) {
                     actionHtml = `
                         <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
@@ -2777,7 +2819,7 @@
                             </svg>
                         </button>
                     `;
-                } else if (sender === 'user') {
+                } else if (showUserActions) {
                     actionHtml = `
                     <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
