@@ -4,6 +4,7 @@ import base64
 import io
 import re
 import time
+import logging
 import requests
 from urllib.parse import quote
 from django.contrib.auth import login, logout
@@ -32,6 +33,8 @@ except ImportError:
 
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_TEXT = 300_000
+
+logger = logging.getLogger(__name__)
 
 
 def get_openai_client():
@@ -415,7 +418,9 @@ def pool_chat_completion(messages, temperature=0.7, max_tokens=4096, stream=Fals
                 return provider["client"].chat.completions.create(**kwargs)
             except Exception as e:
                 last_error = e
+                logger.warning("pool_chat_completion: %s/%s failed: %s", provider.get("name"), model, e)
                 continue
+    logger.error("pool_chat_completion: all providers failed. last_error=%s", last_error)
     raise last_error or Exception("Tüm sağlayıcılar başarısız oldu")
 
 
@@ -741,46 +746,128 @@ def delete_account_view(request):
 
 @login_required(login_url="login")
 @require_POST  
-def api_image_generate(request):
-  def pollinations_url(prompt_text):
-    return (
-        f"https://image.pollinations.ai/prompt/{quote(prompt_text)}"
-        f"?width=1024&height=1024&nologo=true&model=flux&enhance=true"
-    )
+def _pollinations_data_url(prompt_text):
+  """Pollinations yedek görseli: önbelleği kır, görseli indir, alt filigran şeridini
+  kırp ve data URL olarak döndür. OpenRouter görsel modeli kullanılamadığında devreye girer."""
+  import random
+  # Önbellek prompt'a göre anahtarlanıyor ve seed yoksayılıyor; bu yüzden prompt'u
+  # benzersiz kılmak için anlamsal olmayan bir özel anahtar ekliyoruz ve private istiyoruz.
+  nonce = random.randint(100000, 999999)
+  varyant = f"{prompt_text} (unique {nonce})"
+  url = (
+      f"https://image.pollinations.ai/prompt/{quote(varyant)}"
+      f"?width=1024&height=1024&nologo=true&private=true&model=flux&enhance=true&seed={nonce}"
+  )
+  try:
+    resp = requests.get(url, timeout=60, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Referer": "https://aslan-parcasi-ai.onrender.com/",
+    })
+    resp.raise_for_status()
+    raw = resp.content
+    if not raw:
+      return url
+    try:
+      from PIL import Image
+      img = Image.open(io.BytesIO(raw))
+      img = img.convert("RGB")
+      w, h = img.size
+      # "pollinations.ai" filigranı alt kısımda; alt ~%7'lik şeridi kırp.
+      crop_h = max(1, int(h * 0.07))
+      if h - crop_h > 100:
+        img = img.crop((0, 0, w, h - crop_h))
+      buf = io.BytesIO()
+      img.save(buf, format="JPEG", quality=92)
+      return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+      return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+  except Exception:
+    return url
 
+
+OPENROUTER_IMAGE_MODELS = [
+    "google/gemini-2.5-flash-image",
+    "google/gemini-3-pro-image-preview",
+    "google/gemini-2.5-flash-image-preview",
+]
+
+
+def api_image_generate(request):
   try:
     data = json.loads(request.body or "{}")
     prompt = (data.get("prompt") or "").strip()
-    
+
     if not prompt:
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
-    
+
     client = get_openai_client()
-    if client is None:
-      return JsonResponse({"status": "success", "image_url": pollinations_url(prompt)})
-    
-    image_model = os.environ.get(
-        "OPENROUTER_IMAGE_MODEL",
-        "google/gemini-2.5-flash-image-preview",
-    ).strip()
-    try:
-      response = client.chat.completions.create(
-          model=image_model,
-          messages=[{"role": "user", "content": prompt}],
-          modalities=["text", "image"],
-      )
-      message = response.choices[0].message if response.choices else None
-      image_url = extract_image_url(message)
-      if image_url:
-        return JsonResponse({"status": "success", "image_url": image_url})
-      return JsonResponse({"status": "success", "image_url": pollinations_url(prompt)})
-    except Exception:
-      return JsonResponse({"status": "success", "image_url": pollinations_url(prompt)})
-      
+    if client is not None:
+      env_model = (os.environ.get("OPENROUTER_IMAGE_MODEL") or "").strip()
+      models = [env_model] if env_model else list(OPENROUTER_IMAGE_MODELS)
+      for image_model in models:
+        if not image_model:
+          continue
+        try:
+          response = client.chat.completions.create(
+              model=image_model,
+              messages=[{"role": "user", "content": prompt}],
+              modalities=["text", "image"],
+          )
+          message = response.choices[0].message if response.choices else None
+          image_url = extract_image_url(message)
+          if image_url:
+            return JsonResponse({"status": "success", "image_url": image_url})
+        except Exception:
+          continue
+
+    # OpenRouter kullanılamadı / görsel üretmedi: filigransız pollinations yedeği.
+    return JsonResponse({"status": "success", "image_url": _pollinations_data_url(prompt)})
+
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   except Exception as e:
     return JsonResponse({"error": str(e)}, status=500)
+
+
+@login_required(login_url="login")
+def api_debug(request):
+  """Canlı sunucuda (Render) neyin çalışıp çalışmadığını görmek için teşhis ucu.
+  Yalnızca giriş yapmış kullanıcı; API anahtarı DEĞERLERİ asla döndürülmez."""
+  report = {"keys": {}, "pool": [], "checks": {}}
+  for key in ("GROQ_API_KEY", "MISTRAL_API_KEY", "COHERE_API_KEY", "OPENROUTER_API_KEY", "DATABASE_URL"):
+    val = (os.environ.get(key) or "").strip()
+    report["keys"][key] = bool(val) and val != "gecici_anahtar"
+  try:
+    for provider in build_provider_pool():
+      report["pool"].append({"name": provider.get("name"), "models": provider.get("models")})
+  except Exception as e:
+    report["checks"]["pool_error"] = str(e)
+  try:
+    import bs4  # noqa: F401
+    report["checks"]["bs4"] = True
+  except Exception as e:
+    report["checks"]["bs4"] = f"MISSING: {e}"
+  try:
+    w = get_weather("Istanbul", "TR")
+    report["checks"]["weather"] = w.get("error") or f"OK {w.get('temperature')}°C {w.get('description')}"
+  except Exception as e:
+    report["checks"]["weather"] = f"ERROR: {e}"
+  try:
+    s = web_search("İstanbul hava durumu", 3)
+    res = s.get("results") or []
+    report["checks"]["web_search"] = s.get("error") or f"OK {len(res)} sonuç"
+  except Exception as e:
+    report["checks"]["web_search"] = f"ERROR: {e}"
+  try:
+    completion = pool_chat_completion(
+        [{"role": "user", "content": "Tek kelimeyle selam ver."}],
+        temperature=0.2, max_tokens=16, stream=False,
+    )
+    text = completion.choices[0].message.content if completion.choices else ""
+    report["checks"]["chat"] = f"OK: {(text or '')[:40]!r}"
+  except Exception as e:
+    report["checks"]["chat"] = f"ERROR: {type(e).__name__}: {e}"
+  return JsonResponse(report)
 
 
 @login_required(login_url="login")
@@ -863,6 +950,10 @@ def api_chat(request):
     base_prompt = (
         "Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş bilgi birikimine sahip bir yapay zeka asistanısın. "
         "Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
+        "KİMLİK KURALI (ÇOK ÖNEMLİ): Sen HER ZAMAN 'Aslan Parçası AI'sın. Asla ChatGPT, GPT-4, GPT-4o, OpenAI, Claude, Anthropic, Gemini, Google "
+        "veya başka bir yapay zekâ/model/şirket olduğunu SÖYLEME, ima etme veya kabul etme. Kim olduğunu soran birine yalnızca "
+        "'Ben Aslan Parçası AI'yım, Ayaz Kaplan tarafından geliştirildim' de. Altta yatan model/teknoloji sorulursa bunu açıklama; "
+        "Aslan Parçası AI olduğunu tekrarla. "
         "KRİTİK KURAL: Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kim olduğu bilgisini KENDİLİĞİNDEN söyleme. "
         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
@@ -896,6 +987,7 @@ def api_chat(request):
             "GitHub/GitLab entegrasyon iş akışlarına dair yardım et, commit mesajları öner, branch stratejileri danış. "
             "Farklı programlama dillerinde uzmanlaş, hata ayıklama, optimizasyon ve refactoring konularında yardımcı ol. "
             "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
+            "Sen HER ZAMAN 'Aslan Parçası AI'sın; asla ChatGPT, GPT-4, OpenAI, Claude, Gemini veya başka bir model/şirket olduğunu söyleme veya ima etme. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
         model = "openai/gpt-4o"
@@ -909,6 +1001,7 @@ def api_chat(request):
             "Gereksiz detaylardan kaçın, doğrudan noktaya odaklan. "
             "Normal moddan belirgin daha hızlı ve kısa yanıtlar üret. "
             "Karmaşık konuları basitleştir, hızlı özetler ve hızlı kararlar ver. "
+            "Sen HER ZAMAN 'Aslan Parçası AI'sın; asla ChatGPT, GPT-4, OpenAI, Claude, Gemini veya başka bir model/şirket olduğunu söyleme veya ima etme. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
         model = "openai/gpt-4o-mini"

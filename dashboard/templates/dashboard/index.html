@@ -866,6 +866,40 @@
             transform: scale(1.05);
         }
 
+        .send-btn .stop-icon {
+            display: none;
+        }
+
+        /* Yazarken/düşünürken: enter tuşu animasyonlu durdurma karesine dönüşür */
+        .send-btn.sending {
+            background: var(--accent-gradient);
+            position: relative;
+            animation: sendBreath 1.4s ease-in-out infinite;
+        }
+
+        .send-btn.sending .send-icon {
+            display: none;
+        }
+
+        .send-btn.sending .stop-icon {
+            display: block;
+            width: 13px;
+            height: 13px;
+            border-radius: 3px;
+            background: #0b0f19;
+            animation: stopSquareSpin 1.4s ease-in-out infinite;
+        }
+
+        @keyframes sendBreath {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(0, 255, 170, 0.45); }
+            50% { box-shadow: 0 0 0 6px rgba(0, 255, 170, 0); }
+        }
+
+        @keyframes stopSquareSpin {
+            0%, 100% { transform: scale(1) rotate(0deg); }
+            50% { transform: scale(0.82) rotate(90deg); }
+        }
+
         /* DÜŞÜNME BUTONU */
         .think-btn {
             background: rgba(255, 255, 255, 0.1);
@@ -921,6 +955,10 @@
             color: #cbd5e1;
             line-height: 1.4;
             font-style: italic;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 180px;
+            overflow-y: auto;
         }
 
         .reasoning-dot {
@@ -1045,31 +1083,48 @@
         }
 
         .media-btn.stop-recording {
-            background: #f59e0b;
-            border-color: #f59e0b;
-            color: #fff;
+            background: var(--accent-gradient);
+            border-color: var(--accent-color, #00ffaa);
+            color: #0b0f19;
+            box-shadow: 0 0 12px rgba(0, 255, 170, 0.35);
         }
 
         .media-btn.stop-recording:hover {
-            background: #d97706;
+            filter: brightness(1.1);
+            transform: scale(1.05);
         }
 
         /* Voice recording stop button in preview */
         .voice-preview .stop-recording-btn {
-            background: #f59e0b;
-            border: none;
-            color: #fff;
-            padding: 6px 12px;
-            border-radius: 6px;
+            background: var(--accent-gradient);
+            border: 1px solid var(--accent-color, #00ffaa);
+            color: #0b0f19;
+            padding: 6px 16px;
+            border-radius: 999px;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: 700;
+            letter-spacing: 0.3px;
             cursor: pointer;
             margin-left: 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 0 12px rgba(0, 255, 170, 0.3);
             transition: 0.2s;
         }
 
+        .voice-preview .stop-recording-btn::before {
+            content: "";
+            width: 9px;
+            height: 9px;
+            border-radius: 2px;
+            background: #0b0f19;
+            animation: stopSquareSpin 1.4s ease-in-out infinite;
+        }
+
         .voice-preview .stop-recording-btn:hover {
-            background: #d97706;
+            filter: brightness(1.1);
+            transform: scale(1.04);
         }
 
         /* Recording indicator styles */
@@ -1582,10 +1637,11 @@
                     </div>
                 </div>
                 <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
-                <button class="send-btn" onclick="sendMessage()" title="Gönder" aria-label="Gönder">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+                <button class="send-btn" id="sendBtn" onclick="onSendButtonClick()" title="Gönder" aria-label="Gönder">
+                    <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
                         <path d="m4 4 16 8-16 8 3-8z"></path><path d="M7 12h13"></path>
                     </svg>
+                    <span class="stop-icon" aria-hidden="true"></span>
                 </button>
             </div>
             
@@ -1724,6 +1780,7 @@
     let isRecording = false;
     let voiceStopPromise = null;
     let activeRequestController = null;
+    let isSending = false;
     let localMutationAt = 0;
     let serverSyncTimer = null;
     let serverSyncInFlight = false;
@@ -1928,8 +1985,49 @@
         indicator.style.display = 'none';
     }
 
+    function isLiveChat(c) {
+        return !!(c && !c.deleted && c.messages && c.messages.length > 0);
+    }
+
+    function liveChats() {
+        return chats.filter(isLiveChat);
+    }
+
+    // Sohbetler + silme mezar taşları (tombstone) sunucuya birlikte gönderilir ki
+    // silinen sohbet başka bir cihazda geri gelmesin.
+    function syncableChats() {
+        return chats.filter(c => (c && c.deleted) || isLiveChat(c));
+    }
+
+    function mergeChats(localArr, remoteArr) {
+        const now = Date.now();
+        const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+        const map = new Map();
+        const put = (c) => {
+            if (!c || c.id === undefined || c.id === null) return;
+            if (c.deleted && c.deletedAt && (now - c.deletedAt) > THIRTY_DAYS) return;
+            const prev = map.get(c.id);
+            if (!prev) { map.set(c.id, c); return; }
+            if (c.deleted || prev.deleted) {
+                map.set(c.id, {
+                    id: c.id,
+                    title: prev.title || c.title,
+                    mode: prev.mode || c.mode,
+                    deleted: true,
+                    deletedAt: Math.max(c.deletedAt || 0, prev.deletedAt || 0),
+                    messages: []
+                });
+            } else {
+                map.set(c.id, c);
+            }
+        };
+        (localArr || []).forEach(put);
+        (remoteArr || []).forEach(put);
+        return Array.from(map.values());
+    }
+
     function saveToStorage() {
-        const validChats = chats.filter(c => c.messages && c.messages.length > 0);
+        const validChats = syncableChats();
         try {
             localStorage.setItem(`${USER_STORAGE_KEY}_chats`, JSON.stringify(validChats));
         } catch (err) {
@@ -1951,7 +2049,7 @@
                     'X-CSRFToken': getCsrfToken()
                 },
                 credentials: 'same-origin',
-                body: JSON.stringify({ chats: chats.filter(c => c.messages && c.messages.length > 0) })
+                body: JSON.stringify({ chats: syncableChats() })
             });
             if (response.ok) {
                 const data = await response.json();
@@ -1971,16 +2069,18 @@
             const data = await response.json();
             const remoteChats = Array.isArray(data.chats) ? data.chats : [];
             lastServerUpdateAt = Date.parse(data.updated_at || '') || 0;
-            if (remoteChats.length || !chats.length) {
-                chats = remoteChats;
-            } else {
+            const localHadContent = syncableChats().length > 0;
+            chats = mergeChats(chats, remoteChats);
+            // Yerel mezar taşları/yeni sohbetler birleşimde eklenmişse sunucuya yay.
+            if (localHadContent || remoteChats.length === 0) {
                 syncChatsToServer();
             }
         } catch (err) {
             // The existing local cache still lets the app open without a connection.
         }
-        if (chats.length > 0) {
-            selectChat(chats[0].id);
+        const remaining = liveChats();
+        if (remaining.length > 0) {
+            selectChat(remaining[0].id);
         } else {
             createNewChat('Normal Asistan', false);
         }
@@ -1994,12 +2094,15 @@
             const data = await response.json();
             const serverUpdatedAt = Date.parse(data.updated_at || '') || 0;
             if (serverUpdatedAt > lastServerUpdateAt && Array.isArray(data.chats)) {
-                chats = data.chats;
+                const merged = mergeChats(chats, data.chats);
+                const changed = JSON.stringify(merged) !== JSON.stringify(chats);
+                chats = merged;
                 lastServerUpdateAt = serverUpdatedAt;
-                if (!activeChatId && chats.length) activeChatId = chats[0].id;
-                if (chats.length) {
-                    const activeStillExists = chats.some(chat => chat.id === activeChatId);
-                    if (!activeStillExists) activeChatId = chats[0].id;
+                if (changed) {
+                    const remaining = liveChats();
+                    if (!activeChatId || !remaining.some(c => c.id === activeChatId)) {
+                        activeChatId = remaining.length ? remaining[0].id : null;
+                    }
                     renderChatList();
                     renderMessages();
                 }
@@ -2051,7 +2154,7 @@
         const chatListEl = document.getElementById('chatList');
         chatListEl.innerHTML = '';
 
-        const visibleChats = chats.filter(c => c.messages && c.messages.length > 0);
+        const visibleChats = liveChats();
 
         visibleChats.forEach(chat => {
             const item = document.createElement('div');
@@ -2120,11 +2223,17 @@
 
     function confirmDeleteChat() {
         if (deletingChatId) {
-            chats = chats.filter(c => c.id !== deletingChatId);
+            const target = chats.find(c => c.id === deletingChatId);
+            if (target) {
+                target.deleted = true;
+                target.deletedAt = Date.now();
+                target.messages = [];
+            }
             saveToStorage();
+            const remaining = liveChats();
             if (activeChatId === deletingChatId) {
-                if (chats.length > 0) {
-                    selectChat(chats[0].id);
+                if (remaining.length > 0) {
+                    selectChat(remaining[0].id);
                 } else {
                     createNewChat('Normal Asistan', false);
                 }
@@ -2194,6 +2303,7 @@
         }
         hideTypingIndicator();
         hideReasoningAnimation();
+        setSendingState(false);
     }
 
     function editMessage(msgIndex) {
@@ -2279,7 +2389,12 @@
     function updateReasoningContent(text) {
         const reasoningContent = document.getElementById('reasoningContent');
         if (reasoningContent) {
-            reasoningContent.textContent = text;
+            const line = (text || '').trim();
+            if (line) {
+                reasoningContent.textContent = reasoningContent.textContent
+                    ? reasoningContent.textContent + '\n' + line
+                    : line;
+            }
             scrollMessagesToBottom();
         }
     }
@@ -2574,6 +2689,23 @@
         }
     }
 
+    function setSendingState(on) {
+        isSending = on;
+        const btn = document.getElementById('sendBtn');
+        if (!btn) return;
+        btn.classList.toggle('sending', on);
+        btn.title = on ? 'Durdur' : 'Gönder';
+        btn.setAttribute('aria-label', on ? 'Durdur' : 'Gönder');
+    }
+
+    function onSendButtonClick() {
+        if (isSending) {
+            cancelPendingResponse();
+        } else {
+            sendMessage();
+        }
+    }
+
     async function sendMessage(customText = null) {
         const inputEl = document.getElementById('userInput');
         const text = customText !== null ? customText : inputEl.value.trim();
@@ -2660,6 +2792,7 @@
 
         const previousHistory = currentChat.messages.slice(0, -1);
         showTypingIndicator();
+        setSendingState(true);
         if (wasDeepThink) {
             showReasoningAnimation();
         }
@@ -2691,11 +2824,11 @@
             });
 
             hideTypingIndicator();
-            if (wasDeepThink) {
-                hideReasoningAnimation();
-            }
+            // Derin düşünmede akıl yürütme kutusu akış boyunca GÖRÜNÜR kalmalı;
+            // yalnızca yanıt alınamazsa (aşağıda) kaldırılır.
 
             if (!response.ok) {
+                if (wasDeepThink) hideReasoningAnimation();
                 let errorData = {};
                 try { errorData = await response.json(); } catch (err) { /* JSON parse hatasını yoksay */ }
                 const errorMessage = errorData.error || 'Yapay zekâ yanıtı alınamadı. Lütfen tekrar deneyin.';
@@ -2710,6 +2843,8 @@
                 let fullResponse = '';
                 let pending = '';
                 let aiMsgIndex = -1;
+                let reasonReceived = false;
+                let lastReasonText = '';
                 const REASON_MARKER = '\u0001R\u0001';
 
                 const pushDisplay = (text) => {
@@ -2732,7 +2867,10 @@
                         const line = pending.slice(0, newlineIndex);
                         pending = pending.slice(newlineIndex + 1);
                         if (line.indexOf(REASON_MARKER) === 0) {
-                            updateReasoningContent(line.slice(REASON_MARKER.length));
+                            const reasonText = line.slice(REASON_MARKER.length);
+                            reasonReceived = true;
+                            lastReasonText = reasonText;
+                            updateReasoningContent(reasonText);
                             continue;
                         }
                         pushDisplay(line + '\n');
@@ -2748,16 +2886,30 @@
                         currentChat.messages[aiMsgIndex].text = fullResponse;
                     }
                 }
+                // Akış bitti: akıl yürütme kutusunu kaldır.
+                if (wasDeepThink) {
+                    hideReasoningAnimation();
+                }
                 if (aiMsgIndex === -1) {
+                    let fallbackText;
+                    if (reasonReceived && lastReasonText.trim()) {
+                        fallbackText = 'Düşünme sürecim yarıda kesildi (sunucu zaman aşımı olabilir). Toplayabildiğim son düşünce:\n\n'
+                            + lastReasonText.trim()
+                            + '\n\nLütfen mesajınızı yeniden gönderin; sorun sürerse düşünme süresini kısaltmayı deneyin.';
+                    } else {
+                        fallbackText = 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.';
+                    }
                     currentChat.messages.push({
                         sender: 'ai',
-                        text: 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.',
+                        text: fallbackText,
                         timestamp: Date.now()
                     });
                 } else {
                     currentChat.messages[aiMsgIndex].text = fullResponse.trim()
                         ? fullResponse
-                        : 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.';
+                        : (reasonReceived && lastReasonText.trim()
+                            ? lastReasonText.trim()
+                            : 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.');
                 }
             } else {
                 const data = await response.json();
@@ -2780,6 +2932,7 @@
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
         } finally {
             activeRequestController = null;
+            setSendingState(false);
         }
 
         saveToStorage();
