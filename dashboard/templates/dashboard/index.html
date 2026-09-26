@@ -17,16 +17,17 @@
             --text-color: #ffffff;
             --text-muted: #94a3b8;
             --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff);
+            --accent-color: #00ffaa;
             --border-color: rgba(255, 255, 255, 0.08);
             --pattern-opacity: 0.01;
         }
 
         /* 5 FARKLI TEMA TANIMI */
-        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); }
-        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); }
-        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); }
-        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); }
-        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); }
+        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); --accent-color: #00ffaa; }
+        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); --accent-color: #00ff66; }
+        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); --accent-color: #ff5588; }
+        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); --accent-color: #ff0080; }
+        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); --accent-color: #ffffff; }
 
         * {
             margin: 0;
@@ -57,23 +58,29 @@
         .mobile-menu-btn {
             display: none;
             position: fixed;
-            top: 12px;
-            left: 12px;
+            top: 10px;
+            left: 10px;
             z-index: 99999;
             background: var(--sidebar-bg);
-            border: 1px solid rgba(0, 255, 170, 0.6);
-            color: #00ffaa;
-            padding: 10px 12px;
-            border-radius: 10px;
+            border: 1px solid var(--accent-color, #00ffaa);
+            color: var(--accent-color, #00ffaa);
+            padding: 6px 8px;
+            border-radius: 8px;
             cursor: pointer;
             backdrop-filter: blur(5px);
-            box-shadow: 0 0 15px rgba(0, 255, 170, 0.3);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
             transition: opacity 0.3s ease;
         }
 
         .sidebar.open ~ .mobile-menu-btn {
             opacity: 0;
             pointer-events: none;
+        }
+
+        .mobile-menu-btn svg {
+            width: 16px;
+            height: 16px;
+            display: block;
         }
 
         .sidebar-overlay {
@@ -583,6 +590,62 @@
             border-radius: 4px;
         }
 
+        /* TABLO: kutulu, hücreler sarmalansın, taşarsa yatay kaydır */
+        .message table {
+            border-collapse: collapse;
+            margin: 10px 0;
+            display: block;
+            max-width: 100%;
+            overflow-x: auto;
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+
+        .message table th,
+        .message table td {
+            border: 1px solid var(--border-color);
+            padding: 8px 12px;
+            font-size: 13px;
+            text-align: left;
+            white-space: normal;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            min-width: 60px;
+        }
+
+        .message table th {
+            background: rgba(255, 255, 255, 0.06);
+            font-weight: 700;
+        }
+
+        .message table tr:nth-child(even) td {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        /* ÜRETİLEN GÖRSEL + ŞEFFAF ASLAN FİLİGRANI (sağ alt) */
+        .gen-image-wrap {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+        }
+
+        .gen-image-wrap img {
+            display: block;
+        }
+
+        .gen-image-watermark {
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            width: 42px;
+            height: 42px;
+            opacity: 0.65;
+            pointer-events: none;
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2300ffaa'/%3E%3Cstop offset='1' stop-color='%2300aaff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M50 12 L60 25 L75 20 L70 35 L85 40 L75 52 L88 65 L70 70 L65 85 L50 78 L35 85 L30 70 L12 65 L25 52 L15 40 L30 35 L25 20 L40 25 Z' stroke='url(%23g)' stroke-width='5' stroke-linejoin='round'/%3E%3Ccircle cx='38' cy='38' r='4' fill='url(%23g)'/%3E%3Ccircle cx='62' cy='38' r='4' fill='url(%23g)'/%3E%3Cpath d='M38 42 L45 48 L50 45 L55 48 L62 42 M50 45 L50 62 L44 68 M50 62 L56 68' stroke='url(%23g)' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.8));
+        }
+
         .msg-action-bar {
             display: flex;
             align-items: center;
@@ -869,7 +932,6 @@
         }
 
         .cancel-request-btn {
-            margin-left: auto;
             padding: 4px 12px;
             border-radius: 6px;
             border: 1px solid rgba(239, 68, 68, 0.6);
@@ -879,6 +941,10 @@
             font-weight: 600;
             cursor: pointer;
             transition: 0.2s;
+        }
+
+        .reasoning-header .cancel-request-btn {
+            margin-left: auto;
         }
 
         .cancel-request-btn:hover {
@@ -1456,7 +1522,7 @@
                     <div class="typing-dot"></div>
                     <div class="typing-dot"></div>
                 </div>
-                <button type="button" class="cancel-request-btn" onclick="cancelPendingResponse()">İptal Et</button>
+                <button type="button" class="cancel-request-btn" id="typingCancelBtn" onclick="cancelPendingResponse()">İptal Et</button>
             </div>
         </div>
 
@@ -2173,6 +2239,10 @@
     function showReasoningAnimation() {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
+        const typingCancel = document.getElementById('typingCancelBtn');
+        if (typingCancel) {
+            typingCancel.style.display = 'none';
+        }
         
         const reasoningContainer = document.createElement('div');
         reasoningContainer.className = 'reasoning-container';
@@ -2199,6 +2269,10 @@
         const reasoningContainer = document.getElementById('reasoningContainer');
         if (reasoningContainer) {
             reasoningContainer.remove();
+        }
+        const typingCancel = document.getElementById('typingCancelBtn');
+        if (typingCancel) {
+            typingCancel.style.display = '';
         }
     }
 
@@ -2473,7 +2547,8 @@
                 currentChat.messages.push({ 
                     sender: 'ai', 
                     text: `İşte oluşturulan görsel:\n\n![Generated Image](${data.image_url})`, 
-                    timestamp 
+                    timestamp,
+                    generatedImage: true
                 });
                 
                 inputEl.value = '';
@@ -2633,20 +2708,45 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let fullResponse = '';
+                let pending = '';
                 let aiMsgIndex = -1;
-                
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value);
-                    fullResponse += chunk;
+                const REASON_MARKER = '\u0001R\u0001';
+
+                const pushDisplay = (text) => {
+                    fullResponse += text;
                     if (aiMsgIndex === -1) {
                         aiMsgIndex = currentChat.messages.length;
                         currentChat.messages.push({ sender: 'ai', text: '', timestamp: Date.now() });
                     }
                     currentChat.messages[aiMsgIndex].text = fullResponse;
                     renderMessages();
+                };
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    pending += decoder.decode(value, { stream: true });
+                    let newlineIndex;
+                    while ((newlineIndex = pending.indexOf('\n')) !== -1) {
+                        const line = pending.slice(0, newlineIndex);
+                        pending = pending.slice(newlineIndex + 1);
+                        if (line.indexOf(REASON_MARKER) === 0) {
+                            updateReasoningContent(line.slice(REASON_MARKER.length));
+                            continue;
+                        }
+                        pushDisplay(line + '\n');
+                    }
+                    if (pending && pending.indexOf(REASON_MARKER) !== 0 && REASON_MARKER.indexOf(pending) === -1) {
+                        pushDisplay(pending);
+                        pending = '';
+                    }
+                }
+                if (pending && pending.indexOf(REASON_MARKER) !== 0) {
+                    fullResponse += pending;
+                    if (aiMsgIndex !== -1) {
+                        currentChat.messages[aiMsgIndex].text = fullResponse;
+                    }
                 }
                 if (aiMsgIndex === -1) {
                     currentChat.messages.push({
@@ -2736,6 +2836,20 @@
             if (window.hljs) {
                 msgDiv.querySelectorAll('pre code').forEach((block) => {
                     try { hljs.highlightElement(block); } catch (err) { /* ignore */ }
+                });
+            }
+
+            if (messageData && messageData.generatedImage) {
+                msgDiv.querySelectorAll('img').forEach((img) => {
+                    if (img.parentNode && img.parentNode.classList && img.parentNode.classList.contains('gen-image-wrap')) return;
+                    const wrap = document.createElement('span');
+                    wrap.className = 'gen-image-wrap';
+                    img.parentNode.insertBefore(wrap, img);
+                    wrap.appendChild(img);
+                    const logo = document.createElement('span');
+                    logo.className = 'gen-image-watermark';
+                    logo.setAttribute('aria-hidden', 'true');
+                    wrap.appendChild(logo);
                 });
             }
             

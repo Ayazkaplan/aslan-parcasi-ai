@@ -265,50 +265,68 @@ def get_weather(city, country="TR"):
 
 
 def web_search(query, num_results=5):
-    """Search the web using DuckDuckGo scraping (no API key needed).
-
-    html.duckduckgo.com denenir; başarısız olursa lite.duckduckgo.com'a düşülür.
-    """
+    """Anahtarsız web araması: önce Bing, olmazsa DuckDuckGo (html/lite)."""
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         BeautifulSoup = None
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
     }
-    endpoints = [
-        ("https://html.duckduckgo.com/html/", {"q": query}),
-        ("https://lite.duckduckgo.com/lite/", {"q": query}),
-    ]
 
-    for url, data in endpoints:
-        try:
-            response = requests.post(url, data=data, headers=headers, timeout=12)
-            response.raise_for_status()
-            if not BeautifulSoup:
-                continue
-            soup = BeautifulSoup(response.text, "html.parser")
-            results = []
-            for selector in (".result__snippet", ".web-result-description", ".result-snippet", "td.result-snippet"):
-                for result in soup.select(selector)[:num_results]:
-                    text = result.get_text(" ", strip=True)
-                    if text and text not in results:
-                        results.append(text)
-                if results:
-                    break
+    def from_bing():
+        response = requests.get(
+            "https://www.bing.com/search",
+            params={"q": query},
+            headers=headers,
+            timeout=12,
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+        for item in soup.select("li.b_algo"):
+            title_el = item.select_one("h2")
+            snippet_el = item.select_one(".b_caption p") or item.select_one("p")
+            title = title_el.get_text(" ", strip=True) if title_el else ""
+            snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+            text = f"{title} - {snippet}" if title and snippet else (title or snippet)
+            if text and text not in results:
+                results.append(text)
+            if len(results) >= num_results:
+                break
+        return results
+
+    def from_duckduckgo(base_url):
+        response = requests.post(base_url, data={"q": query}, headers=headers, timeout=12)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+        for selector in (".result__snippet", ".web-result-description", ".result-snippet", "td.result-snippet"):
+            for element in soup.select(selector):
+                text = element.get_text(" ", strip=True)
+                if text and text not in results:
+                    results.append(text)
             if results:
-                return {
-                    "query": query,
-                    "results": results[:num_results],
-                }
+                break
+        return results[:num_results]
+
+    attempts = []
+    if BeautifulSoup:
+        attempts.append(from_bing)
+        attempts.append(lambda: from_duckduckgo("https://html.duckduckgo.com/html/"))
+        attempts.append(lambda: from_duckduckgo("https://lite.duckduckgo.com/lite/"))
+
+    for attempt in attempts:
+        try:
+            results = attempt()
+            if results:
+                return {"query": query, "results": results}
         except Exception:
             continue
 
-    return {
-        "query": query,
-        "results": ["Arama sonucu bulunamadı."],
-    }
+    return {"query": query, "results": ["Arama sonucu bulunamadı."]}
 
 
 def profile_payload(user):
@@ -430,12 +448,15 @@ def transcribe_audio(voice_item):
         return ""
 
 
-def deep_think_call(messages, deep_think_seconds, temperature=0.7, max_tokens=4096, vision=False):
-    """Gerçek araştırma döngüsü: verilen süre boyunca araçları kullanarak araştırır,
-    bulguları notlara ekler, sonunda tüm notları birleştirip akıcı yanıt üretir.
+REASON_STREAM_PREFIX = "\x01R\x01"
+
+
+def deep_think_stream(messages, deep_think_seconds, temperature=0.7, max_tokens=4096, vision=False):
+    """Verilen süre boyunca araçlarla araştırır; ilerlemeyi canlı yayınlar (bağlantı kopmaz),
+    sonunda bulguları birleştirip akıcı yanıt üretir.
     """
     deadline = time.time() + max(5, deep_think_seconds)
-    max_iterations = 10
+    max_iterations = 12
 
     base_messages = list(messages)
     research_messages = list(base_messages)
@@ -450,8 +471,11 @@ def deep_think_call(messages, deep_think_seconds, temperature=0.7, max_tokens=40
     })
 
     notes = []
+    yield REASON_STREAM_PREFIX + "Araştırma başlatıldı, soru parçalara ayrılıyor...\n"
+
     for _ in range(max_iterations):
         if time.time() >= deadline:
+            yield REASON_STREAM_PREFIX + "Düşünme bütçesi doldu, bulgular derleniyor...\n"
             break
         try:
             completion = pool_chat_completion(
@@ -494,10 +518,13 @@ def deep_think_call(messages, deep_think_seconds, temperature=0.7, max_tokens=40
                     "tool_call_id": tc.id,
                     "content": json.dumps(result, ensure_ascii=False),
                 })
-                notes.append(f"[{tc.function.name}] {json.dumps(result, ensure_ascii=False)}")
+                note = f"{tc.function.name} → {json.dumps(result, ensure_ascii=False)}"
+                notes.append(note)
+                yield REASON_STREAM_PREFIX + note[:400] + "\n"
         else:
             if content:
                 notes.append(content)
+                yield REASON_STREAM_PREFIX + content[:400] + "\n"
             if content and "HAZIRIM" in content.upper():
                 break
             research_messages.append({"role": "assistant", "content": content or ""})
@@ -511,24 +538,115 @@ def deep_think_call(messages, deep_think_seconds, temperature=0.7, max_tokens=40
     last_user = base_messages[-1] if base_messages else {"role": "user", "content": ""}
     last_content = last_user.get("content")
     if isinstance(last_content, str):
-        merged_text = f"{last_content}\n\n[Araştırma Bulguları]\n{research_summary}"
-        final_last = {"role": "user", "content": merged_text}
+        final_last = {"role": "user", "content": f"{last_content}\n\n[Araştırma Bulguları]\n{research_summary}"}
     elif isinstance(last_content, list):
-        parts = list(last_content) + [{"type": "text", "text": f"\n\n[Araştırma Bulguları]\n{research_summary}"}]
-        final_last = {"role": "user", "content": parts}
+        final_last = {"role": "user", "content": list(last_content) + [{"type": "text", "text": f"\n\n[Araştırma Bulguları]\n{research_summary}"}]}
     else:
         final_last = {"role": "user", "content": f"[Araştırma Bulguları]\n{research_summary}"}
 
     final_messages = base_messages[:-1] + [final_last] if base_messages else [final_last]
 
-    return pool_chat_completion(
-        final_messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=True,
-        tools=TOOLS,
-        vision=vision,
+    answer_instruction = (
+        " Araştırma aşaması BİTTİ. Şimdi araç ÇAĞIRMA; yalnızca yukarıdaki [Araştırma Bulguları] bölümünü "
+        "kullanarak kullanıcıya doğrudan, akıcı ve nihai yanıtı ver. Bulgu yetersizse dürüstçe belirt."
     )
+    if final_messages and final_messages[0].get("role") == "system":
+        final_messages[0] = {"role": "system", "content": str(final_messages[0].get("content") or "") + answer_instruction}
+    else:
+        final_messages.insert(0, {"role": "system", "content": answer_instruction.strip()})
+
+    streamed_any = False
+    try:
+        stream = pool_chat_completion(
+            final_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                streamed_any = True
+                yield chunk.choices[0].delta.content
+    except Exception:
+        streamed_any = False
+
+    if streamed_any:
+        return
+
+    stream_messages = list(final_messages)
+    for _round in range(2):
+        try:
+            stream = pool_chat_completion(
+                stream_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                tools=TOOLS,
+                vision=vision,
+            )
+        except Exception as e:
+            yield friendly_api_error(e)
+            return
+
+        tool_calls_buffer = []
+        try:
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    streamed_any = True
+                    yield delta.content
+                if delta.tool_calls:
+                    for tool_call in delta.tool_calls:
+                        if len(tool_calls_buffer) <= tool_call.index:
+                            tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
+                        if tool_calls_buffer[tool_call.index] is None:
+                            tool_calls_buffer[tool_call.index] = {
+                                "id": tool_call.id,
+                                "name": tool_call.function.name if tool_call.function else "",
+                                "arguments": tool_call.function.arguments if tool_call.function else "",
+                            }
+                        elif tool_call.function and tool_call.function.arguments:
+                            tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
+        except Exception as e:
+            yield friendly_api_error(e)
+            return
+
+        if not tool_calls_buffer or not any(tc is not None for tc in tool_calls_buffer):
+            break
+
+        stream_messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                }
+                for tc in tool_calls_buffer if tc
+            ],
+        })
+        for tc in tool_calls_buffer:
+            if not tc:
+                continue
+            try:
+                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+            except json.JSONDecodeError:
+                args = {}
+            result = execute_function(tc["name"], args)
+            stream_messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+
+    if not streamed_any:
+        if notes:
+            yield "Araştırdım ancak nihai yanıtı üretemedim. Topladığım bulgular:\n\n" + "\n\n".join(notes[:6])
+        else:
+            yield "Derin düşünme sırasında yanıt üretilemedi. Lütfen tekrar deneyin."
 
 
 @login_required(login_url="login")
@@ -625,7 +743,10 @@ def delete_account_view(request):
 @require_POST  
 def api_image_generate(request):
   def pollinations_url(prompt_text):
-    return f"https://image.pollinations.ai/prompt/{quote(prompt_text)}?width=1024&height=1024&nologo=true"
+    return (
+        f"https://image.pollinations.ai/prompt/{quote(prompt_text)}"
+        f"?width=1024&height=1024&nologo=true&model=flux&enhance=true"
+    )
 
   try:
     data = json.loads(request.body or "{}")
@@ -869,55 +990,65 @@ def api_chat(request):
         request_model = model
         
         if deep_think:
-            completion = deep_think_call(
-                messages,
-                deep_think_seconds,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                vision=has_images,
-            )
-        else:
-            completion = pool_chat_completion(
-                messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                tools=TOOLS,
-                openrouter_models=[request_model],
-                only_openrouter=has_audio_input,
-                vision=has_images,
-            )
+            def generate_deep():
+                try:
+                    for piece in deep_think_stream(
+                        messages,
+                        deep_think_seconds,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        vision=has_images,
+                    ):
+                        yield piece
+                except Exception as e:
+                    yield friendly_api_error(e)
+            return StreamingHttpResponse(generate_deep(), content_type='text/plain')
+
+        completion = pool_chat_completion(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            tools=TOOLS,
+            openrouter_models=[request_model],
+            only_openrouter=has_audio_input,
+            vision=has_images,
+        )
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
 
     def generate():
       yielded_count = 0
       try:
-        tool_calls_buffer = []
-        for chunk in completion:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                
-                if delta.content:
-                    yielded_count += 1
-                    yield delta.content
-                
-                if delta.tool_calls:
-                    for tool_call in delta.tool_calls:
-                        if len(tool_calls_buffer) <= tool_call.index:
-                            tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
-                        
-                        if tool_calls_buffer[tool_call.index] is None:
-                            tool_calls_buffer[tool_call.index] = {
-                                "id": tool_call.id,
-                                "name": tool_call.function.name if tool_call.function else "",
-                                "arguments": tool_call.function.arguments if tool_call.function else ""
-                            }
-                        else:
-                            if tool_call.function and tool_call.function.arguments:
-                                tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
-        
-        if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
+        current_completion = completion
+        for _round in range(4):
+            tool_calls_buffer = []
+            for chunk in current_completion:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    
+                    if delta.content:
+                        yielded_count += 1
+                        yield delta.content
+                    
+                    if delta.tool_calls:
+                        for tool_call in delta.tool_calls:
+                            if len(tool_calls_buffer) <= tool_call.index:
+                                tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
+                            
+                            if tool_calls_buffer[tool_call.index] is None:
+                                tool_calls_buffer[tool_call.index] = {
+                                    "id": tool_call.id,
+                                    "name": tool_call.function.name if tool_call.function else "",
+                                    "arguments": tool_call.function.arguments if tool_call.function else ""
+                                }
+                            else:
+                                if tool_call.function and tool_call.function.arguments:
+                                    tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
+            
+            if not tool_calls_buffer or not any(tc is not None for tc in tool_calls_buffer):
+                break
+            
             assistant_message = {
                 "role": "assistant",
                 "content": "",
@@ -953,7 +1084,7 @@ def api_chat(request):
                     })
             
             try:
-                final_completion = pool_chat_completion(
+                current_completion = pool_chat_completion(
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -963,13 +1094,28 @@ def api_chat(request):
                     only_openrouter=has_audio_input,
                     vision=has_images,
                 )
-                
-                for chunk in final_completion:
+            except Exception as e:
+                yield friendly_api_error(e)
+                return
+        
+        if yielded_count == 0:
+            try:
+                messages.append({"role": "user", "content": "Araç çağırma; elindeki bilgilerle doğrudan yanıt ver."})
+                last_stream = pool_chat_completion(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    openrouter_models=[request_model],
+                    only_openrouter=has_audio_input,
+                    vision=has_images,
+                )
+                for chunk in last_stream:
                     if chunk.choices and chunk.choices[0].delta.content:
                         yielded_count += 1
                         yield chunk.choices[0].delta.content
-            except Exception as e:
-                yield friendly_api_error(e)
+            except Exception:
+                pass
         
         if yielded_count == 0:
             yield "Yapay zekâ boş yanıt verdi veya araçlar kullanılamadı. Lütfen mesajınızı yeniden gönderin."
