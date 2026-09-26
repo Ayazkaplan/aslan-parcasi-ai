@@ -115,6 +115,13 @@ else:
             'NAME': BASE_DIR / 'db.sqlite3',
         }
     }
+    import sys
+    print(
+        "UYARI: DATABASE_URL tanimli degil, SQLite kullaniliyor. Sunucu dosyalari "
+        "gecicidir; her deploy/yeniden baslatmada tum hesaplar, sohbetler ve oturumlar "
+        "silinir. Uretimde kalici bir PostgreSQL baglantisi (DATABASE_URL) ayarlayin.",
+        file=sys.stderr,
+    )
 
 
 # Password validation
