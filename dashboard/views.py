@@ -212,8 +212,43 @@ def get_current_time():
     }
 
 
+def _weather_from_wttr(city):
+    """Open-Meteo erişilemezse (veri merkezi IP'lerinde oran sınırı olabiliyor) wttr.in yedeği."""
+    try:
+        resp = requests.get(
+            f"https://wttr.in/{quote(city)}",
+            params={"format": "j1"},
+            headers={"User-Agent": "curl/8.5", "Accept-Language": "tr-TR,tr"},
+            timeout=12,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        cur = (data.get("current_condition") or [{}])[0]
+        if not cur:
+            return None
+        desc = ((cur.get("lang_tr") or [{}])[0].get("value")
+                or (cur.get("weatherDesc") or [{}])[0].get("value")
+                or "Bilinmeyen")
+        area = (data.get("nearest_area") or [{}])[0]
+        return {
+            "city": ((area.get("areaName") or [{}])[0].get("value") or city),
+            "country": ((area.get("country") or [{}])[0].get("value") or ""),
+            "temperature": int(cur.get("temp_C", 0)),
+            "feels_like": int(cur.get("FeelsLikeC", 0)),
+            "humidity": cur.get("humidity"),
+            "pressure": cur.get("pressure"),
+            "description": desc,
+            "wind_speed": cur.get("windspeedKmph"),
+            "wind_deg": cur.get("winddirDegree", 0),
+        }
+    except Exception as e:
+        logger.warning("wttr.in yedeği başarısız: %s", e)
+        return None
+
+
 def get_weather(city, country="TR"):
-    """Get weather information using Open-Meteo (no API key required)."""
+    """Get weather information using Open-Meteo (no API key required), wttr.in fallback."""
     weather_codes = {
         0: "Açık", 1: "Çoğunlukla açık", 2: "Parçalı bulutlu", 3: "Kapalı",
         45: "Sisli", 48: "Sisli", 51: "Hafif çisenti", 53: "Çisenti", 55: "Yoğun çisenti",
@@ -222,49 +257,63 @@ def get_weather(city, country="TR"):
         80: "Sağanak yağış", 81: "Sağanak yağış", 82: "Şiddetli sağanak",
         95: "Gök gürültülü fırtına", 96: "Gök gürültülü fırtına", 99: "Gök gürültülü fırtına",
     }
-    try:
-        geo_response = requests.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": city, "count": 1, "language": "tr", "format": "json"},
-            timeout=10,
-        )
-        geo_results = (geo_response.json() or {}).get("results") or []
-        if not geo_results:
-            return {"error": f"City '{city}' not found"}
-        place = geo_results[0]
-        lat, lon = place["latitude"], place["longitude"]
+    last_error = None
+    for attempt in range(2):
+        try:
+            geo_response = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "tr", "format": "json"},
+                timeout=10,
+            )
+            geo_results = (geo_response.json() or {}).get("results") or []
+            if not geo_results:
+                fallback = _weather_from_wttr(city)
+                if fallback:
+                    return fallback
+                return {"error": f"City '{city}' not found"}
+            place = geo_results[0]
+            lat, lon = place["latitude"], place["longitude"]
 
-        weather_response = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": lat,
-                "longitude": lon,
-                "current": "temperature_2m,relative_humidity_2m,apparent_temperature,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code",
-                "timezone": "auto",
-            },
-            timeout=10,
-        )
-        if weather_response.status_code != 200:
-            return {"error": f"Weather API error: {weather_response.status_code}"}
-        current = (weather_response.json() or {}).get("current") or {}
+            weather_response = requests.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current": "temperature_2m,relative_humidity_2m,apparent_temperature,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code",
+                    "timezone": "auto",
+                },
+                timeout=10,
+            )
+            if weather_response.status_code != 200:
+                last_error = f"Weather API error: {weather_response.status_code}"
+                logger.warning("open-meteo forecast HTTP %s (deneme %s)", weather_response.status_code, attempt + 1)
+                time.sleep(1)
+                continue
+            current = (weather_response.json() or {}).get("current") or {}
 
-        return {
-            "city": place.get("name", city),
-            "country": place.get("country", country),
-            "temperature": round(current.get("temperature_2m", 0)),
-            "feels_like": round(current.get("apparent_temperature", 0)),
-            "humidity": current.get("relative_humidity_2m"),
-            "pressure": current.get("pressure_msl"),
-            "description": weather_codes.get(current.get("weather_code"), "Bilinmeyen"),
-            "wind_speed": current.get("wind_speed_10m"),
-            "wind_deg": current.get("wind_direction_10m", 0),
-        }
-    except requests.Timeout:
-        return {"error": "Weather service timeout"}
-    except requests.RequestException as e:
-        return {"error": f"Weather service error: {str(e)}"}
-    except Exception as e:
-        return {"error": f"Weather error: {str(e)}"}
+            return {
+                "city": place.get("name", city),
+                "country": place.get("country", country),
+                "temperature": round(current.get("temperature_2m", 0)),
+                "feels_like": round(current.get("apparent_temperature", 0)),
+                "humidity": current.get("relative_humidity_2m"),
+                "pressure": current.get("pressure_msl"),
+                "description": weather_codes.get(current.get("weather_code"), "Bilinmeyen"),
+                "wind_speed": current.get("wind_speed_10m"),
+                "wind_deg": current.get("wind_direction_10m", 0),
+            }
+        except requests.Timeout:
+            last_error = "Weather service timeout"
+        except requests.RequestException as e:
+            last_error = f"Weather service error: {str(e)}"
+        except Exception as e:
+            last_error = f"Weather error: {str(e)}"
+        time.sleep(1)
+    fallback = _weather_from_wttr(city)
+    if fallback:
+        return fallback
+    logger.error("get_weather tüm kaynaklar başarısız (%s): %s", city, last_error)
+    return {"error": last_error or "Weather service unavailable"}
 
 
 def web_search(query, num_results=5):
@@ -315,21 +364,68 @@ def web_search(query, num_results=5):
                 break
         return results[:num_results]
 
+    def from_generic(url, params, title_selectors, snippet_selectors):
+        response = requests.get(url, params=params, headers=headers, timeout=12)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+        for container in soup.select("li, div.result, div.snippet"):
+            title = ""
+            for sel in title_selectors:
+                el = container.select_one(sel)
+                if el:
+                    title = el.get_text(" ", strip=True)
+                    break
+            snippet = ""
+            for sel in snippet_selectors:
+                el = container.select_one(sel)
+                if el:
+                    snippet = el.get_text(" ", strip=True)
+                    break
+            text = f"{title} - {snippet}" if title and snippet else (title or snippet)
+            if text and len(text) > 40 and text not in results:
+                results.append(text)
+            if len(results) >= num_results:
+                break
+        return results[:num_results]
+
+    def from_yahoo():
+        return from_generic(
+            "https://search.yahoo.com/search",
+            {"p": query},
+            ("h3.title", ".compTitle a", "a h3"),
+            (".compText p", ".compText a p", "p"),
+        )
+
+    def from_brave():
+        return from_generic(
+            "https://search.brave.com/search",
+            {"q": query},
+            (".snippet .title", "div.title", "h3"),
+            (".snippet-content p", ".snippet p", "p"),
+        )
+
     attempts = []
     if BeautifulSoup:
-        attempts.append(from_bing)
-        attempts.append(lambda: from_duckduckgo("https://html.duckduckgo.com/html/"))
-        attempts.append(lambda: from_duckduckgo("https://lite.duckduckgo.com/lite/"))
+        attempts.append(("bing", from_bing))
+        attempts.append(("yahoo", from_yahoo))
+        attempts.append(("brave", from_brave))
+        attempts.append(("ddg-html", lambda: from_duckduckgo("https://html.duckduckgo.com/html/")))
+        attempts.append(("ddg-lite", lambda: from_duckduckgo("https://lite.duckduckgo.com/lite/")))
 
-    for attempt in attempts:
+    for name, attempt in attempts:
         try:
             results = attempt()
             if results:
+                logger.info("web_search '%s' -> %s (%s sonuç)", query, name, len(results))
                 return {"query": query, "results": results}
-        except Exception:
+            logger.warning("web_search '%s' -> %s boş sonuç", query, name)
+        except Exception as e:
+            logger.warning("web_search '%s' -> %s hata: %s", query, name, e)
             continue
 
-    return {"query": query, "results": ["Arama sonucu bulunamadı."]}
+    logger.error("web_search '%s': tüm motorlar başarısız", query)
+    return {"query": query, "results": ["[Sistem] Web arama servislerine şu an ulaşılamadı, sonuç bulunamadı. Kullanıcıya arama yapılamadığını dürüstçe belirt."]}
 
 
 def profile_payload(user):
@@ -744,8 +840,6 @@ def delete_account_view(request):
   return clear_remember_cookie(JsonResponse({"status": "success"}))
 
 
-@login_required(login_url="login")
-@require_POST  
 def _pollinations_data_url(prompt_text):
   """Pollinations yedek görseli: önbelleği kır, görseli indir, alt filigran şeridini
   kırp ve data URL olarak döndür. OpenRouter görsel modeli kullanılamadığında devreye girer."""
@@ -792,6 +886,8 @@ OPENROUTER_IMAGE_MODELS = [
 ]
 
 
+@login_required(login_url="login")
+@require_POST
 def api_image_generate(request):
   try:
     data = json.loads(request.body or "{}")
@@ -1034,7 +1130,7 @@ def api_chat(request):
         user_content.append({"type": "text", "text": full_message})
 
     if voice_transcript:
-        label = "[Ses kaydı metni]\n" if full_message else ""
+        label = "[Kullanıcı yazı yerine SES KAYDI gönderdi; aşağıdaki metin bu ses kaydının yazıya dökülmüş halidir, kullanıcının kendi yazdığı bir mesaj DEĞİLDİR]\n"
         user_content.append({"type": "text", "text": f"{label}{voice_transcript}"})
 
     for name, text in file_texts:

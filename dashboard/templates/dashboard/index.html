@@ -2093,19 +2093,46 @@
             if (!response.ok) return;
             const data = await response.json();
             const serverUpdatedAt = Date.parse(data.updated_at || '') || 0;
-            if (serverUpdatedAt > lastServerUpdateAt && Array.isArray(data.chats)) {
+            if (!Array.isArray(data.chats)) return;
+
+            // Silme işlemleri zaman damgasından bağımsız HER ZAMAN diğer cihaza yayılır.
+            let deletionChanged = false;
+            for (const remote of data.chats) {
+                if (!remote || !remote.deleted) continue;
+                const local = chats.find(c => c.id === remote.id);
+                if (local && !local.deleted) {
+                    local.deleted = true;
+                    local.deletedAt = remote.deletedAt || Date.now();
+                    local.messages = [];
+                    deletionChanged = true;
+                } else if (!local) {
+                    chats.push({
+                        id: remote.id,
+                        title: remote.title,
+                        mode: remote.mode,
+                        deleted: true,
+                        deletedAt: remote.deletedAt || Date.now(),
+                        messages: []
+                    });
+                    deletionChanged = true;
+                }
+            }
+
+            let contentChanged = false;
+            if (serverUpdatedAt > lastServerUpdateAt) {
                 const merged = mergeChats(chats, data.chats);
-                const changed = JSON.stringify(merged) !== JSON.stringify(chats);
+                contentChanged = JSON.stringify(merged) !== JSON.stringify(chats);
                 chats = merged;
                 lastServerUpdateAt = serverUpdatedAt;
-                if (changed) {
-                    const remaining = liveChats();
-                    if (!activeChatId || !remaining.some(c => c.id === activeChatId)) {
-                        activeChatId = remaining.length ? remaining[0].id : null;
-                    }
-                    renderChatList();
-                    renderMessages();
+            }
+
+            if (deletionChanged || contentChanged) {
+                const remaining = liveChats();
+                if (!activeChatId || !remaining.some(c => c.id === activeChatId)) {
+                    activeChatId = remaining.length ? remaining[0].id : null;
                 }
+                renderChatList();
+                renderMessages();
             }
         } catch (err) {
             // Polling is best effort and must not interrupt a conversation.
@@ -2230,6 +2257,7 @@
                 target.messages = [];
             }
             saveToStorage();
+            syncChatsToServer();
             const remaining = liveChats();
             if (activeChatId === deletingChatId) {
                 if (remaining.length > 0) {
@@ -2276,6 +2304,15 @@
         }
         if (typingEl) {
             messagesEl.appendChild(typingEl);
+        }
+        // Akıl yürütme kutusu yeniden çizimlerde en üste kaçmasın: her zaman altta tut.
+        const reasoningEl = document.getElementById('reasoningContainer');
+        if (reasoningEl) {
+            if (typingEl) {
+                messagesEl.insertBefore(reasoningEl, typingEl);
+            } else {
+                messagesEl.appendChild(reasoningEl);
+            }
         }
         scrollMessagesToBottom();
     }
