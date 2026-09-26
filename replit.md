@@ -14,6 +14,7 @@ python manage.py runserver 0.0.0.0:5000
 - `SESSION_SECRET`: Oturumların kod güncellemeleri ve yeniden başlatmalar arasında korunması için sabit Django gizli anahtarı.
 - `DATABASE_URL`: Kullanıcılar, oturumlar, profiller ve sohbet geçmişleri için kalıcı PostgreSQL bağlantısı. Tanımlı değilse yalnızca yerel geliştirme için SQLite kullanılır.
 - `OPENROUTER_API_KEY`: Sohbet ve görsel üretimi için OpenRouter anahtarı.
+- `GROQ_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`: Yedeklemeli sağlayıcı havuzu için isteğe bağlı anahtarlar. Sohbet istekleri sırayla Groq → Mistral → Cohere → OpenRouter üzerinden gider; hata veren model/sağlayıcı atlanır. OpenRouter en sonda tutulduğu için ücretli kota yalnızca diğerleri tükenince harcanır.
 - `OPENROUTER_IMAGE_MODEL` (isteğe bağlı): Görsel üretim modeli; varsayılan `google/gemini-2.5-flash-image-preview`.
 - `OPENROUTER_FALLBACK_MODEL` (isteğe bağlı): Sohbet için yedek model.
 

@@ -3,7 +3,6 @@ import os
 import base64
 import io
 import re
-import time
 import requests
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
@@ -312,48 +311,70 @@ def friendly_api_error(error):
   return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
-def safe_model_call(client, messages, model, temperature=0.7, max_tokens=4096, stream=False, deep_think=False, tools=None):
-    configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
-    models = [model, configured_fallback, "openrouter/auto"]
-    models = list(dict.fromkeys(item for item in models if item))
-    
+def build_provider_pool(openrouter_models=None, only_openrouter=False):
+    """Yedeklemeli sağlayıcı havuzu: hata veren model/sağlayıcı atlanıp sıradakine geçilir.
+
+    OpenRouter en sonda tutulur ki ücretli kota yalnızca diğerleri tükenince harcansın.
+    """
+    pool = []
+    if not only_openrouter:
+        groq_key = (os.environ.get("GROQ_API_KEY") or "").strip()
+        if groq_key:
+            pool.append({
+                "name": "groq",
+                "client": OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key),
+                "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+            })
+        mistral_key = (os.environ.get("MISTRAL_API_KEY") or "").strip()
+        if mistral_key:
+            pool.append({
+                "name": "mistral",
+                "client": OpenAI(base_url="https://api.mistral.ai/v1", api_key=mistral_key),
+                "models": ["open-mistral-nemo", "mistral-small-latest"],
+            })
+        cohere_key = (os.environ.get("COHERE_API_KEY") or "").strip()
+        if cohere_key:
+            pool.append({
+                "name": "cohere",
+                "client": OpenAI(base_url="https://api.cohere.com/compatibility/v1", api_key=cohere_key),
+                "models": ["command-r-plus-08-2024", "command-r-08-2024"],
+            })
+    openrouter_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if openrouter_key and openrouter_key != "gecici_anahtar":
+        models = list(dict.fromkeys(item for item in (openrouter_models or []) if item))
+        models.append("openrouter/auto")
+        models = list(dict.fromkeys(models))
+        pool.append({
+            "name": "openrouter",
+            "client": OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key),
+            "models": models,
+        })
+    return pool
+
+
+def pool_chat_completion(messages, temperature=0.7, max_tokens=4096, stream=False, tools=None, openrouter_models=None, only_openrouter=False):
     last_error = None
-    kwargs = {}
-    
-    for attempt_model in models:
-        try:
+    for provider in build_provider_pool(openrouter_models, only_openrouter):
+        for model in provider["models"]:
             kwargs = {
-                "model": attempt_model,
+                "model": model,
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                "stream": stream
+                "stream": stream,
             }
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
-            
-            completion = client.chat.completions.create(**kwargs)
-            return completion
-        except Exception as e:
-            last_error = e
-            error_str = str(e).lower()
-            
-            if "429" in error_str or "rate limit" in error_str:
-                for retry in range(2):
-                    time.sleep(1 + retry)
-                    try:
-                        completion = client.chat.completions.create(**kwargs)
-                        return completion
-                    except Exception as retry_e:
-                        last_error = retry_e
-                        continue
-            continue
-    
-    raise last_error or Exception("Tüm modeller başarısız oldu")
+            try:
+                return provider["client"].chat.completions.create(**kwargs)
+            except Exception as e:
+                last_error = e
+                continue
+    raise last_error or Exception("Tüm sağlayıcılar başarısız oldu")
 
 
-def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, temperature=0.7, max_tokens=4096):
+def deep_think_call(messages, deep_think_seconds, base_prompt, temperature=0.7, max_tokens=4096):
     thinking_prompt = (
         "Sen derin düşünme modundasın. Kullanıcının sorusunu/isteğini dikkatlice analiz et. "
         "Soruyu parçalara ayır, varsayımları kontrol et, kanıt ve karşı örnekleri değerlendir. "
@@ -374,12 +395,11 @@ def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, te
     thinking_messages = temp_messages
     
     try:
-        thinking_completion = client.chat.completions.create(
-            model=model,
-            messages=thinking_messages,
+        thinking_completion = pool_chat_completion(
+            thinking_messages,
             temperature=0.3,
             max_tokens=min(max_tokens, 4096),
-            stream=False
+            stream=False,
         )
         reasoning = thinking_completion.choices[0].message.content if thinking_completion.choices else "Düşünme süreci boş."
     except Exception as e:
@@ -391,14 +411,12 @@ def deep_think_call(client, messages, model, deep_think_seconds, base_prompt, te
         {"role": "user", "content": f"[Düşünme Süreci]\n{reasoning}\n\n[Orijinal İstek]\n" + (user_request_message.get('content') if isinstance(user_request_message.get('content'), str) else json.dumps(user_request_message.get('content'), ensure_ascii=False))}
     ]
     
-    return client.chat.completions.create(
-        model=model,
-        messages=final_messages,
+    return pool_chat_completion(
+        final_messages,
         temperature=temperature,
         max_tokens=max_tokens,
         stream=True,
         tools=TOOLS,
-        tool_choice="auto",
     )
 
 
@@ -592,10 +610,9 @@ def api_chat(request):
         if extracted:
             pass
 
-    client = get_openai_client()
-    if client is None:
+    if not build_provider_pool():
         return JsonResponse(
-            {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
+            {"error": "Tanımlı yapay zekâ sağlayıcısı yok. Lütfen GROQ_API_KEY, MISTRAL_API_KEY, COHERE_API_KEY veya OPENROUTER_API_KEY anahtarlarından en az birini ayarlayın."},
             status=503,
         )
 
@@ -761,24 +778,21 @@ def api_chat(request):
         
         if deep_think:
             completion = deep_think_call(
-                client,
                 messages,
-                request_model,
                 deep_think_seconds,
                 base_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
         else:
-            completion = safe_model_call(
-                client,
+            completion = pool_chat_completion(
                 messages,
-                request_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
-                deep_think=False,
                 tools=TOOLS,
+                openrouter_models=[request_model],
+                only_openrouter=has_audio_input,
             )
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
@@ -846,15 +860,14 @@ def api_chat(request):
                     })
             
             try:
-                final_completion = safe_model_call(
-                    client,
+                final_completion = pool_chat_completion(
                     messages,
-                    request_model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,
-                    deep_think=False,
                     tools=TOOLS,
+                    openrouter_models=[request_model],
+                    only_openrouter=has_audio_input,
                 )
                 
                 for chunk in final_completion:
