@@ -1,0 +1,14 @@
+name: Qoder AI Code Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+jobs:
+  qoder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Qoder AI Action
+        uses: QoderAI/qoder-action@main
+        with:
+          token: ${{ secrets.QODER_PERSONAL_ACCESS_TOKEN }}
