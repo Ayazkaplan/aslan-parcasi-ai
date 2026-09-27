@@ -636,7 +636,7 @@
 
         .gen-image-watermark {
             position: absolute;
-            right: 8px;
+            left: 8px;
             bottom: 8px;
             width: 42px;
             height: 42px;
@@ -1236,9 +1236,13 @@
 
         .generated-image {
             max-width: 100%;
+            max-height: 400px;
+            width: auto;
+            height: auto;
             border-radius: 8px;
             margin: 8px 0;
             border: 1px solid var(--border-color);
+            object-fit: contain;
         }
 
         .message-attachment {

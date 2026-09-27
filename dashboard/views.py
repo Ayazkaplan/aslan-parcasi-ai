@@ -848,8 +848,12 @@ def _pollinations_data_url(prompt_text):
   # benzersiz kılmak için anlamsal olmayan bir özel anahtar ekliyoruz ve private istiyoruz.
   nonce = random.randint(100000, 999999)
   varyant = f"{prompt_text} (unique {nonce})"
+  
+  # Prompt'u optimize et - tek konu, yüksek kalite
+  optimized_varyant = f"high quality, detailed, professional, single subject, perfect composition, no duplicates: {varyant}"
+  
   url = (
-      f"https://image.pollinations.ai/prompt/{quote(varyant)}"
+      f"https://image.pollinations.ai/prompt/{quote(optimized_varyant)}"
       f"?width=1024&height=1024&nologo=true&private=true&model=flux&enhance=true&seed={nonce}"
   )
   try:
@@ -1008,7 +1012,11 @@ def api_chat(request):
     voice = data.get("voice") or {}
 
     if not user_message and not voice_transcript and not images and not files and not (isinstance(voice, dict) and voice.get("base64")):
-        return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
+        # Eğer sadece ses kaydı varsa boş mesaj hatası verme
+        if isinstance(voice, dict) and voice.get("base64"):
+            pass  # Ses kaydı var, devam et
+        else:
+            return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
     full_message = user_message
 
