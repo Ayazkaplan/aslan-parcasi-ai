@@ -36,10 +36,45 @@ _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 
 
+def get_all_openrouter_api_keys():
+  keys = []
+  primary = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+  if primary and primary != "gecici_anahtar":
+    keys.append(primary)
+  numbered_idx = 1
+  while True:
+    candidate = (os.environ.get(f"OPENROUTER_API_KEY_{numbered_idx}") or "").strip()
+    if not candidate:
+      break
+    if candidate != "gecici_anahtar":
+      keys.append(candidate)
+    numbered_idx += 1
+  combined_raw = (os.environ.get("OPENROUTER_API_KEYS") or "").strip()
+  if combined_raw:
+    for piece in combined_raw.split(","):
+      candidate = piece.strip()
+      if candidate and candidate != "gecici_anahtar":
+        keys.append(candidate)
+  seen = set()
+  unique_keys = []
+  for key in keys:
+    if key not in seen:
+      seen.add(key)
+      unique_keys.append(key)
+  return unique_keys
+
+
 def get_openai_client():
-  api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-  if not api_key or api_key == "gecici_anahtar":
+  keys = get_all_openrouter_api_keys()
+  if not keys:
     return None
+  return OpenAI(
+      base_url="https://openrouter.ai/api/v1",
+      api_key=keys[0],
+  )
+
+
+def build_openrouter_client(api_key):
   return OpenAI(
       base_url="https://openrouter.ai/api/v1",
       api_key=api_key,
@@ -396,15 +431,44 @@ def profile_payload(user):
   }
 
 
+def is_api_key_retriable_error(error):
+  error_text = str(error).lower()
+  retriable_markers = (
+      "402", "credit", "insufficient_quota", "quota_exceeded", "quota exceeded",
+      "billing", "payment required", "payment_required", "out of credit",
+      "no credits", "credits exhausted", "balance exceeded", "credit limit",
+      "401", "403", "unauthorized", "forbidden", "invalid_api_key", "invalid key",
+      "api key expired", "expired", "revoked", "disabled",
+  )
+  return any(marker in error_text for marker in retriable_markers)
+
+
+def is_context_length_error(error):
+  error_text = str(error).lower()
+  markers = (
+      "max_tokens", "context_length_exceeded", "context length exceeded",
+      "prompt is too long", "too many tokens", "token limit", "maximum context",
+      "maximum content length", "content length exceeded",
+  )
+  return any(marker in error_text for marker in markers)
+
+
+def is_rate_limit_error(error):
+  error_text = str(error).lower()
+  return "429" in error_text or "rate limit" in error_text or "too many requests" in error_text
+
+
 def friendly_api_error(error):
   error_text = str(error).lower()
-  if "402" in error_text or "credit" in error_text or "max_tokens" in error_text:
+  if is_context_length_error(error):
+    return "Mesaj veya sohbet geçmişi çok uzun. Daha kısa bir mesaj deneyin ya da sohbeti sıfırlayın."
+  if "402" in error_text or "credit" in error_text or "insufficient_quota" in error_text or "quota exceeded" in error_text:
     return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
-  if "401" in error_text or "403" in error_text or "unauthorized" in error_text:
+  if "401" in error_text or "403" in error_text or "unauthorized" in error_text or "forbidden" in error_text:
     return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
-  if "404" in error_text or "not found" in error_text:
+  if "404" in error_text or "not found" in error_text or "model_not_found" in error_text:
     return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
-  if "429" in error_text or "rate limit" in error_text:
+  if "429" in error_text or "rate limit" in error_text or "too many requests" in error_text:
     return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
   return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
@@ -457,45 +521,58 @@ def safe_model_call(
     tools=None,
     timeout=None,
 ):
+    all_keys = get_all_openrouter_api_keys()
+    if not all_keys:
+        all_keys = [None]
+
     configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
     models = [model, configured_fallback, "openrouter/auto"]
     models = list(dict.fromkeys(item for item in models if item))
-    
+
     last_error = None
-    
-    for attempt_model in models:
-        try:
-            kwargs = {
-                "model": attempt_model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "stream": stream
-            }
-            if timeout is not None:
-                kwargs["timeout"] = max(1, timeout)
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            
-            completion = client.chat.completions.create(**kwargs)
-            return completion
-        except Exception as e:
-            last_error = e
-            error_str = str(e).lower()
-            
-            if "429" in error_str or "rate limit" in error_str:
-                for retry in range(2):
-                    time.sleep(1 + retry)
-                    try:
-                        completion = client.chat.completions.create(**kwargs)
-                        return completion
-                    except Exception as retry_e:
-                        last_error = retry_e
-                        continue
-            continue
-    
-    raise last_error or Exception("Tüm modeller başarısız oldu")
+
+    for api_key in all_keys:
+        current_client = client
+        if api_key is not None:
+            current_client = build_openrouter_client(api_key)
+        for attempt_model in models:
+            try:
+                kwargs = {
+                    "model": attempt_model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": stream
+                }
+                if timeout is not None:
+                    kwargs["timeout"] = max(1, timeout)
+                if tools:
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "auto"
+
+                completion = current_client.chat.completions.create(**kwargs)
+                return completion
+            except Exception as e:
+                last_error = e
+
+                if is_rate_limit_error(e):
+                    for retry in range(2):
+                        time.sleep(1 + retry)
+                        try:
+                            completion = current_client.chat.completions.create(**kwargs)
+                            return completion
+                        except Exception as retry_e:
+                            last_error = retry_e
+                            continue
+
+                if is_context_length_error(e):
+                    raise last_error
+
+                if is_api_key_retriable_error(e):
+                    break
+                continue
+
+    raise last_error or Exception("Tüm modeller ve API anahtarları başarısız oldu")
 
 
 def deep_think_call(
@@ -708,8 +785,8 @@ def api_image_generate(request):
     if not prompt:
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
     
-    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key or api_key == "gecici_anahtar":
+    all_keys = get_all_openrouter_api_keys()
+    if not all_keys:
       return JsonResponse(
           {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
           status=503,
@@ -729,11 +806,23 @@ def api_image_generate(request):
         os.environ.get("OPENROUTER_IMAGE_MODEL", "").strip()
         or "google/gemini-2.5-flash-image-preview"
     )
-    try:
-      image_url = generate_image_with_openrouter(prompt, image_model, api_key)
-      return JsonResponse({"status": "success", "image_url": image_url})
-    except Exception as img_error:
-      return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
+
+    last_image_error = None
+    for img_api_key in all_keys:
+      try:
+        image_url = generate_image_with_openrouter(prompt, image_model, img_api_key)
+        return JsonResponse({"status": "success", "image_url": image_url})
+      except Exception as img_error:
+        last_image_error = img_error
+        if is_context_length_error(img_error):
+          return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
+        if not is_api_key_retriable_error(img_error) and not is_rate_limit_error(img_error):
+          return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
+        continue
+
+    if last_image_error:
+      return JsonResponse({"error": friendly_api_error(last_image_error)}, status=503)
+    return JsonResponse({"error": "Görsel üretilemedi."}, status=503)
       
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
