@@ -1,0 +1,2 @@
+- [Imported Django setup](imported-django-setup.md) — Imported Python projects can have a valid requirements file but still need package installation before workflow debugging.
+- [GitHub push in this workspace](github-push.md) — Use the connected GitHub API when the local HTTPS remote has no credentials.
