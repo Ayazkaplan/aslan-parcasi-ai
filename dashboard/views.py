@@ -440,36 +440,79 @@ def is_api_key_retriable_error(error):
       "401", "403", "unauthorized", "forbidden", "invalid_api_key", "invalid key",
       "api key expired", "expired", "revoked", "disabled",
   )
+  if hasattr(error, "status_code"):
+    code = str(getattr(error, "status_code", ""))
+    if code in {"401", "402", "403"}:
+      return True
+  if hasattr(error, "response") and error.response is not None:
+    try:
+      code = str(error.response.status_code)
+      if code in {"401", "402", "403"}:
+        return True
+    except Exception:
+      pass
   return any(marker in error_text for marker in retriable_markers)
 
 
 def is_context_length_error(error):
   error_text = str(error).lower()
   markers = (
-      "max_tokens", "context_length_exceeded", "context length exceeded",
-      "prompt is too long", "too many tokens", "token limit", "maximum context",
-      "maximum content length", "content length exceeded",
+      "context_length_exceeded",
+      "context length exceeded",
+      "prompt is too long",
+      "content length exceeded",
+      "maximum content length",
+      "input too long",
+      "too many input tokens",
+      "prompt tokens exceed",
+      "token count exceeds model's maximum",
+      "your input is too long",
+      "exceeds the model's maximum context length",
+      "the message you submitted was too long",
   )
+  if hasattr(error, "status_code"):
+    code = str(getattr(error, "status_code", ""))
+    if code in {"400"} and ("context" in error_text and "length" in error_text):
+      return True
   return any(marker in error_text for marker in markers)
 
 
 def is_rate_limit_error(error):
   error_text = str(error).lower()
-  return "429" in error_text or "rate limit" in error_text or "too many requests" in error_text
+  rate_markers = ("429", "rate limit", "too many requests")
+  if hasattr(error, "status_code") and str(getattr(error, "status_code", "")) == "429":
+    return True
+  if hasattr(error, "response") and error.response is not None:
+    try:
+      if str(error.response.status_code) == "429":
+        return True
+    except Exception:
+      pass
+  return any(marker in error_text for marker in rate_markers)
 
 
 def friendly_api_error(error):
   error_text = str(error).lower()
+
+  http_code = None
+  if hasattr(error, "status_code"):
+    http_code = str(getattr(error, "status_code", ""))
+  if http_code is None and hasattr(error, "response") and error.response is not None:
+    try:
+      http_code = str(error.response.status_code)
+    except Exception:
+      http_code = None
+
+  if http_code == "402" or "402" in error_text or "insufficient_quota" in error_text or "quota exceeded" in error_text or ("credit" in error_text and "max_token" not in error_text):
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+  if http_code in {"401", "403"} or "401" in error_text or "403" in error_text or "unauthorized" in error_text or "forbidden" in error_text:
+    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
+  if http_code == "404" or "404" in error_text or "not found" in error_text or "model_not_found" in error_text:
+    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
+  if http_code == "429" or is_rate_limit_error(error):
+    return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
   if is_context_length_error(error):
     return "Mesaj veya sohbet geçmişi çok uzun. Daha kısa bir mesaj deneyin ya da sohbeti sıfırlayın."
-  if "402" in error_text or "credit" in error_text or "insufficient_quota" in error_text or "quota exceeded" in error_text:
-    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
-  if "401" in error_text or "403" in error_text or "unauthorized" in error_text or "forbidden" in error_text:
-    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
-  if "404" in error_text or "not found" in error_text or "model_not_found" in error_text:
-    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
-  if "429" in error_text or "rate limit" in error_text or "too many requests" in error_text:
-    return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
   return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
@@ -530,6 +573,7 @@ def safe_model_call(
     models = list(dict.fromkeys(item for item in models if item))
 
     last_error = None
+    context_length_hit = False
 
     for api_key in all_keys:
         current_client = client
@@ -566,11 +610,15 @@ def safe_model_call(
                             continue
 
                 if is_context_length_error(e):
-                    raise last_error
+                    context_length_hit = True
+                    continue
 
                 if is_api_key_retriable_error(e):
                     break
                 continue
+
+    if context_length_hit and is_context_length_error(last_error):
+        raise last_error
 
     raise last_error or Exception("Tüm modeller ve API anahtarları başarısız oldu")
 
@@ -808,6 +856,7 @@ def api_image_generate(request):
     )
 
     last_image_error = None
+    img_context_hit = False
     for img_api_key in all_keys:
       try:
         image_url = generate_image_with_openrouter(prompt, image_model, img_api_key)
@@ -815,11 +864,14 @@ def api_image_generate(request):
       except Exception as img_error:
         last_image_error = img_error
         if is_context_length_error(img_error):
-          return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
+          img_context_hit = True
+          continue
         if not is_api_key_retriable_error(img_error) and not is_rate_limit_error(img_error):
           return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
         continue
 
+    if img_context_hit and last_image_error and is_context_length_error(last_image_error):
+      return JsonResponse({"error": friendly_api_error(last_image_error)}, status=503)
     if last_image_error:
       return JsonResponse({"error": friendly_api_error(last_image_error)}, status=503)
     return JsonResponse({"error": "Görsel üretilemedi."}, status=503)
