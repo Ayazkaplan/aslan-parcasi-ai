@@ -38,23 +38,44 @@ _last_image_request_at = {}
 
 def get_all_openrouter_api_keys():
   keys = []
+  candidates = []
   primary = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-  if primary and primary != "gecici_anahtar":
-    keys.append(primary)
+  if primary:
+    candidates.append(primary)
   numbered_idx = 1
-  while True:
+  while numbered_idx <= 20:
     candidate = (os.environ.get(f"OPENROUTER_API_KEY_{numbered_idx}") or "").strip()
     if not candidate:
       break
-    if candidate != "gecici_anahtar":
-      keys.append(candidate)
+    candidates.append(candidate)
     numbered_idx += 1
-  combined_raw = (os.environ.get("OPENROUTER_API_KEYS") or "").strip()
-  if combined_raw:
-    for piece in combined_raw.split(","):
-      candidate = piece.strip()
-      if candidate and candidate != "gecici_anahtar":
-        keys.append(candidate)
+  for env_name in (
+      "OPENROUTER_API_KEYS", "OPENROUTER_API_KEY_POOL", "OPENROUTER_KEYS",
+      "OPENROUTER_POOL", "OPENROUTER_BACKUP_KEYS", "OPENROUTER_RESERVE_KEYS",
+  ):
+    raw = (os.environ.get(env_name) or "").strip()
+    if raw:
+      for piece in raw.split(","):
+        candidates.append(piece.strip())
+  numbered_idx = 1
+  while numbered_idx <= 20:
+    for env_pattern in (
+        f"OPENROUTER_BACKUP_{numbered_idx}",
+        f"OPENROUTER_RESERVE_{numbered_idx}",
+        f"OPENROUTER_ALT_{numbered_idx}",
+        f"OPENROUTER_FALLBACK_KEY_{numbered_idx}",
+    ):
+      candidate = (os.environ.get(env_pattern) or "").strip()
+      if candidate:
+        candidates.append(candidate)
+    numbered_idx += 1
+  for candidate in candidates:
+    cleaned = (candidate or "").strip().strip("\"'")
+    if not cleaned or cleaned == "gecici_anahtar":
+      continue
+    if len(cleaned) < 6:
+      continue
+    keys.append(cleaned)
   seen = set()
   unique_keys = []
   for key in keys:
@@ -79,6 +100,44 @@ def build_openrouter_client(api_key):
       base_url="https://openrouter.ai/api/v1",
       api_key=api_key,
   )
+
+
+def _error_http_code(error):
+  code = None
+  if hasattr(error, "status_code"):
+    code = str(getattr(error, "status_code", "") or "") or None
+  if code is None and hasattr(error, "response") and error.response is not None:
+    try:
+      code = str(error.response.status_code)
+    except Exception:
+      code = None
+  return code
+
+
+def _error_code_attr(error):
+  code = None
+  try:
+    code = str(getattr(error, "code", "") or "")
+  except Exception:
+    code = None
+  if not code:
+    try:
+      body = getattr(error, "body", None) or {}
+      if isinstance(body, dict):
+        nested = body.get("error") or body.get("code")
+        if isinstance(nested, dict):
+          code = str(nested.get("code") or "")
+        elif nested is not None:
+          code = str(nested)
+    except Exception:
+      pass
+  return (code or "").lower() or None
+
+
+def _error_type_name(error):
+  cls_name = type(error).__name__.lower()
+  module = (getattr(type(error), "__module__", "") or "").lower()
+  return f"{module}.{cls_name}" if module else cls_name
 
 
 def get_user_profile(user):
@@ -432,30 +491,79 @@ def profile_payload(user):
 
 
 def is_api_key_retriable_error(error):
+  http_code = _error_http_code(error)
+  attr_code = _error_code_attr(error)
+  type_name = _error_type_name(error)
   error_text = str(error).lower()
-  retriable_markers = (
-      "402", "credit", "insufficient_quota", "quota_exceeded", "quota exceeded",
-      "billing", "payment required", "payment_required", "out of credit",
-      "no credits", "credits exhausted", "balance exceeded", "credit limit",
-      "401", "403", "unauthorized", "forbidden", "invalid_api_key", "invalid key",
-      "api key expired", "expired", "revoked", "disabled",
+
+  if http_code in {"401", "402", "403"}:
+    return True
+
+  auth_quota_codes = (
+      "insufficient_quota", "quota_exceeded", "billing_not_active",
+      "payment_required", "invalid_api_key", "api_key_expired",
+      "forbidden", "unauthorized", "key_expired", "key_revoked",
+      "key_disabled", "account_disabled",
   )
-  if hasattr(error, "status_code"):
-    code = str(getattr(error, "status_code", ""))
-    if code in {"401", "402", "403"}:
+  if attr_code and attr_code in auth_quota_codes:
+    return True
+
+  auth_quota_types = (
+      "insufficientquotaerror", "authenticationerror", "permissiondeniederror",
+      "ratelimiterror", "openaierror.authenticationerror",
+      "openaierror.insufficientquota", "unauthenticatederror",
+      "paymentrequirederror",
+  )
+  if any(tok in type_name for tok in auth_quota_types):
+    return True
+
+  explicit_markers = (
+      "insufficient_quota", "quota_exceeded", "quota exceeded",
+      "billing_not_active", "payment required", "payment_required",
+      "out of credit", "no credits remaining", "credits exhausted",
+      "balance exceeded", "credit limit reached",
+      "invalid_api_key", "api key expired", "your api key is expired",
+      "key is invalid", "unauthorized access", "invalid authentication",
+      "revoked", "disabled key", "account is disabled",
+  )
+  if any(marker in error_text for marker in explicit_markers):
+    return True
+
+  if "credit" in error_text and (
+      "out of" in error_text or "no credit" in error_text or
+      "not enough" in error_text or "insufficient" in error_text or
+      "exceeded your" in error_text or "run out" in error_text or
+      "remaining" in error_text or "limit" in error_text or
+      "add more" in error_text or "balance" in error_text or
+      "quota" in error_text or "billing" in error_text or
+      "payment" in error_text or "purchase" in error_text or
+      "top up" in error_text or "top-up" in error_text
+  ):
+    return True
+
+  if "401" in error_text or "403" in error_text or "402" in error_text:
+    if (
+        "unauthorized" in error_text or "forbidden" in error_text or
+        "payment" in error_text or "quota" in error_text or "credit" in error_text or
+        "billing" in error_text or "key" in error_text or "auth" in error_text
+    ):
       return True
-  if hasattr(error, "response") and error.response is not None:
-    try:
-      code = str(error.response.status_code)
-      if code in {"401", "402", "403"}:
-        return True
-    except Exception:
-      pass
-  return any(marker in error_text for marker in retriable_markers)
+
+  return False
 
 
 def is_context_length_error(error):
+  http_code = _error_http_code(error)
+  attr_code = _error_code_attr(error)
+  type_name = _error_type_name(error)
   error_text = str(error).lower()
+
+  if attr_code and attr_code in ("context_length_exceeded", "string_above_max_length", "max_length"):
+    return True
+
+  if "toolarge" in type_name or "toolong" in type_name:
+    return True
+
   markers = (
       "context_length_exceeded",
       "context length exceeded",
@@ -469,50 +577,86 @@ def is_context_length_error(error):
       "your input is too long",
       "exceeds the model's maximum context length",
       "the message you submitted was too long",
+      "maximum context length is",
+      "request exceeds max content length",
+      "input length exceeded",
   )
-  if hasattr(error, "status_code"):
-    code = str(getattr(error, "status_code", ""))
-    if code in {"400"} and ("context" in error_text and "length" in error_text):
-      return True
-  return any(marker in error_text for marker in markers)
+  if any(marker in error_text for marker in markers):
+    return True
+
+  if http_code == "400" and ("context" in error_text and "length" in error_text):
+    return True
+
+  return False
 
 
 def is_rate_limit_error(error):
+  http_code = _error_http_code(error)
+  attr_code = _error_code_attr(error)
+  type_name = _error_type_name(error)
   error_text = str(error).lower()
-  rate_markers = ("429", "rate limit", "too many requests")
-  if hasattr(error, "status_code") and str(getattr(error, "status_code", "")) == "429":
+
+  if http_code == "429":
     return True
-  if hasattr(error, "response") and error.response is not None:
-    try:
-      if str(error.response.status_code) == "429":
-        return True
-    except Exception:
-      pass
+  if attr_code and ("rate_limit" in attr_code or attr_code == "429"):
+    return True
+  if "ratelimiterror" in type_name or "toomanyrequestserror" in type_name:
+    return True
+
+  rate_markers = ("429", "rate limit", "too many requests", "requests per minute", "per second", "throttled", "rate-limit")
   return any(marker in error_text for marker in rate_markers)
 
 
 def friendly_api_error(error):
+  http_code = _error_http_code(error)
   error_text = str(error).lower()
 
-  http_code = None
-  if hasattr(error, "status_code"):
-    http_code = str(getattr(error, "status_code", ""))
-  if http_code is None and hasattr(error, "response") and error.response is not None:
-    try:
-      http_code = str(error.response.status_code)
-    except Exception:
-      http_code = None
-
-  if http_code == "402" or "402" in error_text or "insufficient_quota" in error_text or "quota exceeded" in error_text or ("credit" in error_text and "max_token" not in error_text):
-    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
-  if http_code in {"401", "403"} or "401" in error_text or "403" in error_text or "unauthorized" in error_text or "forbidden" in error_text:
-    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
-  if http_code == "404" or "404" in error_text or "not found" in error_text or "model_not_found" in error_text:
-    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
   if http_code == "429" or is_rate_limit_error(error):
     return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
+
+  if http_code == "404":
+    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
+  if "404" in error_text or "not found" in error_text or "model_not_found" in error_text:
+    if not is_context_length_error(error):
+      return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
+
+  if http_code in {"401", "403"}:
+    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
+  if "401" in error_text or "403" in error_text:
+    if "unauthorized" in error_text or "forbidden" in error_text or "invalid" in error_text or "key" in error_text or "auth" in error_text:
+      return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
+
+  if http_code == "402":
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+  attr_code = _error_code_attr(error)
+  if attr_code and attr_code in ("insufficient_quota", "quota_exceeded", "billing_not_active", "payment_required"):
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+
+  explicit_quota_phrases = (
+      "insufficient_quota", "quota exceeded", "out of credit",
+      "no credits remaining", "credits exhausted",
+      "balance exceeded", "credit limit reached",
+      "billing not active", "payment required",
+      "add more credits", "purchase credits", "top up credits",
+  )
+  if any(phrase in error_text for phrase in explicit_quota_phrases):
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+
   if is_context_length_error(error):
     return "Mesaj veya sohbet geçmişi çok uzun. Daha kısa bir mesaj deneyin ya da sohbeti sıfırlayın."
+
+  if "credit" in error_text and (
+      "out of" in error_text or "no credit" in error_text or
+      "not enough" in error_text or "insufficient" in error_text or
+      "exceeded your" in error_text or "run out" in error_text or
+      "remaining" in error_text or "limit" in error_text or
+      "add more" in error_text or "balance" in error_text or
+      "quota" in error_text or "billing" in error_text or
+      "payment" in error_text or "purchase" in error_text or
+      "top up" in error_text or "top-up" in error_text
+  ):
+    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+
   return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
@@ -1099,98 +1243,264 @@ def api_chat(request):
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
 
-    def generate():
-      yielded_count = 0
-      try:
-        tool_calls_buffer = []
-        response_completion = completion
-        if deep_think:
-          response_completion = deep_think_call(
-              client,
-              messages,
-              request_model,
-              deep_think_seconds,
-              temperature=temperature,
-              max_tokens=max_tokens,
-              tools=TOOLS,
-          )
+    def run_initial_chat_round():
+      last_stream_error = None
+      all_keys = get_all_openrouter_api_keys() or [None]
+      total_attempts = 0
+      for key_override in all_keys:
+        total_attempts += 1
+        if total_attempts > 3 * max(1, len(all_keys)):
+          break
+        attempt_client = client
+        if key_override is not None:
+          attempt_client = build_openrouter_client(key_override)
+        buffered_text = []
+        buffered_tool_calls = {}
+        try:
+          tool_calls_buffer = []
+          response_completion = None
+          if deep_think:
+            response_completion = deep_think_call(
+                attempt_client,
+                messages,
+                request_model,
+                deep_think_seconds,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=TOOLS,
+            )
+          else:
+            if total_attempts == 1 and completion is not None:
+              response_completion = completion
+            else:
+              response_completion = safe_model_call(
+                  attempt_client,
+                  messages,
+                  request_model,
+                  temperature=temperature,
+                  max_tokens=max_tokens,
+                  stream=True,
+                  deep_think=False,
+                  tools=TOOLS,
+              )
 
-        for chunk in response_completion:
-          if chunk.choices and chunk.choices[0].delta.content:
-            yielded_count += 1
-            yield chunk.choices[0].delta.content
-          
-          if chunk.choices and chunk.choices[0].delta.tool_calls:
-            for tool_call in chunk.choices[0].delta.tool_calls:
-              if len(tool_calls_buffer) <= tool_call.index:
-                tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
-              
-              if tool_calls_buffer[tool_call.index] is None:
-                tool_calls_buffer[tool_call.index] = {
-                  "id": tool_call.id,
-                  "name": tool_call.function.name if tool_call.function else "",
-                  "arguments": tool_call.function.arguments if tool_call.function else ""
-                }
-              else:
-                if tool_call.function and tool_call.function.arguments:
-                  tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
-        
-        if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
-          assistant_message = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": []
+          for chunk in response_completion:
+            if chunk.choices and chunk.choices[0].delta.content:
+              buffered_text.append(chunk.choices[0].delta.content)
+
+            if chunk.choices and chunk.choices[0].delta.tool_calls:
+              for tool_call in chunk.choices[0].delta.tool_calls:
+                idx = int(getattr(tool_call, "index", 0) or 0)
+                if idx not in buffered_tool_calls:
+                  buffered_tool_calls[idx] = {
+                    "id": getattr(tool_call, "id", None),
+                    "name": "",
+                    "arguments": "",
+                  }
+                slot = buffered_tool_calls[idx]
+                if not slot["id"] and getattr(tool_call, "id", None):
+                  slot["id"] = tool_call.id
+                func = getattr(tool_call, "function", None)
+                if func is not None:
+                  if getattr(func, "name", None):
+                    slot["name"] = slot["name"] or (func.name or "")
+                  if getattr(func, "arguments", None):
+                    slot["arguments"] = slot["arguments"] + (func.arguments or "")
+
+          final_tool_calls = []
+          for idx in sorted(buffered_tool_calls.keys()):
+            item = buffered_tool_calls[idx]
+            if item and (item["name"] or item["arguments"] or item.get("id")):
+              final_tool_calls.append({
+                "index": idx,
+                "id": item.get("id"),
+                "name": item.get("name") or "",
+                "arguments": item.get("arguments") or "",
+              })
+          return {
+            "ok": True,
+            "text": "".join(buffered_text),
+            "tool_calls": final_tool_calls,
+            "error": None,
           }
-          
-          for tc in tool_calls_buffer:
-            if tc:
-              assistant_message["tool_calls"].append({
-                "id": tc["id"],
-                "type": "function",
-                "function": {
-                  "name": tc["name"],
-                  "arguments": tc["arguments"]
-                }
-              })
-          
-          messages.append(assistant_message)
-          
-          for tc in tool_calls_buffer:
-            if tc:
-              try:
-                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-              except json.JSONDecodeError:
-                args = {}
-              
-              result = execute_function(tc["name"], args)
-              messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": json.dumps(result, ensure_ascii=False)
-              })
-          
-          try:
-            final_completion = safe_model_call(
-              client,
-              messages,
+        except Exception as stream_e:
+          last_stream_error = stream_e
+          total_yielded_so_far = len(buffered_text)
+          if total_yielded_so_far > 0:
+            return {
+              "ok": False,
+              "partial_text": "".join(buffered_text),
+              "error": last_stream_error,
+              "tool_calls": [],
+              "finalize_partial": True,
+            }
+          if is_context_length_error(stream_e):
+            return {
+              "ok": False,
+              "error": stream_e,
+              "tool_calls": [],
+              "finalize_partial": False,
+            }
+          if not is_api_key_retriable_error(stream_e) and not is_rate_limit_error(stream_e):
+            return {
+              "ok": False,
+              "error": stream_e,
+              "tool_calls": [],
+              "finalize_partial": False,
+            }
+          if is_rate_limit_error(stream_e):
+            try:
+              time.sleep(2)
+            except Exception:
+              pass
+          continue
+
+      return {
+        "ok": False,
+        "error": last_stream_error or Exception("Akış başarısız"),
+        "tool_calls": [],
+        "finalize_partial": False,
+      }
+
+    def run_final_text_round(local_messages):
+      last_stream_error = None
+      all_keys = get_all_openrouter_api_keys() or [None]
+      total_attempts = 0
+      for key_override in all_keys:
+        total_attempts += 1
+        if total_attempts > 3 * max(1, len(all_keys)):
+          break
+        attempt_client = client
+        if key_override is not None:
+          attempt_client = build_openrouter_client(key_override)
+        buffered_text = []
+        try:
+          final_completion = safe_model_call(
+              attempt_client,
+              local_messages,
               request_model,
               temperature=temperature,
               max_tokens=max_tokens,
               stream=True,
               deep_think=False,
-            )
-            
-            for chunk in final_completion:
-              if chunk.choices and chunk.choices[0].delta.content:
-                yielded_count += 1
-                yield chunk.choices[0].delta.content
-          except Exception as e:
-            yield friendly_api_error(e)
-      
+          )
+          for chunk in final_completion:
+            if chunk.choices and chunk.choices[0].delta.content:
+              buffered_text.append(chunk.choices[0].delta.content)
+          return {
+            "ok": True,
+            "text": "".join(buffered_text),
+            "error": None,
+          }
+        except Exception as stream_e:
+          last_stream_error = stream_e
+          total_yielded_so_far = len(buffered_text)
+          if total_yielded_so_far > 0:
+            return {
+              "ok": False,
+              "partial_text": "".join(buffered_text),
+              "error": last_stream_error,
+              "finalize_partial": True,
+            }
+          if is_context_length_error(stream_e):
+            return {"ok": False, "error": stream_e, "finalize_partial": False}
+          if not is_api_key_retriable_error(stream_e) and not is_rate_limit_error(stream_e):
+            return {"ok": False, "error": stream_e, "finalize_partial": False}
+          if is_rate_limit_error(stream_e):
+            try:
+              time.sleep(2)
+            except Exception:
+              pass
+          continue
+
+      return {
+        "ok": False,
+        "error": last_stream_error or Exception("Final akış başarısız"),
+        "finalize_partial": False,
+      }
+
+    def generate():
+      overall_yielded = 0
+      try:
+        round_result = run_initial_chat_round()
+        if not round_result.get("ok"):
+          if round_result.get("finalize_partial") and round_result.get("partial_text"):
+            overall_yielded += len(round_result["partial_text"])
+            for part in round_result["partial_text"]:
+              yield part
+            yield friendly_api_error(round_result["error"])
+            overall_yielded += 1
+            return
+          if round_result.get("error"):
+            yield friendly_api_error(round_result["error"])
+            overall_yielded += 1
+          return
+
+        initial_text = round_result.get("text") or ""
+        if initial_text:
+          overall_yielded += len(initial_text)
+          for char in initial_text:
+            yield char
+
+        tool_calls_payload = round_result.get("tool_calls") or []
+        if tool_calls_payload:
+          assistant_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": []
+          }
+          for tc in tool_calls_payload:
+            assistant_message["tool_calls"].append({
+              "id": tc.get("id"),
+              "type": "function",
+              "function": {
+                "name": tc.get("name") or "",
+                "arguments": tc.get("arguments") or "",
+              }
+            })
+          messages.append(assistant_message)
+
+          for tc in tool_calls_payload:
+            try:
+              args = json.loads(tc["arguments"]) if tc.get("arguments") else {}
+            except json.JSONDecodeError:
+              args = {}
+            result = execute_function(tc.get("name") or "", args)
+            messages.append({
+              "role": "tool",
+              "tool_call_id": tc.get("id"),
+              "content": json.dumps(result, ensure_ascii=False)
+            })
+
+          final_round = run_final_text_round(messages)
+          if final_round.get("ok"):
+            final_text = final_round.get("text") or ""
+            if final_text:
+              overall_yielded += len(final_text)
+              for char in final_text:
+                yield char
+          else:
+            if final_round.get("finalize_partial") and final_round.get("partial_text"):
+              partial = final_round["partial_text"]
+              overall_yielded += len(partial)
+              for char in partial:
+                yield char
+              yield friendly_api_error(final_round["error"])
+              overall_yielded += 1
+            elif final_round.get("error"):
+              yield friendly_api_error(final_round["error"])
+              overall_yielded += 1
+
       except Exception as e:
-        yield friendly_api_error(e)
-      
-      if yielded_count == 0:
+        if overall_yielded == 0:
+          yield friendly_api_error(e)
+          overall_yielded += 1
+        else:
+          yield friendly_api_error(e)
+          overall_yielded += 1
+        return
+
+      if overall_yielded == 0:
         yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
