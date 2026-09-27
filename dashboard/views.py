@@ -57,6 +57,13 @@ PROVIDER_DEFAULT_MODELS = {
 
 PROVIDER_STREAM_SUPPORTED = {
     PROVIDER_GROQ: True,
+    PROVIDER_COHERE: True,
+    PROVIDER_MISTRAL: True,
+    PROVIDER_OPENROUTER: True,
+}
+
+PROVIDER_TOOLS_SUPPORTED = {
+    PROVIDER_GROQ: True,
     PROVIDER_COHERE: False,
     PROVIDER_MISTRAL: True,
     PROVIDER_OPENROUTER: True,
@@ -232,22 +239,12 @@ def provider_resolve_model(entry, requested_model, fallback_overrides=None):
   if fallback_overrides and provider in fallback_overrides and fallback_overrides[provider]:
     default = fallback_overrides[provider]
 
-  if not requested_model:
-    return default
   if provider == PROVIDER_OPENROUTER:
-    return requested_model or default
+    if not requested_model:
+      return default
+    return requested_model
 
-  requested_upper = requested_model.upper().replace("-", "").replace("_", "").replace(".", "")
-  provider_token = {
-      PROVIDER_GROQ: "GROQ",
-      PROVIDER_COHERE: "COHERE",
-      PROVIDER_MISTRAL: "MISTRAL",
-      PROVIDER_OPENROUTER: "OPENROUTER",
-  }[provider]
-  if provider_token in requested_upper:
-    return default
-
-  return requested_model
+  return default
 
 
 def provider_supports_stream(entry):
@@ -865,7 +862,6 @@ def safe_model_call(
         all_entries = [None]
 
     configured_fallback_openrouter = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
-    openrouter_models = list(dict.fromkeys(item for item in [model, configured_fallback_openrouter, "openrouter/auto"] if item))
 
     last_error = None
     context_length_hit = False
@@ -873,13 +869,15 @@ def safe_model_call(
 
     for entry in all_entries:
         current_client = client
+        provider = PROVIDER_OPENROUTER
+        actually_stream = stream
         if entry is None:
             if used_original:
                 continue
             used_original = True
             provider = PROVIDER_OPENROUTER
-            model_choices = openrouter_models
             actually_stream = stream
+            model_choices = list(dict.fromkeys(item for item in [model, configured_fallback_openrouter, "openrouter/auto"] if item))
         else:
             current_client = build_provider_client(entry)
             provider = entry["provider"]
@@ -889,12 +887,22 @@ def safe_model_call(
                 PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
             }
             resolved_main = provider_resolve_model(entry, model, fallback_overrides)
-            model_choices = list(dict.fromkeys(x for x in [
-                resolved_main,
-                fallback_overrides.get(provider),
-                PROVIDER_DEFAULT_MODELS[provider],
-            ] if x))
+            if provider == PROVIDER_OPENROUTER:
+                model_choices = list(dict.fromkeys(x for x in [
+                    resolved_main,
+                    configured_fallback_openrouter,
+                    fallback_overrides.get(provider),
+                    PROVIDER_DEFAULT_MODELS[provider],
+                ] if x))
+            else:
+                model_choices = list(dict.fromkeys(x for x in [
+                    resolved_main,
+                    fallback_overrides.get(provider),
+                    PROVIDER_DEFAULT_MODELS[provider],
+                ] if x))
             actually_stream = stream and provider_supports_stream(entry)
+
+        use_tools = tools if PROVIDER_TOOLS_SUPPORTED.get(provider, False) else None
 
         for attempt_model in model_choices:
             try:
@@ -907,8 +915,8 @@ def safe_model_call(
                 }
                 if timeout is not None:
                     kwargs["timeout"] = max(1, timeout)
-                if tools and provider in (PROVIDER_OPENROUTER, PROVIDER_GROQ, PROVIDER_MISTRAL):
-                    kwargs["tools"] = tools
+                if use_tools:
+                    kwargs["tools"] = use_tools
                     kwargs["tool_choice"] = "auto"
 
                 completion = current_client.chat.completions.create(**kwargs)
@@ -928,11 +936,9 @@ def safe_model_call(
 
                 if is_context_length_error(e):
                     context_length_hit = True
-                    continue
-
-                if is_api_key_retriable_error(e):
                     break
-                continue
+
+                break
 
     if context_length_hit and is_context_length_error(last_error):
         raise last_error
@@ -1429,6 +1435,7 @@ def api_chat(request):
         provider = PROVIDER_OPENROUTER
         actually_stream = True
         attempt_model_to_use = request_model
+        use_tools = TOOLS
         if entry is None:
           if used_original:
             continue
@@ -1436,6 +1443,7 @@ def api_chat(request):
           provider = PROVIDER_OPENROUTER
           actually_stream = True
           attempt_model_to_use = request_model
+          use_tools = TOOLS if PROVIDER_TOOLS_SUPPORTED.get(PROVIDER_OPENROUTER, True) else None
         else:
           attempt_client = build_provider_client(entry)
           provider = entry["provider"]
@@ -1446,6 +1454,7 @@ def api_chat(request):
           }
           attempt_model_to_use = provider_resolve_model(entry, request_model, fallback_overrides)
           actually_stream = provider_supports_stream(entry)
+          use_tools = TOOLS if PROVIDER_TOOLS_SUPPORTED.get(provider, False) else None
 
         buffered_text = []
         buffered_tool_calls = {}
@@ -1460,12 +1469,10 @@ def api_chat(request):
                 deep_think_seconds,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                tools=TOOLS if provider in (PROVIDER_OPENROUTER, PROVIDER_GROQ, PROVIDER_MISTRAL) else None,
+                tools=use_tools,
             )
           else:
-            if total_attempts == 1 and completion is not None and provider == PROVIDER_OPENROUTER and entry is None:
-              response_completion = completion
-            else:
+            try:
               response_completion = safe_model_call(
                   attempt_client,
                   messages,
@@ -1474,8 +1481,23 @@ def api_chat(request):
                   max_tokens=max_tokens,
                   stream=actually_stream,
                   deep_think=False,
-                  tools=TOOLS if provider in (PROVIDER_OPENROUTER, PROVIDER_GROQ, PROVIDER_MISTRAL) else None,
+                  tools=use_tools,
               )
+            except Exception as pre_err:
+              last_stream_error = pre_err
+              if is_context_length_error(pre_err):
+                return {
+                  "ok": False,
+                  "error": pre_err,
+                  "tool_calls": [],
+                  "finalize_partial": False,
+                }
+              if is_rate_limit_error(pre_err):
+                try:
+                  time.sleep(2)
+                except Exception:
+                  pass
+              continue
 
           for chunk in response_completion:
             if chunk.choices and chunk.choices[0].delta.content:
@@ -1534,13 +1556,6 @@ def api_chat(request):
               "tool_calls": [],
               "finalize_partial": False,
             }
-          if not is_api_key_retriable_error(stream_e) and not is_rate_limit_error(stream_e):
-            return {
-              "ok": False,
-              "error": stream_e,
-              "tool_calls": [],
-              "finalize_partial": False,
-            }
           if is_rate_limit_error(stream_e):
             try:
               time.sleep(2)
@@ -1585,15 +1600,27 @@ def api_chat(request):
 
         buffered_text = []
         try:
-          final_completion = safe_model_call(
-              attempt_client,
-              local_messages,
-              attempt_model_to_use,
-              temperature=temperature,
-              max_tokens=max_tokens,
-              stream=actually_stream,
-              deep_think=False,
-          )
+          final_completion = None
+          try:
+            final_completion = safe_model_call(
+                attempt_client,
+                local_messages,
+                attempt_model_to_use,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=actually_stream,
+                deep_think=False,
+            )
+          except Exception as pre_err:
+            last_stream_error = pre_err
+            if is_context_length_error(pre_err):
+              return {"ok": False, "error": pre_err, "finalize_partial": False}
+            if is_rate_limit_error(pre_err):
+              try:
+                time.sleep(2)
+              except Exception:
+                pass
+            continue
           for chunk in final_completion:
             if chunk.choices and chunk.choices[0].delta.content:
               buffered_text.append(chunk.choices[0].delta.content)
@@ -1613,8 +1640,6 @@ def api_chat(request):
               "finalize_partial": True,
             }
           if is_context_length_error(stream_e):
-            return {"ok": False, "error": stream_e, "finalize_partial": False}
-          if not is_api_key_retriable_error(stream_e) and not is_rate_limit_error(stream_e):
             return {"ok": False, "error": stream_e, "finalize_partial": False}
           if is_rate_limit_error(stream_e):
             try:
