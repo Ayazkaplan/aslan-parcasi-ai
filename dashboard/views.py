@@ -36,70 +36,222 @@ _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 
 
-def get_all_openrouter_api_keys():
-  keys = []
-  candidates = []
-  primary = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-  if primary:
-    candidates.append(primary)
+PROVIDER_GROQ = "groq"
+PROVIDER_COHERE = "cohere"
+PROVIDER_MISTRAL = "mistral"
+PROVIDER_OPENROUTER = "openrouter"
+
+PROVIDER_BASE_URLS = {
+    PROVIDER_GROQ: "https://api.groq.com/openai/v1",
+    PROVIDER_COHERE: "https://api.cohere.ai/v2",
+    PROVIDER_MISTRAL: "https://api.mistral.ai/v1",
+    PROVIDER_OPENROUTER: "https://openrouter.ai/api/v1",
+}
+
+PROVIDER_DEFAULT_MODELS = {
+    PROVIDER_GROQ: os.environ.get("GROQ_DEFAULT_MODEL", "").strip() or "llama-3.3-70b-versatile",
+    PROVIDER_COHERE: os.environ.get("COHERE_DEFAULT_MODEL", "").strip() or "command-r-plus-08-2024",
+    PROVIDER_MISTRAL: os.environ.get("MISTRAL_DEFAULT_MODEL", "").strip() or "mistral-large-latest",
+    PROVIDER_OPENROUTER: os.environ.get("OPENROUTER_DEFAULT_MODEL", "").strip() or "openrouter/auto",
+}
+
+PROVIDER_STREAM_SUPPORTED = {
+    PROVIDER_GROQ: True,
+    PROVIDER_COHERE: False,
+    PROVIDER_MISTRAL: True,
+    PROVIDER_OPENROUTER: True,
+}
+
+
+def get_provider_from_env_name(env_name):
+  upper = (env_name or "").upper()
+  if "GROQ" in upper:
+    return PROVIDER_GROQ
+  if "COHERE" in upper:
+    return PROVIDER_COHERE
+  if "MISTRAL" in upper:
+    return PROVIDER_MISTRAL
+  return PROVIDER_OPENROUTER
+
+
+def get_provider_api_keys():
+  entries = []
+
+  def maybe_add(provider, env_name):
+    val = (os.environ.get(env_name) or "").strip().strip("\"'")
+    if not val or val == "gecici_anahtar":
+      return
+    if len(val) < 6:
+      return
+    entries.append({
+      "provider": provider,
+      "env": env_name,
+      "api_key": val,
+      "base_url": PROVIDER_BASE_URLS[provider],
+    })
+
+  ordered_envs = [
+      (PROVIDER_OPENROUTER, "OPENROUTER_API_KEY"),
+      (PROVIDER_GROQ, "GROQ_API_KEY"),
+      (PROVIDER_MISTRAL, "MISTRAL_API_KEY"),
+      (PROVIDER_COHERE, "COHERE_API_KEY"),
+  ]
+  for provider, env_name in ordered_envs:
+    maybe_add(provider, env_name)
+
   numbered_idx = 1
   while numbered_idx <= 20:
-    candidate = (os.environ.get(f"OPENROUTER_API_KEY_{numbered_idx}") or "").strip()
-    if not candidate:
-      break
-    candidates.append(candidate)
-    numbered_idx += 1
-  for env_name in (
-      "OPENROUTER_API_KEYS", "OPENROUTER_API_KEY_POOL", "OPENROUTER_KEYS",
-      "OPENROUTER_POOL", "OPENROUTER_BACKUP_KEYS", "OPENROUTER_RESERVE_KEYS",
-  ):
-    raw = (os.environ.get(env_name) or "").strip()
-    if raw:
-      for piece in raw.split(","):
-        candidates.append(piece.strip())
-  numbered_idx = 1
-  while numbered_idx <= 20:
-    for env_pattern in (
-        f"OPENROUTER_BACKUP_{numbered_idx}",
-        f"OPENROUTER_RESERVE_{numbered_idx}",
-        f"OPENROUTER_ALT_{numbered_idx}",
-        f"OPENROUTER_FALLBACK_KEY_{numbered_idx}",
+    added_any = False
+    for provider, prefix in [
+        (PROVIDER_OPENROUTER, "OPENROUTER_API_KEY"),
+        (PROVIDER_GROQ, "GROQ_API_KEY"),
+        (PROVIDER_MISTRAL, "MISTRAL_API_KEY"),
+        (PROVIDER_COHERE, "COHERE_API_KEY"),
+    ]:
+      env_name = f"{prefix}_{numbered_idx}"
+      val = (os.environ.get(env_name) or "").strip().strip("\"'")
+      if val and val != "gecici_anahtar" and len(val) >= 6:
+        entries.append({
+          "provider": provider,
+          "env": env_name,
+          "api_key": val,
+          "base_url": PROVIDER_BASE_URLS[provider],
+        })
+        added_any = True
+    if not added_any and numbered_idx > 3:
+      pass
+    if numbered_idx > 3 and not any(
+        (os.environ.get(f"{p}_{numbered_idx}") or "").strip() for p in ("GROQ_API_KEY", "COHERE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY")
     ):
-      candidate = (os.environ.get(env_pattern) or "").strip()
-      if candidate:
-        candidates.append(candidate)
+      break
     numbered_idx += 1
-  for candidate in candidates:
-    cleaned = (candidate or "").strip().strip("\"'")
-    if not cleaned or cleaned == "gecici_anahtar":
+
+  list_envs = [
+      (PROVIDER_OPENROUTER, "OPENROUTER_API_KEYS"),
+      (PROVIDER_OPENROUTER, "OPENROUTER_API_KEY_POOL"),
+      (PROVIDER_OPENROUTER, "OPENROUTER_KEYS"),
+      (PROVIDER_OPENROUTER, "OPENROUTER_POOL"),
+      (PROVIDER_OPENROUTER, "OPENROUTER_BACKUP_KEYS"),
+      (PROVIDER_OPENROUTER, "OPENROUTER_RESERVE_KEYS"),
+      (PROVIDER_GROQ, "GROQ_API_KEYS"),
+      (PROVIDER_GROQ, "GROQ_BACKUP_KEYS"),
+      (PROVIDER_MISTRAL, "MISTRAL_API_KEYS"),
+      (PROVIDER_MISTRAL, "MISTRAL_BACKUP_KEYS"),
+      (PROVIDER_COHERE, "COHERE_API_KEYS"),
+      (PROVIDER_COHERE, "COHERE_BACKUP_KEYS"),
+  ]
+  for provider, env_name in list_envs:
+    raw = (os.environ.get(env_name) or "").strip()
+    if not raw:
       continue
-    if len(cleaned) < 6:
+    for piece in raw.split(","):
+      val = piece.strip().strip("\"'")
+      if not val or val == "gecici_anahtar" or len(val) < 6:
+        continue
+      entries.append({
+        "provider": provider,
+        "env": env_name,
+        "api_key": val,
+        "base_url": PROVIDER_BASE_URLS[provider],
+      })
+
+  numbered_idx = 1
+  while numbered_idx <= 20:
+    patterns = [
+        (PROVIDER_GROQ, f"GROQ_BACKUP_{numbered_idx}"),
+        (PROVIDER_GROQ, f"GROQ_RESERVE_{numbered_idx}"),
+        (PROVIDER_GROQ, f"GROQ_ALT_{numbered_idx}"),
+        (PROVIDER_MISTRAL, f"MISTRAL_BACKUP_{numbered_idx}"),
+        (PROVIDER_MISTRAL, f"MISTRAL_RESERVE_{numbered_idx}"),
+        (PROVIDER_MISTRAL, f"MISTRAL_ALT_{numbered_idx}"),
+        (PROVIDER_COHERE, f"COHERE_BACKUP_{numbered_idx}"),
+        (PROVIDER_COHERE, f"COHERE_RESERVE_{numbered_idx}"),
+        (PROVIDER_COHERE, f"COHERE_ALT_{numbered_idx}"),
+        (PROVIDER_OPENROUTER, f"OPENROUTER_BACKUP_{numbered_idx}"),
+        (PROVIDER_OPENROUTER, f"OPENROUTER_RESERVE_{numbered_idx}"),
+        (PROVIDER_OPENROUTER, f"OPENROUTER_ALT_{numbered_idx}"),
+    ]
+    any_added = False
+    for provider, env_name in patterns:
+      val = (os.environ.get(env_name) or "").strip().strip("\"'")
+      if val and val != "gecici_anahtar" and len(val) >= 6:
+        entries.append({
+          "provider": provider,
+          "env": env_name,
+          "api_key": val,
+          "base_url": PROVIDER_BASE_URLS[provider],
+        })
+        any_added = True
+    if numbered_idx > 5 and not any_added:
+      break
+    numbered_idx += 1
+
+  seen_keys = set()
+  unique_entries = []
+  for entry in entries:
+    sig = (entry["provider"], entry["api_key"])
+    if sig in seen_keys:
       continue
-    keys.append(cleaned)
-  seen = set()
-  unique_keys = []
-  for key in keys:
-    if key not in seen:
-      seen.add(key)
-      unique_keys.append(key)
-  return unique_keys
+    seen_keys.add(sig)
+    unique_entries.append(entry)
+  return unique_entries
+
+
+def get_all_openrouter_api_keys():
+  return [e["api_key"] for e in get_provider_api_keys() if e["provider"] == PROVIDER_OPENROUTER]
 
 
 def get_openai_client():
-  keys = get_all_openrouter_api_keys()
-  if not keys:
+  providers = get_provider_api_keys()
+  if not providers:
     return None
+  first = providers[0]
   return OpenAI(
-      base_url="https://openrouter.ai/api/v1",
-      api_key=keys[0],
+      base_url=first["base_url"],
+      api_key=first["api_key"],
+  )
+
+
+def build_provider_client(entry):
+  return OpenAI(
+      base_url=entry["base_url"],
+      api_key=entry["api_key"],
   )
 
 
 def build_openrouter_client(api_key):
   return OpenAI(
-      base_url="https://openrouter.ai/api/v1",
+      base_url=PROVIDER_BASE_URLS[PROVIDER_OPENROUTER],
       api_key=api_key,
   )
+
+
+def provider_resolve_model(entry, requested_model, fallback_overrides=None):
+  provider = entry["provider"]
+  default = PROVIDER_DEFAULT_MODELS[provider]
+  if fallback_overrides and provider in fallback_overrides and fallback_overrides[provider]:
+    default = fallback_overrides[provider]
+
+  if not requested_model:
+    return default
+  if provider == PROVIDER_OPENROUTER:
+    return requested_model or default
+
+  requested_upper = requested_model.upper().replace("-", "").replace("_", "").replace(".", "")
+  provider_token = {
+      PROVIDER_GROQ: "GROQ",
+      PROVIDER_COHERE: "COHERE",
+      PROVIDER_MISTRAL: "MISTRAL",
+      PROVIDER_OPENROUTER: "OPENROUTER",
+  }[provider]
+  if provider_token in requested_upper:
+    return default
+
+  return requested_model
+
+
+def provider_supports_stream(entry):
+  return PROVIDER_STREAM_SUPPORTED.get(entry["provider"], True)
 
 
 def _error_http_code(error):
@@ -708,33 +860,54 @@ def safe_model_call(
     tools=None,
     timeout=None,
 ):
-    all_keys = get_all_openrouter_api_keys()
-    if not all_keys:
-        all_keys = [None]
+    all_entries = get_provider_api_keys()
+    if not all_entries:
+        all_entries = [None]
 
-    configured_fallback = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
-    models = [model, configured_fallback, "openrouter/auto"]
-    models = list(dict.fromkeys(item for item in models if item))
+    configured_fallback_openrouter = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+    openrouter_models = list(dict.fromkeys(item for item in [model, configured_fallback_openrouter, "openrouter/auto"] if item))
 
     last_error = None
     context_length_hit = False
+    used_original = False
 
-    for api_key in all_keys:
+    for entry in all_entries:
         current_client = client
-        if api_key is not None:
-            current_client = build_openrouter_client(api_key)
-        for attempt_model in models:
+        if entry is None:
+            if used_original:
+                continue
+            used_original = True
+            provider = PROVIDER_OPENROUTER
+            model_choices = openrouter_models
+            actually_stream = stream
+        else:
+            current_client = build_provider_client(entry)
+            provider = entry["provider"]
+            fallback_overrides = {
+                PROVIDER_GROQ: os.environ.get("GROQ_FALLBACK_MODEL", "").strip() or None,
+                PROVIDER_COHERE: os.environ.get("COHERE_FALLBACK_MODEL", "").strip() or None,
+                PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
+            }
+            resolved_main = provider_resolve_model(entry, model, fallback_overrides)
+            model_choices = list(dict.fromkeys(x for x in [
+                resolved_main,
+                fallback_overrides.get(provider),
+                PROVIDER_DEFAULT_MODELS[provider],
+            ] if x))
+            actually_stream = stream and provider_supports_stream(entry)
+
+        for attempt_model in model_choices:
             try:
                 kwargs = {
                     "model": attempt_model,
                     "messages": messages,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
-                    "stream": stream
+                    "stream": actually_stream,
                 }
                 if timeout is not None:
                     kwargs["timeout"] = max(1, timeout)
-                if tools:
+                if tools and provider in (PROVIDER_OPENROUTER, PROVIDER_GROQ, PROVIDER_MISTRAL):
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
 
@@ -764,7 +937,7 @@ def safe_model_call(
     if context_length_hit and is_context_length_error(last_error):
         raise last_error
 
-    raise last_error or Exception("Tüm modeller ve API anahtarları başarısız oldu")
+    raise last_error or Exception("Tüm sağlayıcılar, modeller ve API anahtarları başarısız oldu")
 
 
 def deep_think_call(
@@ -1098,7 +1271,7 @@ def api_chat(request):
     client = get_openai_client()
     if client is None:
         return JsonResponse(
-            {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
+            {"error": "API anahtarı tanımlı değil. Lütfen OPENROUTER_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY veya COHERE_API_KEY'den en az birini ayarlayın."},
             status=503,
         )
 
@@ -1245,15 +1418,35 @@ def api_chat(request):
 
     def run_initial_chat_round():
       last_stream_error = None
-      all_keys = get_all_openrouter_api_keys() or [None]
+      all_entries = get_provider_api_keys() or [None]
       total_attempts = 0
-      for key_override in all_keys:
+      used_original = False
+      for entry in all_entries:
         total_attempts += 1
-        if total_attempts > 3 * max(1, len(all_keys)):
+        if total_attempts > 3 * max(1, len(all_entries)):
           break
         attempt_client = client
-        if key_override is not None:
-          attempt_client = build_openrouter_client(key_override)
+        provider = PROVIDER_OPENROUTER
+        actually_stream = True
+        attempt_model_to_use = request_model
+        if entry is None:
+          if used_original:
+            continue
+          used_original = True
+          provider = PROVIDER_OPENROUTER
+          actually_stream = True
+          attempt_model_to_use = request_model
+        else:
+          attempt_client = build_provider_client(entry)
+          provider = entry["provider"]
+          fallback_overrides = {
+              PROVIDER_GROQ: os.environ.get("GROQ_FALLBACK_MODEL", "").strip() or None,
+              PROVIDER_COHERE: os.environ.get("COHERE_FALLBACK_MODEL", "").strip() or None,
+              PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
+          }
+          attempt_model_to_use = provider_resolve_model(entry, request_model, fallback_overrides)
+          actually_stream = provider_supports_stream(entry)
+
         buffered_text = []
         buffered_tool_calls = {}
         try:
@@ -1263,25 +1456,25 @@ def api_chat(request):
             response_completion = deep_think_call(
                 attempt_client,
                 messages,
-                request_model,
+                attempt_model_to_use,
                 deep_think_seconds,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                tools=TOOLS,
+                tools=TOOLS if provider in (PROVIDER_OPENROUTER, PROVIDER_GROQ, PROVIDER_MISTRAL) else None,
             )
           else:
-            if total_attempts == 1 and completion is not None:
+            if total_attempts == 1 and completion is not None and provider == PROVIDER_OPENROUTER and entry is None:
               response_completion = completion
             else:
               response_completion = safe_model_call(
                   attempt_client,
                   messages,
-                  request_model,
+                  attempt_model_to_use,
                   temperature=temperature,
                   max_tokens=max_tokens,
-                  stream=True,
+                  stream=actually_stream,
                   deep_think=False,
-                  tools=TOOLS,
+                  tools=TOOLS if provider in (PROVIDER_OPENROUTER, PROVIDER_GROQ, PROVIDER_MISTRAL) else None,
               )
 
           for chunk in response_completion:
@@ -1364,24 +1557,41 @@ def api_chat(request):
 
     def run_final_text_round(local_messages):
       last_stream_error = None
-      all_keys = get_all_openrouter_api_keys() or [None]
+      all_entries = get_provider_api_keys() or [None]
       total_attempts = 0
-      for key_override in all_keys:
+      used_original = False
+      for entry in all_entries:
         total_attempts += 1
-        if total_attempts > 3 * max(1, len(all_keys)):
+        if total_attempts > 3 * max(1, len(all_entries)):
           break
         attempt_client = client
-        if key_override is not None:
-          attempt_client = build_openrouter_client(key_override)
+        provider = PROVIDER_OPENROUTER
+        actually_stream = True
+        attempt_model_to_use = request_model
+        if entry is None:
+          if used_original:
+            continue
+          used_original = True
+        else:
+          attempt_client = build_provider_client(entry)
+          provider = entry["provider"]
+          fallback_overrides = {
+              PROVIDER_GROQ: os.environ.get("GROQ_FALLBACK_MODEL", "").strip() or None,
+              PROVIDER_COHERE: os.environ.get("COHERE_FALLBACK_MODEL", "").strip() or None,
+              PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
+          }
+          attempt_model_to_use = provider_resolve_model(entry, request_model, fallback_overrides)
+          actually_stream = provider_supports_stream(entry)
+
         buffered_text = []
         try:
           final_completion = safe_model_call(
               attempt_client,
               local_messages,
-              request_model,
+              attempt_model_to_use,
               temperature=temperature,
               max_tokens=max_tokens,
-              stream=True,
+              stream=actually_stream,
               deep_think=False,
           )
           for chunk in final_completion:
