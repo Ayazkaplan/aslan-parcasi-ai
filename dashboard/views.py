@@ -12,7 +12,7 @@ from django.contrib.auth.models import User
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from openai import OpenAI
 from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
 from .models import AppClock, ChatHistory, UserProfile
@@ -690,6 +690,12 @@ def delete_account_view(request):
   logout(request)
   user.delete()
   return JsonResponse({"status": "success"})
+
+
+@require_GET
+def api_debug(request):
+  """Minimal public health endpoint used by deployment checks."""
+  return JsonResponse({"status": "ok", "service": "aslan-parcasi-ai"})
 
 
 @login_required(login_url="login")

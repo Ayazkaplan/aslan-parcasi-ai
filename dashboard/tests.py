@@ -274,6 +274,12 @@ class AuthenticationTests(TestCase):
             password="test-password-123",
         )
 
+    def test_public_debug_endpoint_returns_health_status(self):
+        response = self.client.get(reverse("api_debug"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+
     def test_user_can_log_in_with_case_insensitive_email(self):
         response = self.client.post(
             reverse("login"),
