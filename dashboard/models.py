@@ -45,3 +45,14 @@ class ChatHistory(models.Model):
 
     def __str__(self):
         return f"{self.user.username} sohbetleri"
+
+
+class AppClock(models.Model):
+    """Last calendar value synchronized from the Europe/Istanbul clock."""
+
+    singleton = models.BooleanField(default=True, unique=True)
+    current_date = models.DateField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Aslan Parçası tarihi: {self.current_date.isoformat()}"

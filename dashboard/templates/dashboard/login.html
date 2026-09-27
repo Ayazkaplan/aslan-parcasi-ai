@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Giriş Yap | Aslan Parçası AI</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b0f19'/%3E%3Cpath d='M32 10 38 25 54 32 38 39 32 54 26 39 10 32 26 25Z' fill='none' stroke='%2300ffaa' stroke-width='4'/%3E%3C/svg%3E">
     <style>
         * {
             margin: 0;
@@ -245,13 +246,13 @@
                 <div class="form-error">{{ form.password.errors.0 }}</div>
             {% endif %}
             <div class="form-group">
-                <label for="username">Kullanıcı Adı veya E-posta</label>
-                <input type="text" name="username" id="username" placeholder="Kullanıcı adınızı veya e-postanızı girin" required>
+                <label for="username">Kullanıcı Adı</label>
+                <input type="text" name="username" id="username" autocomplete="username" placeholder="Kullanıcı adı veya e-posta adresinizi girin" required>
             </div>
             
             <div class="form-group">
                 <label for="password">Şifre</label>
-                <input type="password" name="password" id="password" placeholder="Şifrenizi girin" required>
+                <input type="password" name="password" id="password" autocomplete="current-password" placeholder="Şifrenizi girin" required>
             </div>
 
             <button type="submit" class="btn-submit">Giriş Yap</button>

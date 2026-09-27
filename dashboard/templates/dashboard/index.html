@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Aslan Parçası AI | Dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b0f19'/%3E%3Cpath d='M32 10 38 25 54 32 38 39 32 54 26 39 10 32 26 25Z' fill='none' stroke='%2300ffaa' stroke-width='4'/%3E%3C/svg%3E">
     <!-- Markdown ve Kod Renklendirme için Kütüphaneler -->
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.5/dist/purify.min.js"></script>
@@ -17,17 +18,16 @@
             --text-color: #ffffff;
             --text-muted: #94a3b8;
             --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff);
-            --accent-color: #00ffaa;
             --border-color: rgba(255, 255, 255, 0.08);
             --pattern-opacity: 0.01;
         }
 
         /* 5 FARKLI TEMA TANIMI */
-        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); --accent-color: #00ffaa; }
-        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); --accent-color: #00ff66; }
-        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); --accent-color: #ff5588; }
-        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); --accent-color: #ff0080; }
-        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); --accent-color: #ffffff; }
+        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); }
+        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); }
+        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); }
+        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); }
+        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); }
 
         * {
             margin: 0;
@@ -58,29 +58,23 @@
         .mobile-menu-btn {
             display: none;
             position: fixed;
-            top: 10px;
-            left: 10px;
+            top: 12px;
+            left: 12px;
             z-index: 99999;
             background: var(--sidebar-bg);
-            border: 1px solid var(--accent-color, #00ffaa);
-            color: var(--accent-color, #00ffaa);
-            padding: 6px 8px;
-            border-radius: 8px;
+            border: 1px solid rgba(0, 255, 170, 0.6);
+            color: #00ffaa;
+            padding: 10px 12px;
+            border-radius: 10px;
             cursor: pointer;
             backdrop-filter: blur(5px);
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+            box-shadow: 0 0 15px rgba(0, 255, 170, 0.3);
             transition: opacity 0.3s ease;
         }
 
         .sidebar.open ~ .mobile-menu-btn {
             opacity: 0;
             pointer-events: none;
-        }
-
-        .mobile-menu-btn svg {
-            width: 16px;
-            height: 16px;
-            display: block;
         }
 
         .sidebar-overlay {
@@ -205,7 +199,7 @@
             font-weight: 700;
             font-size: 13px;
             overflow: hidden;
-            transition: max-width 0.3s ease-in, opacity 0.2s ease-in;
+            transition: max-width 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -215,7 +209,6 @@
         .user-profile-bar.active .sliding-username {
             max-width: 150px;
             opacity: 1;
-            transition: max-width 0.4s ease-out, opacity 0.3s ease-out;
         }
 
         .search-box {
@@ -590,62 +583,6 @@
             border-radius: 4px;
         }
 
-        /* TABLO: kutulu, hücreler sarmalansın, taşarsa yatay kaydır */
-        .message table {
-            border-collapse: collapse;
-            margin: 10px 0;
-            display: block;
-            max-width: 100%;
-            overflow-x: auto;
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-        }
-
-        .message table th,
-        .message table td {
-            border: 1px solid var(--border-color);
-            padding: 8px 12px;
-            font-size: 13px;
-            text-align: left;
-            white-space: normal;
-            word-break: break-word;
-            overflow-wrap: anywhere;
-            min-width: 60px;
-        }
-
-        .message table th {
-            background: rgba(255, 255, 255, 0.06);
-            font-weight: 700;
-        }
-
-        .message table tr:nth-child(even) td {
-            background: rgba(255, 255, 255, 0.03);
-        }
-
-        /* ÜRETİLEN GÖRSEL + ŞEFFAF ASLAN FİLİGRANI (sağ alt) */
-        .gen-image-wrap {
-            position: relative;
-            display: inline-block;
-            max-width: 100%;
-        }
-
-        .gen-image-wrap img {
-            display: block;
-        }
-
-        .gen-image-watermark {
-            position: absolute;
-            left: 8px;
-            bottom: 8px;
-            width: 42px;
-            height: 42px;
-            opacity: 0.65;
-            pointer-events: none;
-            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2300ffaa'/%3E%3Cstop offset='1' stop-color='%2300aaff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M50 12 L60 25 L75 20 L70 35 L85 40 L75 52 L88 65 L70 70 L65 85 L50 78 L35 85 L30 70 L12 65 L25 52 L15 40 L30 35 L25 20 L40 25 Z' stroke='url(%23g)' stroke-width='5' stroke-linejoin='round'/%3E%3Ccircle cx='38' cy='38' r='4' fill='url(%23g)'/%3E%3Ccircle cx='62' cy='38' r='4' fill='url(%23g)'/%3E%3Cpath d='M38 42 L45 48 L50 45 L55 48 L62 42 M50 45 L50 62 L44 68 M50 62 L56 68' stroke='url(%23g)' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
-            filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.8));
-        }
-
         .msg-action-bar {
             display: flex;
             align-items: center;
@@ -735,25 +672,27 @@
         }
 
         .user-sliding-username {
-            max-width: 0;
+            position: absolute;
+            right: 42px;
+            max-width: 150px;
             opacity: 0;
             white-space: nowrap;
             font-weight: 700;
             font-size: 13px;
             overflow: hidden;
-            transition: max-width 0.3s ease-in, opacity 0.2s ease-in, margin-right 0.3s ease-in;
+            transform: translateX(8px);
+            pointer-events: none;
+            transition: transform 0.2s ease, opacity 0.2s ease;
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             cursor: pointer;
-            margin-right: 0;
         }
 
         .user-avatar-header.expanded .user-sliding-username {
-            max-width: 150px;
             opacity: 1;
-            margin-right: 8px;
-            transition: max-width 0.4s ease-out, opacity 0.3s ease-out, margin-right 0.3s ease-out;
+            transform: translateX(0);
+            pointer-events: auto;
         }
 
         /* METİN KUTUSUNUN ÜSTÜNDEKİ PROFİL ALANI (ASLAN PARÇASI DÜZENİ & + BUTONU) */
@@ -787,33 +726,48 @@
         .think-settings strong { font-size: 13px; color: #fff; }
         .think-settings small { color: #94a3b8; line-height: 1.35; }
         .think-settings input[type="range"] { width: 100%; accent-color: #ff0080; }
+        .think-close-btn {
+            align-self: flex-end;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.06);
+            color: #e2e8f0;
+            border-radius: 8px;
+            padding: 6px 10px;
+            cursor: pointer;
+        }
+        .think-close-btn:hover { background: rgba(255, 255, 255, 0.12); }
+        .reasoning-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .reasoning-stop-btn {
+            margin-left: auto;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.08);
+            color: inherit;
+            padding: 5px 9px;
+            cursor: pointer;
+        }
+        .reasoning-timer {
+            min-width: 102px;
+            font-variant-numeric: tabular-nums;
+            color: #ff8ac4;
+            text-align: right;
+        }
+        .image-generating {
+            animation: image-pulse 1s ease-in-out infinite;
+        }
+        @keyframes image-pulse {
+            50% { opacity: 0.55; }
+        }
         .think-duration {
             display: flex;
             justify-content: space-between;
             font-size: 12px;
             color: #ff8ac4;
             font-weight: 700;
-        }
-        
-        .think-settings-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 5px;
-        }
-
-        .think-settings-close-btn {
-            background: none;
-            border: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            padding: 4px;
-            border-radius: 4px;
-        }
-
-        .think-settings-close-btn:hover {
-            color: #fff;
-            background: rgba(255, 255, 255, 0.1);
         }
 
         .chat-input-container {
@@ -864,40 +818,6 @@
 
         .send-btn:hover {
             transform: scale(1.05);
-        }
-
-        .send-btn .stop-icon {
-            display: none;
-        }
-
-        /* Yazarken/düşünürken: enter tuşu animasyonlu durdurma karesine dönüşür */
-        .send-btn.sending {
-            background: var(--accent-gradient);
-            position: relative;
-            animation: sendBreath 1.4s ease-in-out infinite;
-        }
-
-        .send-btn.sending .send-icon {
-            display: none;
-        }
-
-        .send-btn.sending .stop-icon {
-            display: block;
-            width: 13px;
-            height: 13px;
-            border-radius: 3px;
-            background: #0b0f19;
-            animation: stopSquareSpin 1.4s ease-in-out infinite;
-        }
-
-        @keyframes sendBreath {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(0, 255, 170, 0.45); }
-            50% { box-shadow: 0 0 0 6px rgba(0, 255, 170, 0); }
-        }
-
-        @keyframes stopSquareSpin {
-            0%, 100% { transform: scale(1) rotate(0deg); }
-            50% { transform: scale(0.82) rotate(90deg); }
         }
 
         /* DÜŞÜNME BUTONU */
@@ -955,10 +875,6 @@
             color: #cbd5e1;
             line-height: 1.4;
             font-style: italic;
-            white-space: pre-wrap;
-            word-break: break-word;
-            max-height: 180px;
-            overflow-y: auto;
         }
 
         .reasoning-dot {
@@ -967,27 +883,6 @@
             background: #ff0080;
             border-radius: 50%;
             animation: pulse 1.5s infinite;
-        }
-
-        .cancel-request-btn {
-            padding: 4px 12px;
-            border-radius: 6px;
-            border: 1px solid rgba(239, 68, 68, 0.6);
-            background: rgba(239, 68, 68, 0.15);
-            color: #fca5a5;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-
-        .reasoning-header .cancel-request-btn {
-            margin-left: auto;
-        }
-
-        .cancel-request-btn:hover {
-            background: rgba(239, 68, 68, 0.3);
-            color: #fff;
         }
 
         @keyframes pulse {
@@ -1083,48 +978,31 @@
         }
 
         .media-btn.stop-recording {
-            background: var(--accent-gradient);
-            border-color: var(--accent-color, #00ffaa);
-            color: #0b0f19;
-            box-shadow: 0 0 12px rgba(0, 255, 170, 0.35);
+            background: #f59e0b;
+            border-color: #f59e0b;
+            color: #fff;
         }
 
         .media-btn.stop-recording:hover {
-            filter: brightness(1.1);
-            transform: scale(1.05);
+            background: #d97706;
         }
 
         /* Voice recording stop button in preview */
         .voice-preview .stop-recording-btn {
-            background: var(--accent-gradient);
-            border: 1px solid var(--accent-color, #00ffaa);
-            color: #0b0f19;
-            padding: 6px 16px;
-            border-radius: 999px;
+            background: #f59e0b;
+            border: none;
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 6px;
             font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.3px;
+            font-weight: 600;
             cursor: pointer;
             margin-left: 8px;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            box-shadow: 0 0 12px rgba(0, 255, 170, 0.3);
             transition: 0.2s;
         }
 
-        .voice-preview .stop-recording-btn::before {
-            content: "";
-            width: 9px;
-            height: 9px;
-            border-radius: 2px;
-            background: #0b0f19;
-            animation: stopSquareSpin 1.4s ease-in-out infinite;
-        }
-
         .voice-preview .stop-recording-btn:hover {
-            filter: brightness(1.1);
-            transform: scale(1.04);
+            background: #d97706;
         }
 
         /* Recording indicator styles */
@@ -1236,13 +1114,9 @@
 
         .generated-image {
             max-width: 100%;
-            max-height: 400px;
-            width: auto;
-            height: auto;
             border-radius: 8px;
             margin: 8px 0;
             border: 1px solid var(--border-color);
-            object-fit: contain;
         }
 
         .message-attachment {
@@ -1438,10 +1312,6 @@
                 width: 30px;
                 height: 30px;
             }
-            /* Mobilde ayarlar dişlisi, menü kapatma butonuyla üst üste binmesin */
-            .brand-header .settings-icon-btn {
-                margin-right: 44px;
-            }
         }
 
         @media (max-width: 480px) {
@@ -1581,7 +1451,6 @@
                     <div class="typing-dot"></div>
                     <div class="typing-dot"></div>
                 </div>
-                <button type="button" class="cancel-request-btn" id="typingCancelBtn" onclick="cancelPendingResponse()">İptal Et</button>
             </div>
         </div>
 
@@ -1624,14 +1493,7 @@
                     </svg>
                 </button>
                 <div class="think-settings" id="thinkSettings">
-                    <div class="think-settings-header">
-                        <strong>Ne kadar uzun düşünsün?</strong>
-                        <button class="think-settings-close-btn" onclick="toggleDeepThink()" title="Kapat">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="m6 6 12 12M18 6 6 18"></path>
-                            </svg>
-                        </button>
-                    </div>
+                    <strong>Ne kadar uzun düşünsün?</strong>
                     <small>Aslan Parçası seçtiğin süreyi araştırma ve kontrol bütçesi olarak kullanır.</small>
                     <input id="thinkSeconds" type="range" min="30" max="1800" step="30" value="300" oninput="updateThinkDuration(this.value)">
                     <div class="think-duration">
@@ -1639,13 +1501,13 @@
                         <span id="thinkDurationLabel">5 dk</span>
                         <span>30 dk</span>
                     </div>
+                    <button type="button" class="think-close-btn" onclick="closeDeepThinkSettings()">Kapat</button>
                 </div>
                 <textarea id="userInput" placeholder="Bir şeyler yazın..." rows="1" onkeydown="handleKeyPress(event)"></textarea>
-                <button class="send-btn" id="sendBtn" onclick="onSendButtonClick()" title="Gönder" aria-label="Gönder">
-                    <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+                <button class="send-btn" onclick="sendMessage()" title="Gönder" aria-label="Gönder">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
                         <path d="m4 4 16 8-16 8 3-8z"></path><path d="M7 12h13"></path>
                     </svg>
-                    <span class="stop-icon" aria-hidden="true"></span>
                 </button>
             </div>
             
@@ -1780,11 +1642,18 @@
     let selectedImages = [];
     let selectedFiles = [];
     let selectedVoiceBlob = null;
+    let selectedVoiceTranscript = '';
     let mediaRecorder = null;
     let isRecording = false;
     let voiceStopPromise = null;
+    let speechRecognizer = null;
+    let speechRecognitionPromise = null;
+    let speechRecognitionFinished = true;
     let activeRequestController = null;
-    let isSending = false;
+    let imageRequestController = null;
+    let imageGenerating = false;
+    let reasoningTimerInterval = null;
+    let reasoningStartedAt = 0;
     let localMutationAt = 0;
     let serverSyncTimer = null;
     let serverSyncInFlight = false;
@@ -1989,49 +1858,8 @@
         indicator.style.display = 'none';
     }
 
-    function isLiveChat(c) {
-        return !!(c && !c.deleted && c.messages && c.messages.length > 0);
-    }
-
-    function liveChats() {
-        return chats.filter(isLiveChat);
-    }
-
-    // Sohbetler + silme mezar taşları (tombstone) sunucuya birlikte gönderilir ki
-    // silinen sohbet başka bir cihazda geri gelmesin.
-    function syncableChats() {
-        return chats.filter(c => (c && c.deleted) || isLiveChat(c));
-    }
-
-    function mergeChats(localArr, remoteArr) {
-        const now = Date.now();
-        const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-        const map = new Map();
-        const put = (c) => {
-            if (!c || c.id === undefined || c.id === null) return;
-            if (c.deleted && c.deletedAt && (now - c.deletedAt) > THIRTY_DAYS) return;
-            const prev = map.get(c.id);
-            if (!prev) { map.set(c.id, c); return; }
-            if (c.deleted || prev.deleted) {
-                map.set(c.id, {
-                    id: c.id,
-                    title: prev.title || c.title,
-                    mode: prev.mode || c.mode,
-                    deleted: true,
-                    deletedAt: Math.max(c.deletedAt || 0, prev.deletedAt || 0),
-                    messages: []
-                });
-            } else {
-                map.set(c.id, c);
-            }
-        };
-        (localArr || []).forEach(put);
-        (remoteArr || []).forEach(put);
-        return Array.from(map.values());
-    }
-
     function saveToStorage() {
-        const validChats = syncableChats();
+        const validChats = chats.filter(c => c.messages && c.messages.length > 0);
         try {
             localStorage.setItem(`${USER_STORAGE_KEY}_chats`, JSON.stringify(validChats));
         } catch (err) {
@@ -2053,7 +1881,7 @@
                     'X-CSRFToken': getCsrfToken()
                 },
                 credentials: 'same-origin',
-                body: JSON.stringify({ chats: syncableChats() })
+                body: JSON.stringify({ chats: chats.filter(c => c.messages && c.messages.length > 0) })
             });
             if (response.ok) {
                 const data = await response.json();
@@ -2073,18 +1901,16 @@
             const data = await response.json();
             const remoteChats = Array.isArray(data.chats) ? data.chats : [];
             lastServerUpdateAt = Date.parse(data.updated_at || '') || 0;
-            const localHadContent = syncableChats().length > 0;
-            chats = mergeChats(chats, remoteChats);
-            // Yerel mezar taşları/yeni sohbetler birleşimde eklenmişse sunucuya yay.
-            if (localHadContent || remoteChats.length === 0) {
+            if (remoteChats.length || !chats.length) {
+                chats = remoteChats;
+            } else {
                 syncChatsToServer();
             }
         } catch (err) {
             // The existing local cache still lets the app open without a connection.
         }
-        const remaining = liveChats();
-        if (remaining.length > 0) {
-            selectChat(remaining[0].id);
+        if (chats.length > 0) {
+            selectChat(chats[0].id);
         } else {
             createNewChat('Normal Asistan', false);
         }
@@ -2097,46 +1923,16 @@
             if (!response.ok) return;
             const data = await response.json();
             const serverUpdatedAt = Date.parse(data.updated_at || '') || 0;
-            if (!Array.isArray(data.chats)) return;
-
-            // Silme işlemleri zaman damgasından bağımsız HER ZAMAN diğer cihaza yayılır.
-            let deletionChanged = false;
-            for (const remote of data.chats) {
-                if (!remote || !remote.deleted) continue;
-                const local = chats.find(c => c.id === remote.id);
-                if (local && !local.deleted) {
-                    local.deleted = true;
-                    local.deletedAt = remote.deletedAt || Date.now();
-                    local.messages = [];
-                    deletionChanged = true;
-                } else if (!local) {
-                    chats.push({
-                        id: remote.id,
-                        title: remote.title,
-                        mode: remote.mode,
-                        deleted: true,
-                        deletedAt: remote.deletedAt || Date.now(),
-                        messages: []
-                    });
-                    deletionChanged = true;
-                }
-            }
-
-            let contentChanged = false;
-            if (serverUpdatedAt > lastServerUpdateAt) {
-                const merged = mergeChats(chats, data.chats);
-                contentChanged = JSON.stringify(merged) !== JSON.stringify(chats);
-                chats = merged;
+            if (serverUpdatedAt > lastServerUpdateAt && Array.isArray(data.chats)) {
+                chats = data.chats;
                 lastServerUpdateAt = serverUpdatedAt;
-            }
-
-            if (deletionChanged || contentChanged) {
-                const remaining = liveChats();
-                if (!activeChatId || !remaining.some(c => c.id === activeChatId)) {
-                    activeChatId = remaining.length ? remaining[0].id : null;
+                if (!activeChatId && chats.length) activeChatId = chats[0].id;
+                if (chats.length) {
+                    const activeStillExists = chats.some(chat => chat.id === activeChatId);
+                    if (!activeStillExists) activeChatId = chats[0].id;
+                    renderChatList();
+                    renderMessages();
                 }
-                renderChatList();
-                renderMessages();
             }
         } catch (err) {
             // Polling is best effort and must not interrupt a conversation.
@@ -2185,7 +1981,7 @@
         const chatListEl = document.getElementById('chatList');
         chatListEl.innerHTML = '';
 
-        const visibleChats = liveChats();
+        const visibleChats = chats.filter(c => c.messages && c.messages.length > 0);
 
         visibleChats.forEach(chat => {
             const item = document.createElement('div');
@@ -2254,18 +2050,11 @@
 
     function confirmDeleteChat() {
         if (deletingChatId) {
-            const target = chats.find(c => c.id === deletingChatId);
-            if (target) {
-                target.deleted = true;
-                target.deletedAt = Date.now();
-                target.messages = [];
-            }
+            chats = chats.filter(c => c.id !== deletingChatId);
             saveToStorage();
-            syncChatsToServer();
-            const remaining = liveChats();
             if (activeChatId === deletingChatId) {
-                if (remaining.length > 0) {
-                    selectChat(remaining[0].id);
+                if (chats.length > 0) {
+                    selectChat(chats[0].id);
                 } else {
                     createNewChat('Normal Asistan', false);
                 }
@@ -2299,24 +2088,15 @@
         const currentChat = chats.find(c => c.id === activeChatId);
 
         if (!currentChat || currentChat.messages.length === 0) {
-            appendMessage(DEFAULT_AI_MSG, 'ai', false, 0);
+            appendMessage(DEFAULT_AI_MSG, 'ai', false, false, 0);
         } else {
             const msgs = currentChat.messages;
             msgs.forEach((msg, idx) => {
-                appendMessage(msg.text, msg.sender, false, idx, msg);
+                appendMessage(msg.text, msg.sender, false, true, idx, msg);
             });
         }
         if (typingEl) {
             messagesEl.appendChild(typingEl);
-        }
-        // Akıl yürütme kutusu yeniden çizimlerde en üste kaçmasın: her zaman altta tut.
-        const reasoningEl = document.getElementById('reasoningContainer');
-        if (reasoningEl) {
-            if (typingEl) {
-                messagesEl.insertBefore(reasoningEl, typingEl);
-            } else {
-                messagesEl.appendChild(reasoningEl);
-            }
         }
         scrollMessagesToBottom();
     }
@@ -2344,7 +2124,6 @@
         }
         hideTypingIndicator();
         hideReasoningAnimation();
-        setSendingState(false);
     }
 
     function editMessage(msgIndex) {
@@ -2387,25 +2166,50 @@
         document.getElementById('thinkSettings').classList.toggle('open', deepThinkEnabled);
     }
 
+    function closeDeepThinkSettings() {
+        deepThinkEnabled = false;
+        document.getElementById('thinkBtn').classList.remove('active');
+        document.getElementById('thinkSettings').classList.remove('open');
+    }
+
+    function stopDeepThinkRequest() {
+        if (activeRequestController) {
+            activeRequestController.abort();
+            activeRequestController = null;
+            const currentChat = chats.find(chat => chat.id === activeChatId);
+            if (currentChat) {
+                const lastMessage = currentChat.messages[currentChat.messages.length - 1];
+                if (lastMessage && lastMessage.sender === 'user') {
+                    currentChat.messages.push({
+                        sender: 'ai',
+                        text: 'Araştırma durduruldu.',
+                        timestamp: Date.now()
+                    });
+                }
+                saveToStorage();
+                renderMessages();
+            }
+        }
+        hideTypingIndicator();
+        hideReasoningAnimation();
+        closeDeepThinkSettings();
+    }
+
     function showReasoningAnimation() {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
-        const typingCancel = document.getElementById('typingCancelBtn');
-        if (typingCancel) {
-            typingCancel.style.display = 'none';
-        }
         
         const reasoningContainer = document.createElement('div');
         reasoningContainer.className = 'reasoning-container';
         reasoningContainer.id = 'reasoningContainer';
-        reasoningContainer.style.display = 'block';
         reasoningContainer.innerHTML = `
             <div class="reasoning-header">
                 <div class="reasoning-dot"></div>
-                <span>Düşünüyor...</span>
-                <button type="button" class="cancel-request-btn" onclick="cancelPendingResponse()">İptal Et</button>
+                <span>Araştırıyor · bütçe ${formatThinkDuration(deepThinkSeconds)}</span>
+                <span class="reasoning-timer" id="reasoningTimer" aria-live="polite">00:00:00</span>
+                <button type="button" class="reasoning-stop-btn" onclick="stopDeepThinkRequest()">Durdur</button>
             </div>
-            <div class="reasoning-content" id="reasoningContent"></div>
+            <div class="reasoning-content">Web kaynakları ve ilgili araçlar kontrol ediliyor.</div>
         `;
         
         if (typingEl && typingEl.parentNode === messagesEl) {
@@ -2413,6 +2217,9 @@
         } else {
             messagesEl.appendChild(reasoningContainer);
         }
+        reasoningStartedAt = performance.now();
+        updateReasoningTimer();
+        reasoningTimerInterval = setInterval(updateReasoningTimer, 50);
         scrollMessagesToBottom();
     }
 
@@ -2421,22 +2228,32 @@
         if (reasoningContainer) {
             reasoningContainer.remove();
         }
-        const typingCancel = document.getElementById('typingCancelBtn');
-        if (typingCancel) {
-            typingCancel.style.display = '';
+        if (reasoningTimerInterval) {
+            clearInterval(reasoningTimerInterval);
+            reasoningTimerInterval = null;
         }
     }
 
     function updateReasoningContent(text) {
         const reasoningContent = document.getElementById('reasoningContent');
         if (reasoningContent) {
-            const line = (text || '').trim();
-            if (line) {
-                reasoningContent.textContent = reasoningContent.textContent
-                    ? reasoningContent.textContent + '\n' + line
-                    : line;
-            }
+            reasoningContent.textContent = text;
             scrollMessagesToBottom();
+        }
+    }
+
+    function formatReasoningElapsed(milliseconds) {
+        const totalCentiseconds = Math.max(0, Math.floor(milliseconds / 10));
+        const minutes = Math.floor(totalCentiseconds / 6000);
+        const seconds = Math.floor((totalCentiseconds % 6000) / 100);
+        const centiseconds = totalCentiseconds % 100;
+        return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}:${String(centiseconds).padStart(2, '0')}`;
+    }
+
+    function updateReasoningTimer() {
+        const timer = document.getElementById('reasoningTimer');
+        if (timer) {
+            timer.textContent = formatReasoningElapsed(performance.now() - reasoningStartedAt);
         }
     }
 
@@ -2570,10 +2387,41 @@
     }
 
     async function startVoiceRecording() {
+        const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognitionApi) {
+            alert('Bu tarayıcıda ses tanıma desteklenmiyor. Lütfen Chrome veya Edge kullanın.');
+            return;
+        }
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
+            const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+                .find(type => MediaRecorder.isTypeSupported(type));
+            mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
             const chunks = [];
+            selectedVoiceTranscript = '';
+            speechRecognitionFinished = false;
+            speechRecognizer = new SpeechRecognitionApi();
+            speechRecognizer.lang = 'tr-TR';
+            speechRecognizer.continuous = true;
+            speechRecognizer.interimResults = true;
+            const finalTranscriptParts = [];
+            speechRecognitionPromise = new Promise(resolve => {
+                speechRecognizer.onend = () => {
+                    speechRecognitionFinished = true;
+                    resolve();
+                };
+            });
+            speechRecognizer.onresult = (event) => {
+                for (let index = event.resultIndex; index < event.results.length; index++) {
+                    const result = event.results[index];
+                    if (result.isFinal && result[0]?.transcript) {
+                        finalTranscriptParts.push(result[0].transcript.trim());
+                    }
+                }
+                selectedVoiceTranscript = finalTranscriptParts.join(' ').trim();
+            };
+            speechRecognizer.onerror = () => {};
+            speechRecognizer.start();
             voiceStopPromise = new Promise(resolve => {
                 mediaRecorder._resolveStop = resolve;
             });
@@ -2583,7 +2431,9 @@
             };
 
             mediaRecorder.onstop = () => {
-                selectedVoiceBlob = new Blob(chunks, { type: 'audio/webm' });
+                selectedVoiceBlob = new Blob(chunks, {
+                    type: mediaRecorder.mimeType || chunks[0]?.type || 'audio/webm'
+                });
                 renderVoicePreview();
                 stream.getTracks().forEach(track => track.stop());
                 if (mediaRecorder && mediaRecorder._resolveStop) {
@@ -2637,14 +2487,26 @@
 
     function removeVoice() {
         selectedVoiceBlob = null;
+        selectedVoiceTranscript = '';
+        if (speechRecognizer && !speechRecognitionFinished) {
+            try { speechRecognizer.stop(); } catch (err) { /* already stopped */ }
+        }
+        speechRecognizer = null;
         document.getElementById('voicePreview').style.display = 'none';
         document.getElementById('voicePreview').innerHTML = '';
     }
 
-    async function transcribeVoice(audioBlob) {
-        // The audio itself is sent to the multimodal model. Browser speech recognition
-        // is only an optional convenience and must not block sending the recording.
-        return "";
+    async function transcribeVoice() {
+        if (selectedVoiceTranscript) return selectedVoiceTranscript.trim();
+        if (!speechRecognizer) return '';
+        if (!speechRecognitionFinished) {
+            try { speechRecognizer.stop(); } catch (err) { /* already stopped */ }
+            await Promise.race([
+                speechRecognitionPromise,
+                new Promise(resolve => setTimeout(resolve, 5000))
+            ]);
+        }
+        return selectedVoiceTranscript.trim();
     }
 
     function blobToDataUrl(blob) {
@@ -2659,6 +2521,11 @@
     async function generateImage() {
         const inputEl = document.getElementById('userInput');
         const prompt = inputEl.value.trim();
+
+        if (imageGenerating) {
+            if (imageRequestController) imageRequestController.abort();
+            return;
+        }
         
         if (!prompt) {
             alert('Lütfen görsel oluşturmak için bir prompt girin.');
@@ -2667,8 +2534,16 @@
 
         const generateBtn = document.getElementById('imageGenBtn');
         const originalContent = generateBtn.innerHTML;
-        generateBtn.disabled = true;
+        imageGenerating = true;
+        imageRequestController = new AbortController();
+        generateBtn.disabled = false;
+        generateBtn.classList.add('image-generating');
         generateBtn.setAttribute('aria-busy', 'true');
+        generateBtn.innerHTML = `
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect>
+            </svg> Durdur
+        `;
 
         try {
             const response = await fetch('{% url "api_image_generate" %}', {
@@ -2678,7 +2553,8 @@
                     'X-CSRFToken': getCsrfToken()
                 },
                 credentials: 'same-origin',
-                body: JSON.stringify({ prompt: prompt })
+                body: JSON.stringify({ prompt: prompt }),
+                signal: imageRequestController.signal
             });
 
             const data = await response.json();
@@ -2702,9 +2578,9 @@
                 // Add AI message with generated image
                 currentChat.messages.push({ 
                     sender: 'ai', 
-                    text: `İşte oluşturulan görsel:\n\n![Generated Image](${data.image_url})`, 
-                    timestamp,
-                    generatedImage: true
+                    text: 'İşte istediğin görsel:',
+                    images: [{ url: data.image_url, name: prompt }],
+                    timestamp 
                 });
                 
                 inputEl.value = '';
@@ -2715,10 +2591,14 @@
                 alert('Görsel oluşturma başarısız: ' + (data.error || 'Bilinmeyen hata'));
             }
         } catch (err) {
+            if (err.name === 'AbortError') return;
             alert('Görsel oluşturma sırasında hata oluştu: ' + err.message);
         } finally {
+            imageGenerating = false;
+            imageRequestController = null;
             generateBtn.innerHTML = originalContent;
             generateBtn.disabled = false;
+            generateBtn.classList.remove('image-generating');
             generateBtn.removeAttribute('aria-busy');
         }
     }
@@ -2726,23 +2606,6 @@
     function handleKeyPress(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            sendMessage();
-        }
-    }
-
-    function setSendingState(on) {
-        isSending = on;
-        const btn = document.getElementById('sendBtn');
-        if (!btn) return;
-        btn.classList.toggle('sending', on);
-        btn.title = on ? 'Durdur' : 'Gönder';
-        btn.setAttribute('aria-label', on ? 'Durdur' : 'Gönder');
-    }
-
-    function onSendButtonClick() {
-        if (isSending) {
-            cancelPendingResponse();
-        } else {
             sendMessage();
         }
     }
@@ -2766,29 +2629,27 @@
         const currentChat = chats.find(c => c.id === activeChatId);
 
         // Handle voice transcription
-        let voiceTranscript = '';
+        let voiceTranscript = selectedVoiceTranscript || '';
         if (selectedVoiceBlob) {
-            voiceTranscript = await transcribeVoice(selectedVoiceBlob);
+            voiceTranscript = await transcribeVoice();
+            if (!voiceTranscript && !text) {
+                alert('Ses anlaşılamadı. Lütfen mikrofon iznini kontrol edip kaydı yeniden deneyin veya mesajınızı yazın.');
+                return;
+            }
         }
         const voiceDataUrl = selectedVoiceBlob ? await blobToDataUrl(selectedVoiceBlob) : '';
 
-        // Temizlemeden önce gönderilecek medyayı yakala (body'de kullanılacak)
-        const imagesToSend = selectedImages.slice();
-        const filesToSend = selectedFiles.slice();
-        const voiceBlobToSend = selectedVoiceBlob;
-        const voiceTypeToSend = voiceBlobToSend ? (voiceBlobToSend.type || 'audio/webm') : '';
-
         // Combine text with voice transcript
         let fullMessage = text || voiceTranscript;
-        const filesForMessage = filesToSend.map(file => ({
+        const filesForMessage = selectedFiles.map(file => ({
             name: file.name,
             type: file.type,
             size: file.size,
             base64: file.base64,
             text: file.text
         }));
-        if (!fullMessage && filesToSend.length) {
-            fullMessage = `[Dosya gönderildi: ${filesToSend.map(file => file.name).join(', ')}]`;
+        if (!fullMessage && selectedFiles.length) {
+            fullMessage = `[Dosya gönderildi: ${selectedFiles.map(file => file.name).join(', ')}]`;
         }
 
         if (currentChat && !currentChat.isCustomTitle && currentChat.messages.length === 0) {
@@ -2800,27 +2661,30 @@
             sender: 'user', 
             text: fullMessage, 
             timestamp,
-            images: imagesToSend, // Gönderilecek görselleri doğrudan kullan
-            files: filesToSend,   // Gönderilecek dosyaları doğrudan kullan
-            hasVoice: !!voiceBlobToSend,
-            voice: voiceDataUrl || undefined // voiceDataUrl, base64 data URL'yi içerir
+            images: selectedImages.length > 0 ? selectedImages : undefined,
+            files: filesForMessage.length > 0 ? filesForMessage : undefined,
+            hasVoice: !!selectedVoiceBlob,
+            voice: voiceDataUrl || undefined,
+            voiceTranscript: voiceTranscript || undefined
         });
         
         if (customText === null) {
             inputEl.value = '';
         }
 
-        // Medya gönderildikten sonra temizle
+        // Clear media after sending
+        const imagesToSend = [...selectedImages];
+        const filesToSend = [...selectedFiles];
         selectedImages = [];
         selectedFiles = [];
         selectedVoiceBlob = null;
         renderImagePreviews();
         removeVoice();
 
-        // Derin düşünme durumunu kaydet
+        // Store deep think state before disabling
         const wasDeepThink = deepThinkEnabled;
         
-        // Gönderdikten sonra derin düşünmeyi devre dışı bırak
+        // Disable deep think after sending
         if (deepThinkEnabled) {
             deepThinkEnabled = false;
             document.getElementById('thinkBtn').classList.remove('active');
@@ -2833,13 +2697,11 @@
 
         const previousHistory = currentChat.messages.slice(0, -1);
         showTypingIndicator();
-        setSendingState(true);
         if (wasDeepThink) {
             showReasoningAnimation();
         }
 
         try {
-            activeRequestController = new AbortController();
             const response = await fetch('{% url "api_chat" %}', {
                 method: 'POST',
                 headers: {
@@ -2855,102 +2717,53 @@
                     deep_think_seconds: deepThinkSeconds,
                     images: imagesToSend,
                     files: filesToSend,
-                    voice_transcript: voiceTranscript,
-                    voice: voiceBlobToSend && voiceDataUrl ? {
-                        type: voiceTypeToSend,
-                        base64: voiceDataUrl.split(',')[1] || ''
-                    } : null
+                    voice_transcript: voiceTranscript
                 }),
-                signal: activeRequestController.signal
+                signal: (activeRequestController = new AbortController()).signal
             });
 
             hideTypingIndicator();
-            // Derin düşünmede akıl yürütme kutusu akış boyunca GÖRÜNÜR kalmalı;
-            // yalnızca yanıt alınamazsa (aşağıda) kaldırılır.
+            if (wasDeepThink) {
+                hideReasoningAnimation();
+            }
 
             if (!response.ok) {
-                if (wasDeepThink) hideReasoningAnimation();
                 let errorData = {};
-                try { errorData = await response.json(); } catch (err) { /* JSON parse hatasını yoksay */ }
-                const errorMessage = errorData.error || 'Yapay zekâ yanıtı alınamadı. Lütfen tekrar deneyin.';
+                try { errorData = await response.json(); } catch (err) { /* handled below */ }
                 currentChat.messages.push({
                     sender: 'ai',
-                    text: errorMessage,
+                    text: errorData.error || 'Yapay zekâ yanıtı alınamadı. Lütfen tekrar deneyin.',
                     timestamp: Date.now()
                 });
             } else if (response.body) {
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let fullResponse = '';
-                let pending = '';
                 let aiMsgIndex = -1;
-                let reasonReceived = false;
-                let lastReasonText = '';
-                const REASON_MARKER = '\u0001R\u0001';
-
-                const pushDisplay = (text) => {
-                    fullResponse += text;
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    fullResponse += chunk;
                     if (aiMsgIndex === -1) {
                         aiMsgIndex = currentChat.messages.length;
                         currentChat.messages.push({ sender: 'ai', text: '', timestamp: Date.now() });
                     }
                     currentChat.messages[aiMsgIndex].text = fullResponse;
                     renderMessages();
-                };
-                
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    pending += decoder.decode(value, { stream: true });
-                    let newlineIndex;
-                    while ((newlineIndex = pending.indexOf('\n')) !== -1) {
-                        const line = pending.slice(0, newlineIndex);
-                        pending = pending.slice(newlineIndex + 1);
-                        if (line.indexOf(REASON_MARKER) === 0) {
-                            const reasonText = line.slice(REASON_MARKER.length);
-                            reasonReceived = true;
-                            lastReasonText = reasonText;
-                            updateReasoningContent(reasonText);
-                            continue;
-                        }
-                        pushDisplay(line + '\n');
-                    }
-                    if (pending && pending.indexOf(REASON_MARKER) !== 0 && REASON_MARKER.indexOf(pending) === -1) {
-                        pushDisplay(pending);
-                        pending = '';
-                    }
-                }
-                if (pending && pending.indexOf(REASON_MARKER) !== 0) {
-                    fullResponse += pending;
-                    if (aiMsgIndex !== -1) {
-                        currentChat.messages[aiMsgIndex].text = fullResponse;
-                    }
-                }
-                // Akış bitti: akıl yürütme kutusunu kaldır.
-                if (wasDeepThink) {
-                    hideReasoningAnimation();
                 }
                 if (aiMsgIndex === -1) {
-                    let fallbackText;
-                    if (reasonReceived && lastReasonText.trim()) {
-                        fallbackText = 'Düşünme sürecim yarıda kesildi (sunucu zaman aşımı olabilir). Toplayabildiğim son düşünce:\n\n'
-                            + lastReasonText.trim()
-                            + '\n\nLütfen mesajınızı yeniden gönderin; sorun sürerse düşünme süresini kısaltmayı deneyin.';
-                    } else {
-                        fallbackText = 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.';
-                    }
                     currentChat.messages.push({
                         sender: 'ai',
-                        text: fallbackText,
+                        text: 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.',
                         timestamp: Date.now()
                     });
                 } else {
                     currentChat.messages[aiMsgIndex].text = fullResponse.trim()
                         ? fullResponse
-                        : (reasonReceived && lastReasonText.trim()
-                            ? lastReasonText.trim()
-                            : 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.');
+                        : 'Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin.';
                 }
             } else {
                 const data = await response.json();
@@ -2967,13 +2780,12 @@
                 hideReasoningAnimation();
             }
             if (err.name === 'AbortError') {
-                return; // İstek iptal edildiğinde hata fırlatma
+                return;
             }
             const connErr = 'Bağlantı hatası yaşandı. Lütfen tekrar deneyin.';
             currentChat.messages.push({ sender: 'ai', text: connErr, timestamp: Date.now() });
         } finally {
             activeRequestController = null;
-            setSendingState(false);
         }
 
         saveToStorage();
@@ -2981,22 +2793,44 @@
         renderMessages();
     }
 
-    function retryMessage(aiMsgIndex) {
+    async function retryMessage(aiMsgIndex) {
         const currentChat = chats.find(c => c.id === activeChatId);
         if (!currentChat) return;
-        const userMsgIndex = aiMsgIndex - 1;
+        const lastAiIndex = currentChat.messages.reduce(
+            (last, message, index) => message.sender === 'ai' ? index : last,
+            -1
+        );
+        if (aiMsgIndex !== lastAiIndex) return;
+        let userMsgIndex = aiMsgIndex - 1;
+        while (userMsgIndex >= 0 && currentChat.messages[userMsgIndex].sender !== 'user') {
+            userMsgIndex -= 1;
+        }
         const aiMessage = currentChat.messages[aiMsgIndex];
         const userMessage = currentChat.messages[userMsgIndex];
-        if (!aiMessage || aiMessage.sender !== 'ai' || !userMessage || userMessage.sender !== 'user') return;
+        if (!aiMessage || aiMessage.sender !== 'ai' || userMsgIndex < 0 || !userMessage) return;
+        const replay = { ...userMessage };
         cancelPendingResponse();
         currentChat.messages.splice(aiMsgIndex, 1);
         currentChat.messages.splice(userMsgIndex, 1);
+        selectedImages = replay.images || [];
+        selectedFiles = replay.files || [];
+        selectedVoiceTranscript = replay.voiceTranscript || '';
+        selectedVoiceBlob = null;
+        if (replay.voice) {
+            try {
+                selectedVoiceBlob = await (await fetch(replay.voice)).blob();
+            } catch (err) {
+                selectedVoiceBlob = null;
+            }
+        }
+        renderImagePreviews();
+        if (selectedVoiceBlob) renderVoicePreview();
         saveToStorage();
         renderMessages();
-        sendMessage(userMessage.text);
+        sendMessage(replay.text || '');
     }
 
-    function appendMessage(text, sender, autoScroll = true, msgIndex = 0, messageData = null) {
+    function appendMessage(text, sender, autoScroll = true, canAction = true, msgIndex = 0, messageData = null) {
         const messagesEl = document.getElementById('chatMessages');
         const typingEl = document.getElementById('typingIndicator');
         const wrapper = document.createElement('div');
@@ -3027,27 +2861,22 @@
         
         if (sender === 'ai') {
             msgDiv.innerHTML = renderMarkdown(text);
+            const attachments = messageData || {};
+            (attachments.images || []).forEach((image) => {
+                if (!image.base64 && !image.url) return;
+                const imageEl = document.createElement('img');
+                imageEl.className = 'message-attachment generated-image';
+                imageEl.alt = image.name || 'Oluşturulan görsel';
+                imageEl.src = image.url || `data:${image.type || 'image/png'};base64,${image.base64}`;
+                msgDiv.appendChild(imageEl);
+            });
             if (window.hljs) {
                 msgDiv.querySelectorAll('pre code').forEach((block) => {
                     try { hljs.highlightElement(block); } catch (err) { /* ignore */ }
                 });
             }
-
-            if (messageData && messageData.generatedImage) {
-                msgDiv.querySelectorAll('img').forEach((img) => {
-                    if (img.parentNode && img.parentNode.classList && img.parentNode.classList.contains('gen-image-wrap')) return;
-                    const wrap = document.createElement('span');
-                    wrap.className = 'gen-image-wrap';
-                    img.parentNode.insertBefore(wrap, img);
-                    wrap.appendChild(img);
-                    const logo = document.createElement('span');
-                    logo.className = 'gen-image-watermark';
-                    logo.setAttribute('aria-hidden', 'true');
-                    wrap.appendChild(logo);
-                });
-            }
             
-            // Kod bloklarına kopyalama düğmeleri ekle (yalnızca kod modunda)
+            // Add copy buttons to code blocks in code mode
             if (currentMode === 'code') {
                 msgDiv.querySelectorAll('pre').forEach((pre) => {
                     if (!pre.querySelector('.code-copy-btn')) {
@@ -3099,60 +2928,52 @@
         }
         wrapper.appendChild(msgDiv);
 
-        const currentChat = chats.find(c => c.id === activeChatId);
-        if (currentChat && currentChat.messages.length > 0) {
-            let lastAiIndex = -1;
-            let lastUserIndex = -1;
-            for (let i = currentChat.messages.length - 1; i >= 0; i--) {
-                const s = currentChat.messages[i].sender;
-                if (lastAiIndex === -1 && s === 'ai') lastAiIndex = i;
-                if (lastUserIndex === -1 && s === 'user') lastUserIndex = i;
-                if (lastAiIndex !== -1 && lastUserIndex !== -1) break;
-            }
-
-            const showRetry = (sender === 'ai' && msgIndex === lastAiIndex);
-            const showUserActions = (sender === 'user' && msgIndex === lastUserIndex);
-
-            if (showRetry || showUserActions) {
-                const actionBrd = document.createElement('div');
-                actionBrd.className = 'msg-action-bar';
-                
-                let actionHtml = '';
-                if (showRetry) {
-                    actionHtml = `
-                        <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
-                                <path d="M20 11a8.1 8.1 0 0 0-15.5-3M4 5v4h4"></path>
-                                <path d="M4 13a8.1 8.1 0 0 0 15.5 3M20 19v-4h-4"></path>
-                            </svg>
-                        </button>
-                    `;
-                } else if (showUserActions) {
-                    actionHtml = `
-                    <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        if (canAction) {
+            const actionBrd = document.createElement('div');
+            actionBrd.className = 'msg-action-bar';
+            
+            const currentChat = chats.find(c => c.id === activeChatId);
+            const lastUserIndex = currentChat
+                ? currentChat.messages.reduce((last, message, index) => message.sender === 'user' ? index : last, -1)
+                : -1;
+            const lastAiIndex = currentChat
+                ? currentChat.messages.reduce((last, message, index) => message.sender === 'ai' ? index : last, -1)
+                : -1;
+            let actionHtml = '';
+            if (sender === 'ai' && msgIndex === lastAiIndex) {
+                actionHtml = `
+                    <button class="action-btn retry-msg-btn" onclick="retryMessage(${msgIndex})" title="Tekrar dene" aria-label="Tekrar dene">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15">
+                            <path d="M20 11a8.1 8.1 0 0 0-15.5-3M4 5v4h4"></path>
+                            <path d="M4 13a8.1 8.1 0 0 0 15.5 3M20 19v-4h-4"></path>
                         </svg>
-                        Sil
                     </button>
                 `;
+            } else if (sender === 'user' && msgIndex === lastUserIndex) {
+                actionHtml = `
+                <button class="action-btn delete-msg-btn" onclick="deleteMessagePair(${msgIndex})" title="Sil">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    Sil
+                </button>
+            `;
 
-                    actionHtml += `
-                        <button class="action-btn" onclick="editMessage(${msgIndex})" title="Düzenle">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                            </svg>
-                            Düzenle
-                        </button>
-                    `;
-                }
+                actionHtml += `
+                    <button class="action-btn" onclick="editMessage(${msgIndex})" title="Düzenle">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                        Düzenle
+                    </button>
+                `;
+            }
 
-                if (actionHtml) {
-                    actionBrd.innerHTML = actionHtml;
-                    wrapper.appendChild(actionBrd);
-                }
+            if (actionHtml) {
+                actionBrd.innerHTML = actionHtml;
+                wrapper.appendChild(actionBrd);
             }
         }
 
