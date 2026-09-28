@@ -175,6 +175,7 @@ CSRF_COOKIE_SECURE = not DEBUG # HTTPS üzerinden gönderilsin (üretimde True o
 SESSION_COOKIE_HTTPONLY = True # JavaScript erişimini engelle
 CSRF_COOKIE_HTTPONLY = True # JavaScript erişimini engelle
 SESSION_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
+SESSION_COOKIE_SAMESITE = 'Lax'  # CSRF koruması için
 
 
 # Email
