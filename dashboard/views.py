@@ -32,261 +32,20 @@ except ImportError:
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_TEXT = 300_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 
 
-PROVIDER_GROQ = "groq"
-PROVIDER_COHERE = "cohere"
-PROVIDER_MISTRAL = "mistral"
-PROVIDER_OPENROUTER = "openrouter"
-
-PROVIDER_BASE_URLS = {
-    PROVIDER_GROQ: "https://api.groq.com/openai/v1",
-    PROVIDER_COHERE: "https://api.cohere.ai/v2",
-    PROVIDER_MISTRAL: "https://api.mistral.ai/v1",
-    PROVIDER_OPENROUTER: "https://openrouter.ai/api/v1",
-}
-
-PROVIDER_DEFAULT_MODELS = {
-    PROVIDER_GROQ: os.environ.get("GROQ_DEFAULT_MODEL", "").strip() or "llama-3.3-70b-versatile",
-    PROVIDER_COHERE: os.environ.get("COHERE_DEFAULT_MODEL", "").strip() or "command-r-plus-08-2024",
-    PROVIDER_MISTRAL: os.environ.get("MISTRAL_DEFAULT_MODEL", "").strip() or "mistral-large-latest",
-    PROVIDER_OPENROUTER: os.environ.get("OPENROUTER_DEFAULT_MODEL", "").strip() or "openrouter/auto",
-}
-
-PROVIDER_STREAM_SUPPORTED = {
-    PROVIDER_GROQ: True,
-    PROVIDER_COHERE: True,
-    PROVIDER_MISTRAL: True,
-    PROVIDER_OPENROUTER: True,
-}
-
-PROVIDER_TOOLS_SUPPORTED = {
-    PROVIDER_GROQ: True,
-    PROVIDER_COHERE: False,
-    PROVIDER_MISTRAL: True,
-    PROVIDER_OPENROUTER: True,
-}
-
-
-def get_provider_from_env_name(env_name):
-  upper = (env_name or "").upper()
-  if "GROQ" in upper:
-    return PROVIDER_GROQ
-  if "COHERE" in upper:
-    return PROVIDER_COHERE
-  if "MISTRAL" in upper:
-    return PROVIDER_MISTRAL
-  return PROVIDER_OPENROUTER
-
-
-def get_provider_api_keys():
-  entries = []
-
-  def maybe_add(provider, env_name):
-    val = (os.environ.get(env_name) or "").strip().strip("\"'")
-    if not val or val == "gecici_anahtar":
-      return
-    if len(val) < 6:
-      return
-    entries.append({
-      "provider": provider,
-      "env": env_name,
-      "api_key": val,
-      "base_url": PROVIDER_BASE_URLS[provider],
-    })
-
-  ordered_envs = [
-      (PROVIDER_OPENROUTER, "OPENROUTER_API_KEY"),
-      (PROVIDER_GROQ, "GROQ_API_KEY"),
-      (PROVIDER_MISTRAL, "MISTRAL_API_KEY"),
-      (PROVIDER_COHERE, "COHERE_API_KEY"),
-  ]
-  for provider, env_name in ordered_envs:
-    maybe_add(provider, env_name)
-
-  numbered_idx = 1
-  while numbered_idx <= 20:
-    added_any = False
-    for provider, prefix in [
-        (PROVIDER_OPENROUTER, "OPENROUTER_API_KEY"),
-        (PROVIDER_GROQ, "GROQ_API_KEY"),
-        (PROVIDER_MISTRAL, "MISTRAL_API_KEY"),
-        (PROVIDER_COHERE, "COHERE_API_KEY"),
-    ]:
-      env_name = f"{prefix}_{numbered_idx}"
-      val = (os.environ.get(env_name) or "").strip().strip("\"'")
-      if val and val != "gecici_anahtar" and len(val) >= 6:
-        entries.append({
-          "provider": provider,
-          "env": env_name,
-          "api_key": val,
-          "base_url": PROVIDER_BASE_URLS[provider],
-        })
-        added_any = True
-    if not added_any and numbered_idx > 3:
-      pass
-    if numbered_idx > 3 and not any(
-        (os.environ.get(f"{p}_{numbered_idx}") or "").strip() for p in ("GROQ_API_KEY", "COHERE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY")
-    ):
-      break
-    numbered_idx += 1
-
-  list_envs = [
-      (PROVIDER_OPENROUTER, "OPENROUTER_API_KEYS"),
-      (PROVIDER_OPENROUTER, "OPENROUTER_API_KEY_POOL"),
-      (PROVIDER_OPENROUTER, "OPENROUTER_KEYS"),
-      (PROVIDER_OPENROUTER, "OPENROUTER_POOL"),
-      (PROVIDER_OPENROUTER, "OPENROUTER_BACKUP_KEYS"),
-      (PROVIDER_OPENROUTER, "OPENROUTER_RESERVE_KEYS"),
-      (PROVIDER_GROQ, "GROQ_API_KEYS"),
-      (PROVIDER_GROQ, "GROQ_BACKUP_KEYS"),
-      (PROVIDER_MISTRAL, "MISTRAL_API_KEYS"),
-      (PROVIDER_MISTRAL, "MISTRAL_BACKUP_KEYS"),
-      (PROVIDER_COHERE, "COHERE_API_KEYS"),
-      (PROVIDER_COHERE, "COHERE_BACKUP_KEYS"),
-  ]
-  for provider, env_name in list_envs:
-    raw = (os.environ.get(env_name) or "").strip()
-    if not raw:
-      continue
-    for piece in raw.split(","):
-      val = piece.strip().strip("\"'")
-      if not val or val == "gecici_anahtar" or len(val) < 6:
-        continue
-      entries.append({
-        "provider": provider,
-        "env": env_name,
-        "api_key": val,
-        "base_url": PROVIDER_BASE_URLS[provider],
-      })
-
-  numbered_idx = 1
-  while numbered_idx <= 20:
-    patterns = [
-        (PROVIDER_GROQ, f"GROQ_BACKUP_{numbered_idx}"),
-        (PROVIDER_GROQ, f"GROQ_RESERVE_{numbered_idx}"),
-        (PROVIDER_GROQ, f"GROQ_ALT_{numbered_idx}"),
-        (PROVIDER_MISTRAL, f"MISTRAL_BACKUP_{numbered_idx}"),
-        (PROVIDER_MISTRAL, f"MISTRAL_RESERVE_{numbered_idx}"),
-        (PROVIDER_MISTRAL, f"MISTRAL_ALT_{numbered_idx}"),
-        (PROVIDER_COHERE, f"COHERE_BACKUP_{numbered_idx}"),
-        (PROVIDER_COHERE, f"COHERE_RESERVE_{numbered_idx}"),
-        (PROVIDER_COHERE, f"COHERE_ALT_{numbered_idx}"),
-        (PROVIDER_OPENROUTER, f"OPENROUTER_BACKUP_{numbered_idx}"),
-        (PROVIDER_OPENROUTER, f"OPENROUTER_RESERVE_{numbered_idx}"),
-        (PROVIDER_OPENROUTER, f"OPENROUTER_ALT_{numbered_idx}"),
-    ]
-    any_added = False
-    for provider, env_name in patterns:
-      val = (os.environ.get(env_name) or "").strip().strip("\"'")
-      if val and val != "gecici_anahtar" and len(val) >= 6:
-        entries.append({
-          "provider": provider,
-          "env": env_name,
-          "api_key": val,
-          "base_url": PROVIDER_BASE_URLS[provider],
-        })
-        any_added = True
-    if numbered_idx > 5 and not any_added:
-      break
-    numbered_idx += 1
-
-  seen_keys = set()
-  unique_entries = []
-  for entry in entries:
-    sig = (entry["provider"], entry["api_key"])
-    if sig in seen_keys:
-      continue
-    seen_keys.add(sig)
-    unique_entries.append(entry)
-  return unique_entries
-
-
-def get_all_openrouter_api_keys():
-  return [e["api_key"] for e in get_provider_api_keys() if e["provider"] == PROVIDER_OPENROUTER]
-
-
-def get_openai_client():
-  providers = get_provider_api_keys()
-  if not providers:
+def get_gemini_client():
+  api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+  if not api_key:
     return None
-  first = providers[0]
   return OpenAI(
-      base_url=first["base_url"],
-      api_key=first["api_key"],
-  )
-
-
-def build_provider_client(entry):
-  return OpenAI(
-      base_url=entry["base_url"],
-      api_key=entry["api_key"],
-  )
-
-
-def build_openrouter_client(api_key):
-  return OpenAI(
-      base_url=PROVIDER_BASE_URLS[PROVIDER_OPENROUTER],
+      base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
       api_key=api_key,
   )
-
-
-def provider_resolve_model(entry, requested_model, fallback_overrides=None):
-  provider = entry["provider"]
-  default = PROVIDER_DEFAULT_MODELS[provider]
-  if fallback_overrides and provider in fallback_overrides and fallback_overrides[provider]:
-    default = fallback_overrides[provider]
-
-  if provider == PROVIDER_OPENROUTER:
-    if not requested_model:
-      return default
-    return requested_model
-
-  return default
-
-
-def provider_supports_stream(entry):
-  return PROVIDER_STREAM_SUPPORTED.get(entry["provider"], True)
-
-
-def _error_http_code(error):
-  code = None
-  if hasattr(error, "status_code"):
-    code = str(getattr(error, "status_code", "") or "") or None
-  if code is None and hasattr(error, "response") and error.response is not None:
-    try:
-      code = str(error.response.status_code)
-    except Exception:
-      code = None
-  return code
-
-
-def _error_code_attr(error):
-  code = None
-  try:
-    code = str(getattr(error, "code", "") or "")
-  except Exception:
-    code = None
-  if not code:
-    try:
-      body = getattr(error, "body", None) or {}
-      if isinstance(body, dict):
-        nested = body.get("error") or body.get("code")
-        if isinstance(nested, dict):
-          code = str(nested.get("code") or "")
-        elif nested is not None:
-          code = str(nested)
-    except Exception:
-      pass
-  return (code or "").lower() or None
-
-
-def _error_type_name(error):
-  cls_name = type(error).__name__.lower()
-  module = (getattr(type(error), "__module__", "") or "").lower()
-  return f"{module}.{cls_name}" if module else cls_name
 
 
 def get_user_profile(user):
@@ -639,210 +398,56 @@ def profile_payload(user):
   }
 
 
-def is_api_key_retriable_error(error):
-  http_code = _error_http_code(error)
-  attr_code = _error_code_attr(error)
-  type_name = _error_type_name(error)
-  error_text = str(error).lower()
-
-  if http_code in {"401", "402", "403"}:
-    return True
-
-  auth_quota_codes = (
-      "insufficient_quota", "quota_exceeded", "billing_not_active",
-      "payment_required", "invalid_api_key", "api_key_expired",
-      "forbidden", "unauthorized", "key_expired", "key_revoked",
-      "key_disabled", "account_disabled",
-  )
-  if attr_code and attr_code in auth_quota_codes:
-    return True
-
-  auth_quota_types = (
-      "insufficientquotaerror", "authenticationerror", "permissiondeniederror",
-      "ratelimiterror", "openaierror.authenticationerror",
-      "openaierror.insufficientquota", "unauthenticatederror",
-      "paymentrequirederror",
-  )
-  if any(tok in type_name for tok in auth_quota_types):
-    return True
-
-  explicit_markers = (
-      "insufficient_quota", "quota_exceeded", "quota exceeded",
-      "billing_not_active", "payment required", "payment_required",
-      "out of credit", "no credits remaining", "credits exhausted",
-      "balance exceeded", "credit limit reached",
-      "invalid_api_key", "api key expired", "your api key is expired",
-      "key is invalid", "unauthorized access", "invalid authentication",
-      "revoked", "disabled key", "account is disabled",
-  )
-  if any(marker in error_text for marker in explicit_markers):
-    return True
-
-  if "credit" in error_text and (
-      "out of" in error_text or "no credit" in error_text or
-      "not enough" in error_text or "insufficient" in error_text or
-      "exceeded your" in error_text or "run out" in error_text or
-      "remaining" in error_text or "limit" in error_text or
-      "add more" in error_text or "balance" in error_text or
-      "quota" in error_text or "billing" in error_text or
-      "payment" in error_text or "purchase" in error_text or
-      "top up" in error_text or "top-up" in error_text
-  ):
-    return True
-
-  if "401" in error_text or "403" in error_text or "402" in error_text:
-    if (
-        "unauthorized" in error_text or "forbidden" in error_text or
-        "payment" in error_text or "quota" in error_text or "credit" in error_text or
-        "billing" in error_text or "key" in error_text or "auth" in error_text
-    ):
-      return True
-
-  return False
-
-
-def is_context_length_error(error):
-  http_code = _error_http_code(error)
-  attr_code = _error_code_attr(error)
-  type_name = _error_type_name(error)
-  error_text = str(error).lower()
-
-  if attr_code and attr_code in ("context_length_exceeded", "string_above_max_length", "max_length"):
-    return True
-
-  if "toolarge" in type_name or "toolong" in type_name:
-    return True
-
-  markers = (
-      "context_length_exceeded",
-      "context length exceeded",
-      "prompt is too long",
-      "content length exceeded",
-      "maximum content length",
-      "input too long",
-      "too many input tokens",
-      "prompt tokens exceed",
-      "token count exceeds model's maximum",
-      "your input is too long",
-      "exceeds the model's maximum context length",
-      "the message you submitted was too long",
-      "maximum context length is",
-      "request exceeds max content length",
-      "input length exceeded",
-  )
-  if any(marker in error_text for marker in markers):
-    return True
-
-  if http_code == "400" and ("context" in error_text and "length" in error_text):
-    return True
-
-  return False
-
-
-def is_rate_limit_error(error):
-  http_code = _error_http_code(error)
-  attr_code = _error_code_attr(error)
-  type_name = _error_type_name(error)
-  error_text = str(error).lower()
-
-  if http_code == "429":
-    return True
-  if attr_code and ("rate_limit" in attr_code or attr_code == "429"):
-    return True
-  if "ratelimiterror" in type_name or "toomanyrequestserror" in type_name:
-    return True
-
-  rate_markers = ("429", "rate limit", "too many requests", "requests per minute", "per second", "throttled", "rate-limit")
-  return any(marker in error_text for marker in rate_markers)
-
-
 def friendly_api_error(error):
-  http_code = _error_http_code(error)
   error_text = str(error).lower()
-
-  if http_code == "429" or is_rate_limit_error(error):
-    return "Yapay zekâ servisi şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
-
-  if http_code == "404":
-    return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
-  if "404" in error_text or "not found" in error_text or "model_not_found" in error_text:
-    if not is_context_length_error(error):
-      return "Seçili yapay zekâ modeli kullanılamıyor. Sunucu ayarlarından geçerli bir model seçin."
-
-  if http_code in {"401", "403"}:
-    return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
-  if "401" in error_text or "403" in error_text:
-    if "unauthorized" in error_text or "forbidden" in error_text or "invalid" in error_text or "key" in error_text or "auth" in error_text:
-      return "Yapay zekâ servisi yetkilendirmeyi reddetti. API anahtarını kontrol edin."
-
-  if http_code == "402":
-    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
-  attr_code = _error_code_attr(error)
-  if attr_code and attr_code in ("insufficient_quota", "quota_exceeded", "billing_not_active", "payment_required"):
-    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
-
-  explicit_quota_phrases = (
-      "insufficient_quota", "quota exceeded", "out of credit",
-      "no credits remaining", "credits exhausted",
-      "balance exceeded", "credit limit reached",
-      "billing not active", "payment required",
-      "add more credits", "purchase credits", "top up credits",
-  )
-  if any(phrase in error_text for phrase in explicit_quota_phrases):
-    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
-
-  if is_context_length_error(error):
-    return "Mesaj veya sohbet geçmişi çok uzun. Daha kısa bir mesaj deneyin ya da sohbeti sıfırlayın."
-
-  if "credit" in error_text and (
-      "out of" in error_text or "no credit" in error_text or
-      "not enough" in error_text or "insufficient" in error_text or
-      "exceeded your" in error_text or "run out" in error_text or
-      "remaining" in error_text or "limit" in error_text or
-      "add more" in error_text or "balance" in error_text or
-      "quota" in error_text or "billing" in error_text or
-      "payment" in error_text or "purchase" in error_text or
-      "top up" in error_text or "top-up" in error_text
+  if "max_tokens" in error_text or "maximum" in error_text and "token" in error_text:
+    return "Gemini isteği çok uzun. Daha kısa bir mesaj veya daha küçük bir dosya deneyin."
+  if "401" in error_text or "403" in error_text or "unauthorized" in error_text:
+    return "Gemini API anahtarı reddedildi. Replit Secrets içindeki GEMINI_API_KEY değerini kontrol edin."
+  if "404" in error_text or "not found" in error_text:
+    return f"Gemini modeli kullanılamıyor: {GEMINI_MODEL}."
+  if (
+      "429" in error_text
+      or "rate limit" in error_text
+      or "resource_exhausted" in error_text
+      or "quota" in error_text
   ):
-    return "Yapay zekâ servisi için yeterli API kredisi yok veya istek çok uzun. Daha kısa bir mesaj deneyin ya da API kredisi ekleyin."
+    return "Gemini servisi şu anda yoğun veya istek kotasına ulaşıldı. Birkaç saniye sonra tekrar deneyin."
+  return "Gemini yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
-  return "Yapay zekâ yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
-
-def generate_image_with_openrouter(prompt, image_model, api_key):
-  """Use OpenRouter's dedicated image API and return a data URL."""
+def generate_image_with_gemini(prompt, image_model, api_key):
+  """Generate an image through Gemini's generateContent endpoint."""
   response = requests.post(
-      "https://openrouter.ai/api/v1/images",
+      f"https://generativelanguage.googleapis.com/v1beta/models/{image_model}:generateContent",
       headers={
-          "Authorization": f"Bearer {api_key}",
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://aslan-parcasi-ai.onrender.com",
-          "X-Title": "Aslan Parçası AI",
       },
+      params={"key": api_key},
       json={
-          "model": image_model,
-          "prompt": (
-              "Create exactly one image that follows the user's request literally. "
-              "The named subject, object, place, count, action and composition are mandatory. "
-              "Never replace an airplane, city, building or other requested subject with a "
-              "generic animal, stock photo or unrelated scene. If the user asks for a "
-              "realistic image, make it photorealistic with natural lighting, accurate "
-              "materials, perspective and fine detail. Do not add unrelated objects. "
-              "User request, verbatim: "
-              + prompt
-          ),
+          "contents": [{
+              "parts": [{
+                  "text": (
+                      "Create exactly one image that follows the user's request literally. "
+                      "The named subject, object, place, count, action and composition are "
+                      "mandatory. If the user asks for a realistic image, make it "
+                      "photorealistic. Do not add unrelated objects. User request: "
+                      + prompt
+                  ),
+              }],
+          }],
+          "generationConfig": {"responseModalities": ["IMAGE"]},
       },
       timeout=180,
   )
   response.raise_for_status()
   payload = response.json()
-  image = (payload.get("data") or [{}])[0]
-  if image.get("url"):
-    return image["url"]
-  encoded = image.get("b64_json")
-  if encoded:
-    media_type = image.get("media_type") or "image/png"
-    return f"data:{media_type};base64,{encoded}"
+  for candidate in payload.get("candidates") or []:
+    for part in (candidate.get("content") or {}).get("parts") or []:
+      inline_data = part.get("inlineData") or part.get("inline_data")
+      if inline_data and inline_data.get("data"):
+        media_type = inline_data.get("mimeType") or inline_data.get("mime_type") or "image/png"
+        return f"data:{media_type};base64,{inline_data['data']}"
   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
 
 
@@ -857,93 +462,20 @@ def safe_model_call(
     tools=None,
     timeout=None,
 ):
-    all_entries = get_provider_api_keys()
-    if not all_entries:
-        all_entries = [None]
+    kwargs = {
+        "model": GEMINI_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": stream,
+    }
+    if timeout is not None:
+        kwargs["timeout"] = max(1, timeout)
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
 
-    configured_fallback_openrouter = os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
-
-    last_error = None
-    context_length_hit = False
-    used_original = False
-
-    for entry in all_entries:
-        current_client = client
-        provider = PROVIDER_OPENROUTER
-        actually_stream = stream
-        if entry is None:
-            if used_original:
-                continue
-            used_original = True
-            provider = PROVIDER_OPENROUTER
-            actually_stream = stream
-            model_choices = list(dict.fromkeys(item for item in [model, configured_fallback_openrouter, "openrouter/auto"] if item))
-        else:
-            current_client = build_provider_client(entry)
-            provider = entry["provider"]
-            fallback_overrides = {
-                PROVIDER_GROQ: os.environ.get("GROQ_FALLBACK_MODEL", "").strip() or None,
-                PROVIDER_COHERE: os.environ.get("COHERE_FALLBACK_MODEL", "").strip() or None,
-                PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
-            }
-            resolved_main = provider_resolve_model(entry, model, fallback_overrides)
-            if provider == PROVIDER_OPENROUTER:
-                model_choices = list(dict.fromkeys(x for x in [
-                    resolved_main,
-                    configured_fallback_openrouter,
-                    fallback_overrides.get(provider),
-                    PROVIDER_DEFAULT_MODELS[provider],
-                ] if x))
-            else:
-                model_choices = list(dict.fromkeys(x for x in [
-                    resolved_main,
-                    fallback_overrides.get(provider),
-                    PROVIDER_DEFAULT_MODELS[provider],
-                ] if x))
-            actually_stream = stream and provider_supports_stream(entry)
-
-        use_tools = tools if PROVIDER_TOOLS_SUPPORTED.get(provider, False) else None
-
-        for attempt_model in model_choices:
-            try:
-                kwargs = {
-                    "model": attempt_model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stream": actually_stream,
-                }
-                if timeout is not None:
-                    kwargs["timeout"] = max(1, timeout)
-                if use_tools:
-                    kwargs["tools"] = use_tools
-                    kwargs["tool_choice"] = "auto"
-
-                completion = current_client.chat.completions.create(**kwargs)
-                return completion
-            except Exception as e:
-                last_error = e
-
-                if is_rate_limit_error(e):
-                    for retry in range(2):
-                        time.sleep(1 + retry)
-                        try:
-                            completion = current_client.chat.completions.create(**kwargs)
-                            return completion
-                        except Exception as retry_e:
-                            last_error = retry_e
-                            continue
-
-                if is_context_length_error(e):
-                    context_length_hit = True
-                    break
-
-                break
-
-    if context_length_hit and is_context_length_error(last_error):
-        raise last_error
-
-    raise last_error or Exception("Tüm sağlayıcılar, modeller ve API anahtarları başarısız oldu")
+    return client.chat.completions.create(**kwargs)
 
 
 def deep_think_call(
@@ -1156,10 +688,10 @@ def api_image_generate(request):
     if not prompt:
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
     
-    all_keys = get_all_openrouter_api_keys()
-    if not all_keys:
+    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not api_key:
       return JsonResponse(
-          {"error": "OPENROUTER_API_KEY tanımlı değil. Lütfen API anahtarını ayarlayın."},
+          {"error": "GEMINI_API_KEY tanımlı değil. Gemini API anahtarını Replit Secrets'a ekleyin."},
           status=503,
       )
 
@@ -1173,31 +705,11 @@ def api_image_generate(request):
         )
       _last_image_request_at[request.user.pk] = now
 
-    image_model = (
-        os.environ.get("OPENROUTER_IMAGE_MODEL", "").strip()
-        or "google/gemini-2.5-flash-image-preview"
-    )
-
-    last_image_error = None
-    img_context_hit = False
-    for img_api_key in all_keys:
-      try:
-        image_url = generate_image_with_openrouter(prompt, image_model, img_api_key)
-        return JsonResponse({"status": "success", "image_url": image_url})
-      except Exception as img_error:
-        last_image_error = img_error
-        if is_context_length_error(img_error):
-          img_context_hit = True
-          continue
-        if not is_api_key_retriable_error(img_error) and not is_rate_limit_error(img_error):
-          return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
-        continue
-
-    if img_context_hit and last_image_error and is_context_length_error(last_image_error):
-      return JsonResponse({"error": friendly_api_error(last_image_error)}, status=503)
-    if last_image_error:
-      return JsonResponse({"error": friendly_api_error(last_image_error)}, status=503)
-    return JsonResponse({"error": "Görsel üretilemedi."}, status=503)
+    try:
+      image_url = generate_image_with_gemini(prompt, GEMINI_IMAGE_MODEL, api_key)
+      return JsonResponse({"status": "success", "image_url": image_url})
+    except Exception as img_error:
+      return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
       
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
@@ -1274,10 +786,10 @@ def api_chat(request):
     if file_names and not full_message:
         full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
-    client = get_openai_client()
+    client = get_gemini_client()
     if client is None:
         return JsonResponse(
-            {"error": "API anahtarı tanımlı değil. Lütfen OPENROUTER_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY veya COHERE_API_KEY'den en az birini ayarlayın."},
+            {"error": "GEMINI_API_KEY tanımlı değil. Gemini API anahtarını Replit Secrets'a ekleyin."},
             status=503,
         )
 
@@ -1300,7 +812,7 @@ def api_chat(request):
             "Mümkün oldukça pratik çözümler sun ve adım adım açıklamalar yap. "
             "Eğer bir soru bilginin dışındaysa, dürüstçe söyle ve alternatif yaklaşım öner."
         )
-        model = "openai/gpt-4o"
+        model = GEMINI_MODEL
         temperature = 0.7
         max_tokens = 2048
 
@@ -1315,7 +827,7 @@ def api_chat(request):
             "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
-        model = "openai/gpt-4o"
+        model = GEMINI_MODEL
         temperature = 0.3
         max_tokens = 4096
 
@@ -1328,13 +840,13 @@ def api_chat(request):
             "Karmaşık konuları basitleştir, hızlı özetler ve hızlı kararlar ver. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
-        model = "openai/gpt-4o-mini"
+        model = GEMINI_MODEL
         temperature = 0.5
         max_tokens = 2048
 
     else:
         system_instruction = base_prompt
-        model = "openai/gpt-4o"
+        model = GEMINI_MODEL
         temperature = 0.7
         max_tokens = 4096
 
@@ -1422,320 +934,98 @@ def api_chat(request):
     except Exception as api_error:
       return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
 
-    def run_initial_chat_round():
-      last_stream_error = None
-      all_entries = get_provider_api_keys() or [None]
-      total_attempts = 0
-      used_original = False
-      for entry in all_entries:
-        total_attempts += 1
-        if total_attempts > 3 * max(1, len(all_entries)):
-          break
-        attempt_client = client
-        provider = PROVIDER_OPENROUTER
-        actually_stream = True
-        attempt_model_to_use = request_model
-        use_tools = TOOLS
-        if entry is None:
-          if used_original:
-            continue
-          used_original = True
-          provider = PROVIDER_OPENROUTER
-          actually_stream = True
-          attempt_model_to_use = request_model
-          use_tools = TOOLS if PROVIDER_TOOLS_SUPPORTED.get(PROVIDER_OPENROUTER, True) else None
-        else:
-          attempt_client = build_provider_client(entry)
-          provider = entry["provider"]
-          fallback_overrides = {
-              PROVIDER_GROQ: os.environ.get("GROQ_FALLBACK_MODEL", "").strip() or None,
-              PROVIDER_COHERE: os.environ.get("COHERE_FALLBACK_MODEL", "").strip() or None,
-              PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
-          }
-          attempt_model_to_use = provider_resolve_model(entry, request_model, fallback_overrides)
-          actually_stream = provider_supports_stream(entry)
-          use_tools = TOOLS if PROVIDER_TOOLS_SUPPORTED.get(provider, False) else None
-
-        buffered_text = []
-        buffered_tool_calls = {}
-        try:
-          tool_calls_buffer = []
-          response_completion = None
-          if deep_think:
-            response_completion = deep_think_call(
-                attempt_client,
-                messages,
-                attempt_model_to_use,
-                deep_think_seconds,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=use_tools,
-            )
-          else:
-            try:
-              response_completion = safe_model_call(
-                  attempt_client,
-                  messages,
-                  attempt_model_to_use,
-                  temperature=temperature,
-                  max_tokens=max_tokens,
-                  stream=actually_stream,
-                  deep_think=False,
-                  tools=use_tools,
-              )
-            except Exception as pre_err:
-              last_stream_error = pre_err
-              if is_context_length_error(pre_err):
-                return {
-                  "ok": False,
-                  "error": pre_err,
-                  "tool_calls": [],
-                  "finalize_partial": False,
-                }
-              if is_rate_limit_error(pre_err):
-                try:
-                  time.sleep(2)
-                except Exception:
-                  pass
-              continue
-
-          for chunk in response_completion:
-            if chunk.choices and chunk.choices[0].delta.content:
-              buffered_text.append(chunk.choices[0].delta.content)
-
-            if chunk.choices and chunk.choices[0].delta.tool_calls:
-              for tool_call in chunk.choices[0].delta.tool_calls:
-                idx = int(getattr(tool_call, "index", 0) or 0)
-                if idx not in buffered_tool_calls:
-                  buffered_tool_calls[idx] = {
-                    "id": getattr(tool_call, "id", None),
-                    "name": "",
-                    "arguments": "",
-                  }
-                slot = buffered_tool_calls[idx]
-                if not slot["id"] and getattr(tool_call, "id", None):
-                  slot["id"] = tool_call.id
-                func = getattr(tool_call, "function", None)
-                if func is not None:
-                  if getattr(func, "name", None):
-                    slot["name"] = slot["name"] or (func.name or "")
-                  if getattr(func, "arguments", None):
-                    slot["arguments"] = slot["arguments"] + (func.arguments or "")
-
-          final_tool_calls = []
-          for idx in sorted(buffered_tool_calls.keys()):
-            item = buffered_tool_calls[idx]
-            if item and (item["name"] or item["arguments"] or item.get("id")):
-              final_tool_calls.append({
-                "index": idx,
-                "id": item.get("id"),
-                "name": item.get("name") or "",
-                "arguments": item.get("arguments") or "",
-              })
-          return {
-            "ok": True,
-            "text": "".join(buffered_text),
-            "tool_calls": final_tool_calls,
-            "error": None,
-          }
-        except Exception as stream_e:
-          last_stream_error = stream_e
-          total_yielded_so_far = len(buffered_text)
-          if total_yielded_so_far > 0:
-            return {
-              "ok": False,
-              "partial_text": "".join(buffered_text),
-              "error": last_stream_error,
-              "tool_calls": [],
-              "finalize_partial": True,
-            }
-          if is_context_length_error(stream_e):
-            return {
-              "ok": False,
-              "error": stream_e,
-              "tool_calls": [],
-              "finalize_partial": False,
-            }
-          if is_rate_limit_error(stream_e):
-            try:
-              time.sleep(2)
-            except Exception:
-              pass
-          continue
-
-      return {
-        "ok": False,
-        "error": last_stream_error or Exception("Akış başarısız"),
-        "tool_calls": [],
-        "finalize_partial": False,
-      }
-
-    def run_final_text_round(local_messages):
-      last_stream_error = None
-      all_entries = get_provider_api_keys() or [None]
-      total_attempts = 0
-      used_original = False
-      for entry in all_entries:
-        total_attempts += 1
-        if total_attempts > 3 * max(1, len(all_entries)):
-          break
-        attempt_client = client
-        provider = PROVIDER_OPENROUTER
-        actually_stream = True
-        attempt_model_to_use = request_model
-        if entry is None:
-          if used_original:
-            continue
-          used_original = True
-        else:
-          attempt_client = build_provider_client(entry)
-          provider = entry["provider"]
-          fallback_overrides = {
-              PROVIDER_GROQ: os.environ.get("GROQ_FALLBACK_MODEL", "").strip() or None,
-              PROVIDER_COHERE: os.environ.get("COHERE_FALLBACK_MODEL", "").strip() or None,
-              PROVIDER_MISTRAL: os.environ.get("MISTRAL_FALLBACK_MODEL", "").strip() or None,
-          }
-          attempt_model_to_use = provider_resolve_model(entry, request_model, fallback_overrides)
-          actually_stream = provider_supports_stream(entry)
-
-        buffered_text = []
-        try:
-          final_completion = None
-          try:
-            final_completion = safe_model_call(
-                attempt_client,
-                local_messages,
-                attempt_model_to_use,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=actually_stream,
-                deep_think=False,
-            )
-          except Exception as pre_err:
-            last_stream_error = pre_err
-            if is_context_length_error(pre_err):
-              return {"ok": False, "error": pre_err, "finalize_partial": False}
-            if is_rate_limit_error(pre_err):
-              try:
-                time.sleep(2)
-              except Exception:
-                pass
-            continue
-          for chunk in final_completion:
-            if chunk.choices and chunk.choices[0].delta.content:
-              buffered_text.append(chunk.choices[0].delta.content)
-          return {
-            "ok": True,
-            "text": "".join(buffered_text),
-            "error": None,
-          }
-        except Exception as stream_e:
-          last_stream_error = stream_e
-          total_yielded_so_far = len(buffered_text)
-          if total_yielded_so_far > 0:
-            return {
-              "ok": False,
-              "partial_text": "".join(buffered_text),
-              "error": last_stream_error,
-              "finalize_partial": True,
-            }
-          if is_context_length_error(stream_e):
-            return {"ok": False, "error": stream_e, "finalize_partial": False}
-          if is_rate_limit_error(stream_e):
-            try:
-              time.sleep(2)
-            except Exception:
-              pass
-          continue
-
-      return {
-        "ok": False,
-        "error": last_stream_error or Exception("Final akış başarısız"),
-        "finalize_partial": False,
-      }
-
     def generate():
-      overall_yielded = 0
+      yielded_count = 0
       try:
-        round_result = run_initial_chat_round()
-        if not round_result.get("ok"):
-          if round_result.get("finalize_partial") and round_result.get("partial_text"):
-            overall_yielded += len(round_result["partial_text"])
-            for part in round_result["partial_text"]:
-              yield part
-            yield friendly_api_error(round_result["error"])
-            overall_yielded += 1
-            return
-          if round_result.get("error"):
-            yield friendly_api_error(round_result["error"])
-            overall_yielded += 1
-          return
+        tool_calls_buffer = []
+        response_completion = completion
+        if deep_think:
+          response_completion = deep_think_call(
+              client,
+              messages,
+              request_model,
+              deep_think_seconds,
+              temperature=temperature,
+              max_tokens=max_tokens,
+              tools=TOOLS,
+          )
 
-        initial_text = round_result.get("text") or ""
-        if initial_text:
-          overall_yielded += len(initial_text)
-          for char in initial_text:
-            yield char
-
-        tool_calls_payload = round_result.get("tool_calls") or []
-        if tool_calls_payload:
+        for chunk in response_completion:
+          if chunk.choices and chunk.choices[0].delta.content:
+            yielded_count += 1
+            yield chunk.choices[0].delta.content
+          
+          if chunk.choices and chunk.choices[0].delta.tool_calls:
+            for tool_call in chunk.choices[0].delta.tool_calls:
+              if len(tool_calls_buffer) <= tool_call.index:
+                tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
+              
+              if tool_calls_buffer[tool_call.index] is None:
+                tool_calls_buffer[tool_call.index] = {
+                  "id": tool_call.id,
+                  "name": tool_call.function.name if tool_call.function else "",
+                  "arguments": tool_call.function.arguments if tool_call.function else ""
+                }
+              else:
+                if tool_call.function and tool_call.function.arguments:
+                  tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
+        
+        if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
           assistant_message = {
             "role": "assistant",
             "content": "",
             "tool_calls": []
           }
-          for tc in tool_calls_payload:
-            assistant_message["tool_calls"].append({
-              "id": tc.get("id"),
-              "type": "function",
-              "function": {
-                "name": tc.get("name") or "",
-                "arguments": tc.get("arguments") or "",
-              }
-            })
+          
+          for tc in tool_calls_buffer:
+            if tc:
+              assistant_message["tool_calls"].append({
+                "id": tc["id"],
+                "type": "function",
+                "function": {
+                  "name": tc["name"],
+                  "arguments": tc["arguments"]
+                }
+              })
+          
           messages.append(assistant_message)
-
-          for tc in tool_calls_payload:
-            try:
-              args = json.loads(tc["arguments"]) if tc.get("arguments") else {}
-            except json.JSONDecodeError:
-              args = {}
-            result = execute_function(tc.get("name") or "", args)
-            messages.append({
-              "role": "tool",
-              "tool_call_id": tc.get("id"),
-              "content": json.dumps(result, ensure_ascii=False)
-            })
-
-          final_round = run_final_text_round(messages)
-          if final_round.get("ok"):
-            final_text = final_round.get("text") or ""
-            if final_text:
-              overall_yielded += len(final_text)
-              for char in final_text:
-                yield char
-          else:
-            if final_round.get("finalize_partial") and final_round.get("partial_text"):
-              partial = final_round["partial_text"]
-              overall_yielded += len(partial)
-              for char in partial:
-                yield char
-              yield friendly_api_error(final_round["error"])
-              overall_yielded += 1
-            elif final_round.get("error"):
-              yield friendly_api_error(final_round["error"])
-              overall_yielded += 1
-
+          
+          for tc in tool_calls_buffer:
+            if tc:
+              try:
+                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+              except json.JSONDecodeError:
+                args = {}
+              
+              result = execute_function(tc["name"], args)
+              messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps(result, ensure_ascii=False)
+              })
+          
+          try:
+            final_completion = safe_model_call(
+              client,
+              messages,
+              request_model,
+              temperature=temperature,
+              max_tokens=max_tokens,
+              stream=True,
+              deep_think=False,
+            )
+            
+            for chunk in final_completion:
+              if chunk.choices and chunk.choices[0].delta.content:
+                yielded_count += 1
+                yield chunk.choices[0].delta.content
+          except Exception as e:
+            yield friendly_api_error(e)
+      
       except Exception as e:
-        if overall_yielded == 0:
-          yield friendly_api_error(e)
-          overall_yielded += 1
-        else:
-          yield friendly_api_error(e)
-          overall_yielded += 1
-        return
-
-      if overall_yielded == 0:
+        yield friendly_api_error(e)
+      
+      if yielded_count == 0:
         yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')

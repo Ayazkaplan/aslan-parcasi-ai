@@ -13,9 +13,7 @@ python manage.py runserver 0.0.0.0:5000
 
 - `SESSION_SECRET`: Oturumların kod güncellemeleri ve yeniden başlatmalar arasında korunması için sabit Django gizli anahtarı.
 - `DATABASE_URL`: Kullanıcılar, oturumlar, profiller ve sohbet geçmişleri için kalıcı PostgreSQL bağlantısı. Tanımlı değilse yalnızca yerel geliştirme için SQLite kullanılır.
-- `OPENROUTER_API_KEY`: Sohbet ve görsel üretimi için OpenRouter anahtarı.
-- `OPENROUTER_IMAGE_MODEL` (isteğe bağlı): Görsel üretim modeli; varsayılan `google/gemini-2.5-flash-image-preview`.
-- `OPENROUTER_FALLBACK_MODEL` (isteğe bağlı): Sohbet için yedek model.
+- `GEMINI_API_KEY`: Sohbet ve görsel üretimi için Gemini API anahtarı.
 
 Kullanıcı adı, profil fotoğrafı, tema ve arka plan deseni `UserProfile` tablosunda saklanır; bu ayarlar tarayıcı veya cihaz değişse de hesaba bağlı kalır.
 Sohbet geçmişleri `ChatHistory` tablosunda kullanıcı hesabına bağlı saklanır; aynı hesapla açılan cihazlar sohbetleri ve profil ayarlarını sunucudan senkronize eder.
@@ -33,5 +31,5 @@ Uygulama kapalıyken kendi Python sürecinin çalışması mümkün değildir; b
 
 ## Yapay zekâ özellikleri
 
-Sohbet ve görsel oluşturma için `OPENROUTER_API_KEY` gereklidir. Görseller OpenRouter'ın özel `/api/v1/images` endpoint'i üzerinden üretilir; kullanıcı promptu ve gerçekçi/kompozisyon talepleri istek içinde açıkça korunur. Aynı kullanıcıdan gelen görsel istekleri arasında kısa bir koruma aralığı vardır.
+Sohbet için yalnızca `gemini-3.5-flash-lite`, görsel oluşturma için Gemini image generation endpoint'i kullanılır. Kullanıcı promptu ve gerçekçi/kompozisyon talepleri istek içinde açıkça korunur. Aynı kullanıcıdan gelen görsel istekleri arasında kısa bir koruma aralığı vardır.
 Anahtar tanımlı değilse uygulama çalışmaya devam eder ancak ilgili isteklerde kullanıcıya açık bir yapılandırma hatası gösterir.

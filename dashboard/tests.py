@@ -106,14 +106,20 @@ class ImageGenerationTests(TestCase):
     def test_dedicated_image_api_returns_embedded_generated_image(self):
         image_response = Mock()
         image_response.json.return_value = {
-            "data": [{
-                "b64_json": "cG5nLWJ5dGVz",
-                "media_type": "image/png",
-            }]
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "inlineData": {
+                            "data": "cG5nLWJ5dGVz",
+                            "mimeType": "image/png",
+                        },
+                    }],
+                },
+            }],
         }
         image_response.raise_for_status.return_value = None
 
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}), patch(
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
             "dashboard.views.requests.post",
             return_value=image_response,
         ) as post:
@@ -129,17 +135,22 @@ class ImageGenerationTests(TestCase):
             "data:image/png;base64,cG5nLWJ5dGVz",
         )
         self.assertEqual(
-            post.call_args.kwargs["json"]["model"],
-            "google/gemini-2.5-flash-image-preview",
+            post.call_args.kwargs["params"]["key"],
+            "test-key",
         )
-        self.assertIn("uçak", post.call_args.kwargs["json"]["prompt"])
-        self.assertIn("photorealistic", post.call_args.kwargs["json"]["prompt"])
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
+        )
+        image_prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("uçak", image_prompt)
+        self.assertIn("photorealistic", image_prompt)
 
     def test_repeated_image_requests_are_throttled(self):
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}), patch(
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
             "dashboard.views.time.monotonic",
             return_value=100,
-        ), patch("dashboard.views.generate_image_with_openrouter", return_value="data:image/png;base64,x"):
+        ), patch("dashboard.views.generate_image_with_gemini", return_value="data:image/png;base64,x"):
             first = self.client.post(
                 reverse("api_image_generate"),
                 data=json.dumps({"prompt": "Bir şehir"}),
@@ -173,7 +184,7 @@ class ChatFeatureTests(TestCase):
         model_call = Mock(return_value=iter([chunk]))
 
         with (
-            patch("dashboard.views.get_openai_client", return_value=object()),
+            patch("dashboard.views.get_gemini_client", return_value=object()),
             patch("dashboard.views.safe_model_call", model_call),
         ):
             response = self.client.post(
@@ -228,7 +239,7 @@ class ChatFeatureTests(TestCase):
             result = views.deep_think_call(
                 object(),
                 messages,
-                "openai/gpt-4o",
+                views.GEMINI_MODEL,
                 30,
                 tools=views.TOOLS,
             )
@@ -248,7 +259,7 @@ class ChatFeatureTests(TestCase):
         model_call = Mock(return_value=iter([chunk]))
 
         with (
-            patch("dashboard.views.get_openai_client", return_value=object()),
+            patch("dashboard.views.get_gemini_client", return_value=object()),
             patch("dashboard.views.safe_model_call", model_call),
             patch("dashboard.views.web_search", return_value={
                 "results": [{"title": "Canlı sonuç", "url": "https://example.com"}],
