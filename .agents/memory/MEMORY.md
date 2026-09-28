@@ -1,1 +1,0 @@
-- [GitHub push in this workspace](github-push.md) — Use the connected GitHub API when the local HTTPS remote has no credentials.
