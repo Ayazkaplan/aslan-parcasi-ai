@@ -32,7 +32,7 @@ except ImportError:
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_TEXT = 300_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
-GEMINI_MODEL = "gemini-3.5-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
