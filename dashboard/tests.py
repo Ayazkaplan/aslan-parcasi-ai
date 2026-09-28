@@ -277,6 +277,30 @@ class ChatFeatureTests(TestCase):
         self.assertIn("Canlı sonuç", sent_messages[1]["content"])
 
 
+class GeminiClientTests(TestCase):
+    def test_transient_gemini_error_retries_the_same_model(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            RuntimeError("503 UNAVAILABLE"),
+            "completion",
+        ]
+
+        with patch("dashboard.views.time.sleep") as sleep:
+            result = views.safe_model_call(
+                client,
+                [{"role": "user", "content": "Merhaba"}],
+                "ignored-model-name",
+            )
+
+        self.assertEqual(result, "completion")
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(
+            client.chat.completions.create.call_args_list[0].kwargs["model"],
+            views.GEMINI_MODEL,
+        )
+        sleep.assert_called_once_with(1)
+
+
 class AuthenticationTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(

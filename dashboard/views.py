@@ -413,6 +413,8 @@ def friendly_api_error(error):
       or "quota" in error_text
   ):
     return "Gemini servisi şu anda yoğun veya istek kotasına ulaşıldı. Birkaç saniye sonra tekrar deneyin."
+  if "503" in error_text or "unavailable" in error_text:
+    return "Gemini modeli şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
   return "Gemini yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
@@ -475,7 +477,23 @@ def safe_model_call(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
-    return client.chat.completions.create(**kwargs)
+    last_error = None
+    for attempt in range(3):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as error:
+            last_error = error
+            error_text = str(error).lower()
+            transient = (
+                "429" in error_text
+                or "rate limit" in error_text
+                or "503" in error_text
+                or "unavailable" in error_text
+            )
+            if not transient or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
+    raise last_error
 
 
 def deep_think_call(
