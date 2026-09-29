@@ -41,6 +41,10 @@ CSRF_TRUSTED_ORIGINS = [
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
+# Sohbet istekleri görsel/dosya/ses eklerini base64 olarak JSON gövdesinde taşır.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 60 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 60 * 1024 * 1024
+
 
 # Application definition
 

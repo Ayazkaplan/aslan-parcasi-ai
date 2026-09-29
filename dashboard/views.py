@@ -17,7 +17,6 @@ from openai import OpenAI
 from .forms import CustomUserCreationForm, EmailOrUsernameAuthenticationForm
 from .models import AppClock, ChatHistory, UserProfile
 
-# Dosya okuma kütüphaneleri en tepeye taşındı
 try:
     from pypdf import PdfReader
 except ImportError:
@@ -33,7 +32,10 @@ MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_TEXT = 300_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+KNOWLEDGE_CUTOFF = "29 Eylül 2026"
+REASONING_MARKER = "\x00R\x00"
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 
@@ -343,23 +345,13 @@ def get_weather(city, country="TR"):
         return {"error": f"Weather error: {str(e)}"}
 
 
-def web_search(query, num_results=5):
-    """Search current web results using DuckDuckGo HTML (no API key needed)."""
+def _parse_ddg_results(html_text, limit):
+    """Parse DuckDuckGo result pages without depending on BeautifulSoup."""
+    results = []
     try:
-        url = "https://html.duckduckgo.com/html/"
-        params = {"q": query}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        response = requests.post(url, data=params, headers=headers, timeout=10)
-        response.raise_for_status()
-        
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        results = []
-        for result in soup.select(".result")[:max(1, min(int(num_results), 10))]:
+        soup = BeautifulSoup(html_text, "html.parser")
+        for result in soup.select(".result")[:limit]:
             title = result.select_one(".result__a")
             snippet = result.select_one(".result__snippet")
             if title or snippet:
@@ -368,13 +360,53 @@ def web_search(query, num_results=5):
                     "url": title.get("href", "") if title else "",
                     "snippet": snippet.get_text(" ", strip=True) if snippet else "",
                 })
-        
-        return {
-            "query": query,
-            "results": results if results else ["Arama sonucu bulunamadı."]
-        }
-    except Exception as e:
-        return {"error": f"Web search failed: {str(e)}", "results": []}
+        return results
+    except ImportError:
+        pass
+    blocks = re.findall(
+        r'<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        html_text,
+        re.S,
+    )
+    snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html_text, re.S)
+    for index, (href, title_html) in enumerate(blocks[:limit]):
+        snippet_html = snippets[index] if index < len(snippets) else ""
+        results.append({
+            "title": re.sub(r"<[^>]+>", "", title_html).strip(),
+            "url": href.strip(),
+            "snippet": re.sub(r"<[^>]+>", "", snippet_html).strip(),
+        })
+    return results
+
+
+def web_search(query, num_results=5):
+    """Search current web results using DuckDuckGo (no API key needed)."""
+    limit = max(1, min(int(num_results), 10))
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    endpoints = (
+        ("post", "https://html.duckduckgo.com/html/"),
+        ("post", "https://lite.duckduckgo.com/lite/"),
+    )
+    last_error = None
+    for method, url in endpoints:
+        try:
+            if method == "post":
+                response = requests.post(url, data={"q": query}, headers=headers, timeout=8)
+            else:
+                response = requests.get(url, params={"q": query}, headers=headers, timeout=8)
+            response.raise_for_status()
+            results = _parse_ddg_results(response.text, limit)
+            if results:
+                return {"query": query, "results": results}
+            last_error = "no results parsed"
+        except Exception as error:
+            last_error = str(error)
+    return {"error": f"Web search failed: {last_error}", "results": [], "query": query}
 
 
 def should_fetch_live_context(text):
@@ -382,10 +414,46 @@ def should_fetch_live_context(text):
   normalized = (text or "").lower()
   hints = (
       "internetten", "güncel", "bugün", "şu an", "şuan", "son dakika",
-      "haber", "maç", "skor", "sonuç", "spor", "hava durumu", "sıcaklık",
-      "fiyat", "kur", "döviz", "kim kazandı", "ne zaman", "kaçta",
+      "haber", "maç", "skor", "sonuç", "spor", "fiyat", "kur", "döviz",
+      "kim kazandı", "ne zaman", "araştır", "web'de", "webte",
   )
   return any(hint in normalized for hint in hints)
+
+
+TIME_INTENT_RE = re.compile(
+    r"(saat\s+kaç|saat\s+kaçtır|şu\s+an\s+saat|saati\s+söyle|tarih\s+(ne|kaç)|"
+    r"bugün\s+(ayın\s+kaçı|ne\s+günü|hangi\s+gün)|günlerden\s+(ne|hangi)|"
+    r"hangi\s+gündeyiz|bugün\s+günlerden)",
+    re.I,
+)
+WEATHER_INTENT_RE = re.compile(
+    r"(hava\s+durumu|hava\s+nasıl|havası\s+nasıl|kaç\s+derece|sıcaklık\s+kaç|hava\s+kaç\s+derece)",
+    re.I,
+)
+CITY_PATTERNS = (
+    r"([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)['’]?(?:de|da|te|ta|nde|nda|nte|nta)\s+(?:için\s+)?hava",
+    r"([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)\s+(?:için\s+)?hava\s+durumu",
+    r"([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)\s+hava\s+nasıl",
+    r"hava\s+durumu\s+([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)",
+    r"hava\s+durumu\s+nedir\s+([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)",
+)
+WEATHER_STOPWORDS = {
+    "nasıl", "nedir", "kaç", "derece", "için", "ve", "bu", "şu", "an", "şuan",
+    "bugün", "yarın", "şimdi", "orada", "burada", "tr", "türkiye",
+}
+
+
+def detect_weather_city(text):
+    normalized = (text or "").strip()
+    for pattern in CITY_PATTERNS:
+        match = re.search(pattern, normalized, re.I)
+        if not match:
+            continue
+        city = match.group(1).strip(" ?!.,'’\"")
+        city = re.sub(r"\s+(için\s+)?hava\s+durumu.*$", "", city, flags=re.I).strip()
+        if city and city.lower() not in WEATHER_STOPWORDS and len(city) >= 2:
+            return city
+    return None
 
 
 def profile_payload(user):
@@ -399,27 +467,28 @@ def profile_payload(user):
 
 
 def friendly_api_error(error):
+  """User-facing error text. Never mentions Gemini or Google."""
   error_text = str(error).lower()
-  if "max_tokens" in error_text or "maximum" in error_text and "token" in error_text:
-    return "Gemini isteği çok uzun. Daha kısa bir mesaj veya daha küçük bir dosya deneyin."
-  if "401" in error_text or "403" in error_text or "unauthorized" in error_text:
-    return "Gemini API anahtarı reddedildi. Replit Secrets içindeki GEMINI_API_KEY değerini kontrol edin."
+  if "max_tokens" in error_text or ("maximum" in error_text and "token" in error_text):
+    return "Aslan Parçası için istek çok uzun. Daha kısa bir mesaj veya daha küçük bir dosya deneyin."
+  if "401" in error_text or "403" in error_text or "unauthorized" in error_text or "api key" in error_text:
+    return "Aslan Parçası'nın beyin bağlantısı şu an doğrulanamadı. Lütfen biraz sonra tekrar deneyin."
   if "404" in error_text or "not found" in error_text:
-    return f"Gemini modeli kullanılamıyor: {GEMINI_MODEL}."
+    return "Aslan Parçası'nın istediğin yeteneği şu an erişilemiyor. Lütfen tekrar deneyin."
   if (
       "429" in error_text
       or "rate limit" in error_text
       or "resource_exhausted" in error_text
       or "quota" in error_text
   ):
-    return "Gemini servisi şu anda yoğun veya istek kotasına ulaşıldı. Birkaç saniye sonra tekrar deneyin."
-  if "503" in error_text or "unavailable" in error_text:
-    return "Gemini modeli şu anda yoğun. Birkaç saniye sonra tekrar deneyin."
-  return "Gemini yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
+    return "Aslan Parçası şu anda çok yoğun istek alıyor. Birkaç saniye sonra tekrar deneyin."
+  if "503" in error_text or "unavailable" in error_text or "overloaded" in error_text:
+    return "Aslan Parçası'nın sunucuları şu an yoğun. Birkaç saniye sonra tekrar deneyin."
+  return "Aslan Parçası yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
 def generate_image_with_gemini(prompt, image_model, api_key):
-  """Generate an image through Gemini's generateContent endpoint."""
+  """Generate an image through the generateContent endpoint."""
   response = requests.post(
       f"https://generativelanguage.googleapis.com/v1beta/models/{image_model}:generateContent",
       headers={
@@ -453,6 +522,52 @@ def generate_image_with_gemini(prompt, image_model, api_key):
   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
 
 
+def generate_image_with_retry(prompt, image_model, api_key):
+  last_error = None
+  for attempt in range(3):
+    try:
+      return generate_image_with_gemini(prompt, image_model, api_key)
+    except Exception as error:
+      last_error = error
+      if attempt < 2:
+        time.sleep(2 * (attempt + 1))
+  raise last_error
+
+
+def transcribe_audio(encoded, mime_type, api_key):
+  """Server-side speech-to-text so voice notes work on every browser."""
+  response = requests.post(
+      f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+      headers={"Content-Type": "application/json"},
+      params={"key": api_key},
+      json={
+          "contents": [{
+              "parts": [
+                  {"inline_data": {"mime_type": mime_type, "data": encoded}},
+                  {
+                      "text": (
+                          "Bu ses kaydındaki konuşmayı olduğu gibi, eksiksiz ve düz metin "
+                          "olarak yaz. Konuşma yoksa yalnızca NO_SPEECH yaz. Başka açıklama ekleme."
+                      ),
+                  },
+              ],
+          }],
+      },
+      timeout=120,
+  )
+  response.raise_for_status()
+  payload = response.json()
+  parts_text = []
+  for candidate in payload.get("candidates") or []:
+    for part in (candidate.get("content") or {}).get("parts") or []:
+      if part.get("text"):
+        parts_text.append(part["text"])
+  transcript = " ".join(parts_text).strip()
+  if not transcript or transcript.upper() == "NO_SPEECH":
+    return ""
+  return transcript
+
+
 def safe_model_call(
     client,
     messages,
@@ -465,7 +580,7 @@ def safe_model_call(
     timeout=None,
 ):
     kwargs = {
-        "model": GEMINI_MODEL,
+        "model": model or GEMINI_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -489,6 +604,7 @@ def safe_model_call(
                 or "rate limit" in error_text
                 or "503" in error_text
                 or "unavailable" in error_text
+                or "overloaded" in error_text
             )
             if not transient or attempt == 2:
                 raise
@@ -496,107 +612,157 @@ def safe_model_call(
     raise last_error
 
 
-def deep_think_call(
-    client,
-    messages,
-    model,
-    deep_think_seconds,
-    temperature=0.7,
-    max_tokens=4096,
-    tools=None,
-):
-    """Research with available tools, then stream a concise answer.
-
-    The selected duration is a research budget and API timeout ceiling. The
-    assistant may finish early when its research is complete rather than
-    wasting the user's time or spending credits on idle calls.
-    """
-    deadline = time.monotonic() + max(30, min(1800, int(deep_think_seconds)))
-    research_messages = [*messages]
-    research_messages[0] = {
-        **messages[0],
-        "content": (
-            str(messages[0].get("content", ""))
-            + " Araştırma modunda web_search ve get_weather araçlarını kullan. "
-            "Güncel sonuç, hava durumu, spor skoru veya değişken bilgi sorularında "
-            "kaynakları kontrol et. Gizli düşünce zincirini kullanıcıya yazma; "
-            "bulguları ve gerekli kısa gerekçeyi final yanıtta özetle."
-        ),
-    }
-
-    rounds = 0
-    max_rounds = max(1, min(6, (deep_think_seconds + 89) // 90))
-    while tools and rounds < max_rounds:
-        remaining = int(deadline - time.monotonic())
-        if remaining <= 0:
-            break
-        research_completion = safe_model_call(
-            client,
-            research_messages,
-            model,
-            temperature=0.3,
-            max_tokens=min(max_tokens, 2048),
-            stream=False,
-            tools=tools,
-            timeout=min(120, remaining),
+def depth_instruction(seconds):
+    if seconds <= 60:
+        return (
+            "Kısa düşünme bütçesi kullanıldı: net, öz ama gerekçeli bir yanıt ver; "
+            "en fazla 3 madde."
         )
-        choice = research_completion.choices[0] if research_completion.choices else None
-        assistant_message = choice.message if choice else None
-        tool_calls = getattr(assistant_message, "tool_calls", None) or []
-        if not tool_calls:
-            break
-
-        research_messages.append({
-            "role": "assistant",
-            "content": getattr(assistant_message, "content", None),
-            "tool_calls": [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.function.name,
-                        "arguments": call.function.arguments,
-                    },
-                }
-                for call in tool_calls
-            ],
-        })
-        for call in tool_calls:
-            if time.monotonic() >= deadline:
-                break
-            try:
-                arguments = json.loads(call.function.arguments or "{}")
-            except (TypeError, json.JSONDecodeError):
-                arguments = {}
-            result = execute_function(call.function.name, arguments)
-            research_messages.append({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": json.dumps(result, ensure_ascii=False),
-            })
-        rounds += 1
-
-    final_messages = [
-        *research_messages,
-        {
-            "role": "system",
-            "content": (
-                "Yanıtını araştırma bulgularına dayandır. Güncel bilgi için "
-                "araçlardan gelen veriyi kullan; araç hata verdiyse veri uydurma. "
-                "Gizli düşünme sürecini paylaşma."
-            ),
-        },
-    ]
-    remaining = max(1, int(deadline - time.monotonic()))
-    return safe_model_call(
-        client,
-        final_messages,
-        model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=True,
-        timeout=min(120, remaining),
+    if seconds <= 300:
+        return (
+            "Orta düzey düşünme bütçesi kullanıldı: başlıklarla yapılandırılmış, örnekli "
+            "ve adım adım açıklanan bir yanıt ver."
+        )
+    if seconds <= 900:
+        return (
+            "Derin düşünme bütçesi kullanıldı: bölümler halinde ayrıntılı analiz yap, "
+            "karşıt görüşleri ve riskleri değerlendir, adım adım akıl yürüt, sonunda net "
+            "bir sonuç bölümü ver."
+        )
+    return (
+        "Uzman düzey düşünme bütçesi kullanıldı: kapsamlı bir rapor yaz: yönetici özeti, "
+        "yöntem, ayrıntılı bölümler, karşıt görüşler, riskler, kaynak değerlendirmesi ve "
+        "sonuç önerileri. Bulabildiğin her ayrıntıyı işle."
     )
+
+
+def deep_think_events(client, messages, seconds, temperature, max_tokens):
+  """Research for the full selected budget, then stream the final answer.
+
+  Yields ("reason", line) events for the thinking box and ("answer", text)
+  chunks for the reply. The loop keeps working until the deadline minus a
+  reserve for the final answer, so 30 s and 30 min budgets differ in depth.
+  """
+  deadline = time.monotonic() + max(30, min(1800, int(seconds)))
+  reserve = max(20, min(90, int(seconds * 0.25)))
+  research = [*messages]
+  research[0] = {
+      **messages[0],
+      "content": (
+          str(messages[0].get("content", ""))
+          + " Araştırma modundasın: web_search ve get_weather araçlarını kullanarak "
+          "konuyu derinlemesine incele. Her turda yeni bir açı dene, kaynakları "
+          "karşılaştır. Gizli düşünce zincirini kullanıcıya yazma; bulguları final "
+          "yanıtta özetle."
+      ),
+  }
+
+  rounds = 0
+  max_rounds = max(2, min(24, int(seconds) // 45))
+  yield ("reason", f"Derin düşünme başladı · bütçe {int(seconds)} sn")
+  while rounds < max_rounds:
+    remaining = deadline - time.monotonic()
+    if remaining <= reserve:
+      break
+    try:
+      completion = safe_model_call(
+          client,
+          research,
+          GEMINI_MODEL,
+          temperature=0.3,
+          max_tokens=1024,
+          stream=False,
+          tools=TOOLS,
+          timeout=max(5, min(60, int(remaining - reserve))),
+      )
+    except Exception as error:
+      yield ("reason", f"Araştırma adımı aksadı, yeniden deneniyor ({type(error).__name__})")
+      time.sleep(min(5, max(1, deadline - time.monotonic() - reserve)))
+      rounds += 1
+      continue
+
+    choice = completion.choices[0] if completion.choices else None
+    assistant_message = choice.message if choice else None
+    tool_calls = getattr(assistant_message, "tool_calls", None) or []
+    if not tool_calls:
+      gap_note = (
+          f"Kalan süre {max(0, int(deadline - time.monotonic()))} sn. Eksik kalan "
+          "noktaları belirle; gerekirse araç çağır, değilse bulgularını maddele."
+      )
+      research.append({"role": "user", "content": gap_note})
+      yield ("reason", "Bulgular gözden geçiriliyor, eksikler aranıyor...")
+      rounds += 1
+      time.sleep(min(6, max(0, deadline - time.monotonic() - reserve)))
+      continue
+
+    research.append({
+        "role": "assistant",
+        "content": getattr(assistant_message, "content", None),
+        "tool_calls": [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            for call in tool_calls
+        ],
+    })
+    for call in tool_calls:
+      if time.monotonic() >= deadline - reserve:
+        break
+      try:
+        arguments = json.loads(call.function.arguments or "{}")
+      except (TypeError, json.JSONDecodeError):
+        arguments = {}
+      short_args = json.dumps(arguments, ensure_ascii=False)[:120]
+      yield ("reason", f"SRC:🔎 {call.function.name} çağrıldı: {short_args}")
+      result = execute_function(call.function.name, arguments)
+      research.append({
+          "role": "tool",
+          "tool_call_id": call.id,
+          "content": json.dumps(result, ensure_ascii=False),
+      })
+      if call.function.name == "web_search":
+        for item in (result.get("results") or [])[:5]:
+          if isinstance(item, dict) and item.get("title"):
+            yield ("reason", f"SRC:🌐 Kaynak: {item['title']} — {item.get('url', '')}")
+      elif call.function.name == "get_weather":
+        if result.get("temperature") is not None:
+          yield ("reason", f"SRC:🌤 Hava verisi: {result.get('city')} {result.get('temperature')}°C")
+      elif call.function.name == "get_current_time":
+        yield ("reason", f"SRC:🕒 Saat verisi: {result.get('time')} {result.get('date')}")
+    rounds += 1
+
+  while time.monotonic() < deadline - reserve:
+    yield ("reason", "Derin analiz sürüyor, bulgular olgunlaştırılıyor...")
+    time.sleep(min(5, max(1, deadline - reserve - time.monotonic())))
+
+  final_messages = [
+      *research,
+      {
+          "role": "system",
+          "content": (
+              "Yanıtını araştırma bulgularına dayandır. Araç hata verdiyse veri uydurma. "
+              + depth_instruction(int(seconds))
+          ),
+      },
+  ]
+  yield ("reason", "Yanıt yazılıyor...")
+  final_completion = safe_model_call(
+      client,
+      final_messages,
+      GEMINI_MODEL,
+      temperature=temperature,
+      max_tokens=max_tokens,
+      stream=True,
+      timeout=max(60, min(300, int(seconds * 0.5) + 60)),
+  )
+  for chunk in final_completion:
+    if chunk.choices and chunk.choices[0].delta.content:
+      yield ("answer", chunk.choices[0].delta.content)
 
 
 @login_required(login_url="login")
@@ -696,6 +862,18 @@ def api_debug(request):
   return JsonResponse({"status": "ok", "service": "aslan-parcasi-ai"})
 
 
+@require_GET
+def api_refresh_clock(request):
+  """Public hourly refresh hook: keeps the app clock current even when idle."""
+  clock = sync_app_clock()
+  return JsonResponse({
+      "status": "ok",
+      "service": "aslan-parcasi-ai",
+      "current_date": clock.current_date.isoformat(),
+      "updated_at": clock.updated_at.isoformat(),
+  })
+
+
 @login_required(login_url="login")
 @require_POST  
 def api_image_generate(request):
@@ -709,7 +887,7 @@ def api_image_generate(request):
     api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
     if not api_key:
       return JsonResponse(
-          {"error": "GEMINI_API_KEY tanımlı değil. Gemini API anahtarını Replit Secrets'a ekleyin."},
+          {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
           status=503,
       )
 
@@ -718,13 +896,13 @@ def api_image_generate(request):
       previous_request = _last_image_request_at.get(request.user.pk, 0)
       if now - previous_request < IMAGE_REQUEST_MIN_INTERVAL:
         return JsonResponse(
-            {"error": "Görsel üretimi için birkaç saniye bekleyin; aynı anda birden fazla istek gönderilemez."},
+            {"error": "Aslan Parçası görsel için hala çalışıyor; birkaç saniye sonra tekrar dene."},
             status=429,
         )
       _last_image_request_at[request.user.pk] = now
 
     try:
-      image_url = generate_image_with_gemini(prompt, GEMINI_IMAGE_MODEL, api_key)
+      image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_key)
       return JsonResponse({"status": "success", "image_url": image_url})
     except Exception as img_error:
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
@@ -732,7 +910,7 @@ def api_image_generate(request):
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   except Exception as e:
-    return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": friendly_api_error(e)}, status=500)
 
 
 @login_required(login_url="login")
@@ -748,7 +926,7 @@ def api_chats(request):
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   chats = data.get("chats")
   if not isinstance(chats, list):
-    return JsonResponse({"error": "Geçersiz sohbet verisi."}, status=400)
+    return JsonResponse({"error": "Sohbet verisi."}, status=400)
   if len(json.dumps(chats, ensure_ascii=False)) > 80 * 1024 * 1024:
     return JsonResponse({"error": "Sohbet geçmişi çok büyük."}, status=413)
   history.chats = chats
@@ -773,10 +951,15 @@ def api_chat(request):
       deep_think_seconds = 300
     images = data.get("images", [])
     files = data.get("files", [])
-    voice_transcript = data.get("voice_transcript", "")
+    voice_transcript = (data.get("voice_transcript") or "").strip()
     voice = data.get("voice") or {}
+    voice_encoded = ""
+    voice_mime = "audio/webm"
+    if isinstance(voice, dict):
+      voice_encoded = voice.get("base64") or ""
+      voice_mime = voice.get("type") or "audio/webm"
 
-    if not user_message and not voice_transcript and not images and not files and not (isinstance(voice, dict) and voice.get("base64")):
+    if not user_message and not voice_transcript and not images and not files and not voice_encoded:
         return JsonResponse({"error": "Mesaj boş olamaz."}, status=400)
 
     full_message = user_message
@@ -804,20 +987,39 @@ def api_chat(request):
     if file_names and not full_message:
         full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
+    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
     client = get_gemini_client()
     if client is None:
         return JsonResponse(
-            {"error": "GEMINI_API_KEY tanımlı değil. Gemini API anahtarını Replit Secrets'a ekleyin."},
+            {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
             status=503,
         )
+
+    if voice_encoded and not voice_transcript:
+        try:
+            voice_transcript = transcribe_audio(voice_encoded, voice_mime, api_key)
+        except Exception:
+            voice_transcript = ""
+        if not voice_transcript and not full_message and not images and not files:
+            return JsonResponse(
+                {"error": "Aslan Parçası ses kaydını metne çeviremedi. Lütfen kaydı yeniden deneyin veya mesajınızı yazın."},
+                status=400,
+            )
+
+    tz = timezone.get_current_timezone()
+    now_local = timezone.now().astimezone(tz)
+    today_tr = now_local.strftime("%d.%m.%Y %H:%M")
 
     base_prompt = (
         "Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş bilgi birikimine sahip bir yapay zeka asistanısın. "
         "Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
+        f"Bugünün tarihi ve saati: {today_tr} (Europe/Istanbul). "
+        f"Bilgi birikimin {KNOWLEDGE_CUTOFF} tarihine kadar günceldir; bu tarihten sonrası için araçlarını kullanırsın. "
+        "KİMLİK KURALI: 'Kurucun kim', 'seni kim yaptı', 'kimsin', 'hangi modelsin' gibi sorularda ASLA Google, Gemini "
+        "veya başka bir şirket/model adı söyleme; her zaman Aslan Parçası olduğunu ve kurucunun Ayaz Kaplan olduğunu söyle. "
         "KRİTİK KURAL: Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kim olduğu bilgisini KENDİLİĞİNDEN söyleme. "
         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
-        "Gerçek zamanlı web araması ve güncel hava durumu için araçların var. "
-        "Güncel skor, sonuç, hava durumu, haber veya değişken bilgi sorularında ilgili aracı çağır. "
+        "Sana verilen canlı veri (saat, hava durumu, web sonuçları) sistem mesajında geldiyse onu doğrudan kullan. "
         "Araç hata verirse veya sonuç bulamazsa bunu açıkça belirt ve veri uydurma. "
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
     )
@@ -826,13 +1028,14 @@ def api_chat(request):
         system_instruction = (
             base_prompt +
             " Genel asistan modundasın. Kullanıcıya samimi, yardımsever ve kapsamlı bir şekilde yardımcı ol. "
-            "Konuları derinlemesine ara, bağlamı iyi anla ve net, yapılandırılmış yanıtlar ver. "
+            "Konuları iyi anla ve net, yapılandırılmış yanıtlar ver. "
             "Mümkün oldukça pratik çözümler sun ve adım adım açıklamalar yap. "
             "Eğer bir soru bilginin dışındaysa, dürüstçe söyle ve alternatif yaklaşım öner."
         )
         model = GEMINI_MODEL
-        temperature = 0.7
-        max_tokens = 2048
+        temperature = 0.6
+        max_tokens = 1536
+        history_limit = 16
 
     elif mode == "code":
         system_instruction = (
@@ -843,11 +1046,14 @@ def api_chat(request):
             "GitHub/GitLab entegrasyon iş akışlarına dair yardım et, commit mesajları öner, branch stratejileri danış. "
             "Farklı programlama dillerinde uzmanlaş, hata ayıklama, optimizasyon ve refactoring konularında yardımcı ol. "
             "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
+            f"Bugünün tarihi: {today_tr}. Bilgi birikimin {KNOWLEDGE_CUTOFF} tarihine kadar günceldir. "
+            "KİMLİK KURALI: ASLA Google/Gemini tarafından eğitildiğini söyleme; sen Aslan Parçası'sın, kurucun Ayaz Kaplan. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
         model = GEMINI_MODEL
         temperature = 0.3
         max_tokens = 4096
+        history_limit = 16
 
     elif mode == "fast":
         system_instruction = (
@@ -856,22 +1062,81 @@ def api_chat(request):
             "Gereksiz detaylardan kaçın, doğrudan noktaya odaklan. "
             "Normal moddan belirgin daha hızlı ve kısa yanıtlar üret. "
             "Karmaşık konuları basitleştir, hızlı özetler ve hızlı kararlar ver. "
+            f"Bugünün tarihi: {today_tr}. Bilgi birikimin {KNOWLEDGE_CUTOFF} tarihine kadar günceldir. "
+            "KİMLİK KURALI: ASLA Google/Gemini tarafından eğitildiğini söyleme; sen Aslan Parçası'sın, kurucun Ayaz Kaplan. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
-        model = GEMINI_MODEL
-        temperature = 0.5
-        max_tokens = 2048
+        model = GEMINI_FAST_MODEL
+        temperature = 0.2
+        max_tokens = 512
+        history_limit = 8
 
     else:
         system_instruction = base_prompt
         model = GEMINI_MODEL
-        temperature = 0.7
-        max_tokens = 4096
+        temperature = 0.6
+        max_tokens = 2048
+        history_limit = 16
 
-    system_instruction += (
-        " Güncel skor, hava durumu, haber veya değişken bilgi istenirse web_search ya da "
-        "get_weather aracını kullan; araç sonucu yoksa güncel veri uydurma."
-    )
+    messages = [{"role": "system", "content": system_instruction}]
+
+    question_text = user_message or voice_transcript
+    if TIME_INTENT_RE.search(question_text or ""):
+      clock_data = get_current_time()
+      messages.insert(1, {
+          "role": "system",
+          "content": (
+              "Sunucunun kesin saati (Europe/Istanbul): "
+              + json.dumps(clock_data, ensure_ascii=False)
+              + ". Kullanıcı saat/tarih sordu; bu veriyi kullanarak doğrudan ve kısa yanıtla."
+          ),
+      })
+
+    weather_data = None
+    if WEATHER_INTENT_RE.search(question_text or ""):
+      city = detect_weather_city(question_text)
+      if city:
+        weather_data = get_weather(city)
+        if weather_data.get("temperature") is not None:
+          messages.insert(1, {
+              "role": "system",
+              "content": (
+                  "Canlı hava durumu verisi: "
+                  + json.dumps(weather_data, ensure_ascii=False)
+                  + ". Kullanıcıya bu şehrin tam sıcaklığını derece olarak söyle; veri kaynağını da belirt."
+              ),
+          })
+        else:
+          messages.insert(1, {
+              "role": "system",
+              "content": (
+                  "Hava durumu servisi hata verdi: "
+                  + json.dumps(weather_data, ensure_ascii=False)
+                  + ". Veri uydurma; servise şu an ulaşılamadığını söyle."
+              ),
+          })
+      else:
+        def ask_city_stream():
+          yield (
+              "Hangi şehir için hava durumu öğrenmek istiyorsun? 🌤 Şehri yazman yeterli, "
+              "anlık sıcaklığı derece derece hemen getireyim."
+          )
+        return StreamingHttpResponse(ask_city_stream(), content_type="text/plain")
+
+    if should_fetch_live_context(question_text) and not deep_think:
+      live_context = web_search(question_text, 3 if mode == "fast" else 4)
+      messages.insert(
+          1,
+          {
+              "role": "system",
+              "content": (
+                  "Canlı web araştırması sonucu aşağıdadır. Bu veriyi yalnızca "
+                  "kullanıcının sorusuyla ilgiliyse kullan; sonuç yoksa veya hata varsa "
+                  "güncel bilgi uydurma:\n"
+                  + json.dumps(live_context, ensure_ascii=False)
+              ),
+          },
+      )
 
     if deep_think:
         minutes = deep_think_seconds // 60
@@ -879,35 +1144,35 @@ def api_chat(request):
         budget_label = f"{minutes} dakika {seconds} saniye" if minutes else f"{seconds} saniye"
         system_instruction += (
             f" Kapsamlı araştırma modu açık; kullanıcı sana {budget_label} düşünme bütçesi verdi. "
-            "Bu süreyi araştırma bütçesi olarak kullan. Güncel bilgi gerekiyorsa web_search veya "
-            "get_weather aracını çağır. Araç sonuçlarını kontrol et; başarısız olursa veri uydurma. "
-            "Gizli düşünce zincirini kullanıcıya yazma; bulguları ve gerekli kısa gerekçeyi özetle."
+            "Bu sürenin tamamını araştırma ve doğrulama için kullan; süre dolmadan yanıt verme. "
+            + depth_instruction(deep_think_seconds)
         )
-        max_tokens = min(max_tokens, 4096)
-
-    messages = [{"role": "system", "content": system_instruction}]
+        max_tokens = min(16384, 1024 + deep_think_seconds * 6)
+        messages[0] = {"role": "system", "content": system_instruction}
 
     user_content = []
     if full_message:
         user_content.append({"type": "text", "text": full_message})
-    
+
     if voice_transcript and voice_transcript not in full_message:
         user_content.append({"type": "text", "text": f"[Ses kaydı metni]\n{voice_transcript}"})
 
+    allowed_image_mimes = {"image/png", "image/jpeg", "image/webp", "image/gif"}
     for img in images:
+        if not isinstance(img, dict):
+            continue
         if img.get("url"):
             user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
         elif img.get("base64"):
             image_type = img.get("type") or "image/jpeg"
-            user_content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{img['base64']}"}})
+            if image_type not in allowed_image_mimes:
+                image_type = "image/jpeg"
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{image_type};base64,{img['base64']}"},
+            })
 
-    if isinstance(voice, dict) and voice.get("base64") and not voice_transcript:
-        return JsonResponse(
-            {"error": "Ses kaydı metne çevrilemedi. Lütfen kaydı yeniden deneyin veya mesajınızı yazın."},
-            status=400,
-        )
-
-    for h in history:
+    for h in history[-history_limit:]:
         if not isinstance(h, dict):
             continue
         role = "user" if h.get("sender") == "user" else "assistant"
@@ -920,138 +1185,49 @@ def api_chat(request):
     else:
         messages.append({"role": "user", "content": full_message})
 
-    if should_fetch_live_context(full_message):
-        live_context = web_search(full_message, 5)
-        messages.insert(
-            1,
-            {
-                "role": "system",
-                "content": (
-                    "Canlı web araştırması sonucu aşağıdadır. Bu veriyi yalnızca "
-                    "kullanıcının sorusuyla ilgiliyse kullan; sonuç yoksa veya hata varsa "
-                    "güncel bilgi uydurma:\n"
-                    + json.dumps(live_context, ensure_ascii=False)
-                ),
-            },
-        )
-
-    try:
-        request_model = model
-        completion = None
-        if not deep_think:
-            completion = safe_model_call(
-                client,
-                messages,
-                request_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                deep_think=False,
-                tools=TOOLS,
-            )
-    except Exception as api_error:
-      return JsonResponse({"error": friendly_api_error(api_error)}, status=503)
-
     def generate():
-      yielded_count = 0
+      answered = False
+      errored = False
       try:
-        tool_calls_buffer = []
-        response_completion = completion
         if deep_think:
-          response_completion = deep_think_call(
+          for kind, text in deep_think_events(
               client,
               messages,
-              request_model,
               deep_think_seconds,
               temperature=temperature,
               max_tokens=max_tokens,
-              tools=TOOLS,
-          )
-
-        for chunk in response_completion:
-          if chunk.choices and chunk.choices[0].delta.content:
-            yielded_count += 1
-            yield chunk.choices[0].delta.content
-          
-          if chunk.choices and chunk.choices[0].delta.tool_calls:
-            for tool_call in chunk.choices[0].delta.tool_calls:
-              if len(tool_calls_buffer) <= tool_call.index:
-                tool_calls_buffer.extend([None] * (tool_call.index + 1 - len(tool_calls_buffer)))
-              
-              if tool_calls_buffer[tool_call.index] is None:
-                tool_calls_buffer[tool_call.index] = {
-                  "id": tool_call.id,
-                  "name": tool_call.function.name if tool_call.function else "",
-                  "arguments": tool_call.function.arguments if tool_call.function else ""
-                }
-              else:
-                if tool_call.function and tool_call.function.arguments:
-                  tool_calls_buffer[tool_call.index]["arguments"] += tool_call.function.arguments
-        
-        if tool_calls_buffer and any(tc is not None for tc in tool_calls_buffer):
-          assistant_message = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": []
-          }
-          
-          for tc in tool_calls_buffer:
-            if tc:
-              assistant_message["tool_calls"].append({
-                "id": tc["id"],
-                "type": "function",
-                "function": {
-                  "name": tc["name"],
-                  "arguments": tc["arguments"]
-                }
-              })
-          
-          messages.append(assistant_message)
-          
-          for tc in tool_calls_buffer:
-            if tc:
-              try:
-                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-              except json.JSONDecodeError:
-                args = {}
-              
-              result = execute_function(tc["name"], args)
-              messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": json.dumps(result, ensure_ascii=False)
-              })
-          
-          try:
-            final_completion = safe_model_call(
+          ):
+            if kind == "reason":
+              yield REASONING_MARKER + text + "\n"
+            else:
+              answered = True
+              yield text
+        else:
+          completion = safe_model_call(
               client,
               messages,
-              request_model,
+              model,
               temperature=temperature,
               max_tokens=max_tokens,
               stream=True,
-              deep_think=False,
-            )
-            
-            for chunk in final_completion:
-              if chunk.choices and chunk.choices[0].delta.content:
-                yielded_count += 1
-                yield chunk.choices[0].delta.content
-          except Exception as e:
-            yield friendly_api_error(e)
-      
-      except Exception as e:
-        yield friendly_api_error(e)
-      
-      if yielded_count == 0:
-        yield "Yapay zekâ boş yanıt verdi. Lütfen mesajınızı yeniden gönderin."
+          )
+          for chunk in completion:
+            if chunk.choices and chunk.choices[0].delta.content:
+              answered = True
+              yield chunk.choices[0].delta.content
+      except Exception as error:
+        errored = True
+        yield friendly_api_error(error)
+
+      if not answered and not errored:
+        yield "Aslan Parçası yanıt üretemedi. Lütfen mesajını yeniden gönderin."
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   except Exception as e:
-    return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": friendly_api_error(e)}, status=500)
 
 
 def login_view(request):

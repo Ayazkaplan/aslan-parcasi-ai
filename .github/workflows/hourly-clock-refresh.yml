@@ -1,0 +1,13 @@
+name: Hourly Clock Refresh
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake service and refresh app clock
+        run: |
+          curl -sS --max-time 180 --retry 2 https://aslan-parcasi-ai.onrender.com/api/refresh-clock/ || true
