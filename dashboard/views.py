@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import base64
 import io
@@ -38,6 +39,21 @@ KNOWLEDGE_CUTOFF = "29 Eylül 2026"
 REASONING_MARKER = "\x00R\x00"
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
+
+logger = logging.getLogger(__name__)
+
+MODEL_BACKOFFS = (2, 6, 15)
+QUOTA_STATE = {
+    "consecutive": 0,
+    "open_until": 0.0,
+    "last_error": "",
+    "last_status": None,
+    "last_at": "",
+}
+
+
+class QuotaBreakerError(RuntimeError):
+    """Raised fast while the quota circuit breaker is open."""
 
 
 def get_gemini_client():
@@ -598,8 +614,10 @@ def safe_model_call(
 
     last_error = None
     swapped_model = False
-    backoffs = (2, 6, 15)
+    downgraded = False
     for attempt in range(4):
+        if time.monotonic() < QUOTA_STATE["open_until"]:
+            raise QuotaBreakerError("429 kota koruması açık, beklemek yerine hızlı dönülüyor")
         call_timeout = timeout
         if deadline is not None:
             remaining = deadline - time.monotonic()
@@ -610,10 +628,32 @@ def safe_model_call(
         if call_timeout is not None:
             call_kwargs["timeout"] = int(call_timeout)
         try:
-            return client.chat.completions.create(**call_kwargs)
+            result = client.chat.completions.create(**call_kwargs)
+            QUOTA_STATE["consecutive"] = 0
+            return result
         except Exception as error:
             last_error = error
             error_text = str(error).lower()
+            is_quota = (
+                "429" in error_text
+                or "rate limit" in error_text
+                or "resource_exhausted" in error_text
+                or "quota" in error_text
+            )
+            if is_quota:
+                QUOTA_STATE["consecutive"] += 1
+                QUOTA_STATE["last_error"] = str(error)[:300]
+                QUOTA_STATE["last_status"] = getattr(error, "status_code", None)
+                QUOTA_STATE["last_at"] = timezone.now().isoformat()
+                logger.warning("Aslan model quota error: %s", str(error)[:300])
+                if QUOTA_STATE["consecutive"] >= 4:
+                    QUOTA_STATE["open_until"] = time.monotonic() + 60
+                    QUOTA_STATE["consecutive"] = 0
+                    raise QuotaBreakerError("429 kota koruması açıldı") from error
+                if not downgraded and not tools and kwargs["model"] == GEMINI_MODEL:
+                    downgraded = True
+                    kwargs["model"] = GEMINI_FAST_MODEL
+                    continue
             if (
                 not swapped_model
                 and ("404" in error_text or "not found" in error_text)
@@ -623,8 +663,7 @@ def safe_model_call(
                 kwargs["model"] = GEMINI_MODEL
                 continue
             transient = (
-                "429" in error_text
-                or "rate limit" in error_text
+                is_quota
                 or "503" in error_text
                 or "unavailable" in error_text
                 or "overloaded" in error_text
@@ -633,7 +672,15 @@ def safe_model_call(
             )
             if not transient or attempt == 3:
                 raise
-            sleep_for = backoffs[attempt]
+            sleep_for = float(MODEL_BACKOFFS[attempt])
+            headers = getattr(getattr(error, "response", None), "headers", None)
+            if headers is not None:
+                try:
+                    retry_after = float(headers.get("retry-after"))
+                except (TypeError, ValueError):
+                    retry_after = None
+                if retry_after and 0 < retry_after <= 30:
+                    sleep_for = max(sleep_for, retry_after)
             if deadline is not None and time.monotonic() + sleep_for > deadline - 2:
                 raise
             time.sleep(sleep_for)
@@ -704,6 +751,9 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           timeout=max(5, min(60, int(remaining - reserve))),
           deadline=deadline - reserve,
       )
+    except QuotaBreakerError:
+      yield ("reason", "Model kotası şu an dolu; araştırma kısaltılıyor, mevcut bulgularla yanıt yazılacak.")
+      break
     except Exception as error:
       yield ("reason", f"Araştırma adımı aksadı, yeniden deneniyor ({type(error).__name__})")
       time.sleep(min(5, max(1, deadline - time.monotonic() - reserve)))
@@ -888,7 +938,25 @@ def delete_account_view(request):
 @require_GET
 def api_debug(request):
   """Minimal public health endpoint used by deployment checks."""
-  return JsonResponse({"status": "ok", "service": "aslan-parcasi-ai"})
+  return JsonResponse({
+      "status": "ok",
+      "service": "aslan-parcasi-ai",
+      "server_time": timezone.now().isoformat(),
+      "key_set": bool((os.environ.get("GEMINI_API_KEY") or "").strip()),
+      "models": {
+          "normal": GEMINI_MODEL,
+          "fast": GEMINI_FAST_MODEL,
+          "image": GEMINI_IMAGE_MODEL,
+      },
+      "quota": {
+          "consecutive_429": QUOTA_STATE["consecutive"],
+          "breaker_open": time.monotonic() < QUOTA_STATE["open_until"],
+          "breaker_seconds_left": max(0, round(QUOTA_STATE["open_until"] - time.monotonic(), 1)),
+          "last_error": QUOTA_STATE["last_error"],
+          "last_status": QUOTA_STATE["last_status"],
+          "last_at": QUOTA_STATE["last_at"],
+      },
+  })
 
 
 @require_GET
