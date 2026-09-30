@@ -502,7 +502,12 @@ def generate_image_with_gemini(prompt, image_model, api_key):
                       "Create exactly one image that follows the user's request literally. "
                       "The named subject, object, place, count, action and composition are "
                       "mandatory. If the user asks for a realistic image, make it "
-                      "photorealistic. Do not add unrelated objects. User request: "
+                      "photorealistic. Do not add unrelated objects. "
+                      "Quality bar: ultra-high fidelity, coherent lighting and shadows, "
+                      "accurate anatomy and perspective, fine surface detail, no warped "
+                      "hands or faces, no text unless the user asks for text. If the request "
+                      "is stylistic (cartoon, logo, anime, illustration), follow that style "
+                      "with the same quality bar. User request: "
                       + prompt
                   ),
               }],
@@ -524,13 +529,13 @@ def generate_image_with_gemini(prompt, image_model, api_key):
 
 def generate_image_with_retry(prompt, image_model, api_key):
   last_error = None
-  for attempt in range(3):
+  for attempt in range(4):
     try:
       return generate_image_with_gemini(prompt, image_model, api_key)
     except Exception as error:
       last_error = error
-      if attempt < 2:
-        time.sleep(2 * (attempt + 1))
+      if attempt < 3:
+        time.sleep((4, 10, 20)[attempt])
   raise last_error
 
 
@@ -578,6 +583,7 @@ def safe_model_call(
     deep_think=False,
     tools=None,
     timeout=None,
+    deadline=None,
 ):
     kwargs = {
         "model": model or GEMINI_MODEL,
@@ -586,29 +592,51 @@ def safe_model_call(
         "max_tokens": max_tokens,
         "stream": stream,
     }
-    if timeout is not None:
-        kwargs["timeout"] = max(1, timeout)
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
     last_error = None
-    for attempt in range(3):
+    swapped_model = False
+    backoffs = (2, 6, 15)
+    for attempt in range(4):
+        call_timeout = timeout
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 3:
+                break
+            call_timeout = max(5, min(call_timeout or 60, int(remaining) - 2))
+        call_kwargs = dict(kwargs)
+        if call_timeout is not None:
+            call_kwargs["timeout"] = int(call_timeout)
         try:
-            return client.chat.completions.create(**kwargs)
+            return client.chat.completions.create(**call_kwargs)
         except Exception as error:
             last_error = error
             error_text = str(error).lower()
+            if (
+                not swapped_model
+                and ("404" in error_text or "not found" in error_text)
+                and kwargs["model"] != GEMINI_MODEL
+            ):
+                swapped_model = True
+                kwargs["model"] = GEMINI_MODEL
+                continue
             transient = (
                 "429" in error_text
                 or "rate limit" in error_text
                 or "503" in error_text
                 or "unavailable" in error_text
                 or "overloaded" in error_text
+                or "timeout" in error_text
+                or "timed out" in error_text
             )
-            if not transient or attempt == 2:
+            if not transient or attempt == 3:
                 raise
-            time.sleep(attempt + 1)
+            sleep_for = backoffs[attempt]
+            if deadline is not None and time.monotonic() + sleep_for > deadline - 2:
+                raise
+            time.sleep(sleep_for)
     raise last_error
 
 
@@ -658,7 +686,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   }
 
   rounds = 0
-  max_rounds = max(2, min(24, int(seconds) // 45))
+  max_rounds = max(1, min(16, int(seconds) // 45))
   yield ("reason", f"Derin düşünme başladı · bütçe {int(seconds)} sn")
   while rounds < max_rounds:
     remaining = deadline - time.monotonic()
@@ -674,6 +702,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           stream=False,
           tools=TOOLS,
           timeout=max(5, min(60, int(remaining - reserve))),
+          deadline=deadline - reserve,
       )
     except Exception as error:
       yield ("reason", f"Araştırma adımı aksadı, yeniden deneniyor ({type(error).__name__})")
@@ -1051,9 +1080,9 @@ def api_chat(request):
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
         model = GEMINI_MODEL
-        temperature = 0.3
-        max_tokens = 4096
-        history_limit = 16
+        temperature = 0.4
+        max_tokens = 2048
+        history_limit = 12
 
     elif mode == "fast":
         system_instruction = (
@@ -1069,7 +1098,7 @@ def api_chat(request):
         model = GEMINI_FAST_MODEL
         temperature = 0.2
         max_tokens = 512
-        history_limit = 8
+        history_limit = 6
 
     else:
         system_instruction = base_prompt
@@ -1081,6 +1110,7 @@ def api_chat(request):
     messages = [{"role": "system", "content": system_instruction}]
 
     question_text = user_message or voice_transcript
+    clock_data = None
     if TIME_INTENT_RE.search(question_text or ""):
       clock_data = get_current_time()
       messages.insert(1, {
@@ -1123,6 +1153,7 @@ def api_chat(request):
           )
         return StreamingHttpResponse(ask_city_stream(), content_type="text/plain")
 
+    live_context = None
     if should_fetch_live_context(question_text) and not deep_think:
       live_context = web_search(question_text, 3 if mode == "fast" else 4)
       messages.insert(
@@ -1137,6 +1168,33 @@ def api_chat(request):
               ),
           },
       )
+
+    fallback_parts = []
+    if clock_data:
+      fallback_parts.append(
+          f"🕒 Şu anki saat: {clock_data.get('time')} · tarih: {clock_data.get('date')} "
+          f"{clock_data.get('day')} (Europe/Istanbul)."
+      )
+    if weather_data and weather_data.get("temperature") is not None:
+      fallback_parts.append(
+          f"🌤 {weather_data.get('city')} için güncel hava durumu: {weather_data.get('temperature')}°C "
+          f"(hissedilen {weather_data.get('feels_like')}°C), {weather_data.get('description')}, "
+          f"nem %{weather_data.get('humidity')}, rüzgâr {weather_data.get('wind_speed')} km/s. "
+          f"Kaynak: Open-Meteo ({weather_data.get('observed_at')})."
+      )
+    if live_context and live_context.get("results"):
+      lines = [f"🔎 \"{live_context.get('query')}\" için canlı web araştırması sonuçları:"]
+      for index, item in enumerate(live_context["results"], 1):
+        lines.append(f"{index}. {item.get('title', '')} — {item.get('url', '')}")
+        if item.get("snippet"):
+          lines.append(f"   {item.get('snippet')}")
+      fallback_parts.append("\n".join(lines))
+    deterministic_fallback = (
+        "\n\n".join(fallback_parts)
+        + "\n\n(Not: yanıt modeli şu an aşırı yoğun olduğu için topladığım canlı verileri doğrudan sundum.)"
+        if fallback_parts
+        else None
+    )
 
     if deep_think:
         minutes = deep_think_seconds // 60
@@ -1210,14 +1268,21 @@ def api_chat(request):
               temperature=temperature,
               max_tokens=max_tokens,
               stream=True,
+              timeout=120,
           )
           for chunk in completion:
             if chunk.choices and chunk.choices[0].delta.content:
               answered = True
               yield chunk.choices[0].delta.content
       except Exception as error:
-        errored = True
-        yield friendly_api_error(error)
+        if answered:
+          return
+        if deterministic_fallback:
+          answered = True
+          yield deterministic_fallback
+        else:
+          errored = True
+          yield friendly_api_error(error)
 
       if not answered and not errored:
         yield "Aslan Parçası yanıt üretemedi. Lütfen mesajını yeniden gönderin."

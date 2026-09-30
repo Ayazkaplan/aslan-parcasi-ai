@@ -2308,8 +2308,10 @@
     function updateReasoningTimer() {
         const timer = document.getElementById('reasoningTimer');
         if (timer) {
-            const remainingMs = Math.max(0, deepThinkSeconds * 1000 - (performance.now() - reasoningStartedAt));
-            timer.textContent = `Kalan ${formatReasoningElapsed(remainingMs)}`;
+            const remainingMs = deepThinkSeconds * 1000 - (performance.now() - reasoningStartedAt);
+            timer.textContent = remainingMs > 0
+                ? `Kalan ${formatReasoningElapsed(remainingMs)}`
+                : 'Süre doldu · yanıt yazılıyor';
         }
     }
 
@@ -2603,6 +2605,36 @@
             </svg> Durdur
         `;
 
+        if (chats.length === 0 || !activeChatId) {
+            createNewChat('Görsel Oluşturma', false);
+        }
+        const promptChat = chats.find(c => c.id === activeChatId);
+        const startStamp = Date.now();
+        promptChat.messages.push({
+            sender: 'user',
+            text: `Görsel oluştur: ${prompt}`,
+            timestamp: startStamp
+        });
+        promptChat.messages.push({
+            sender: 'ai',
+            text: '🎨 Görsel oluşturuluyor, birazdan burada...',
+            timestamp: startStamp + 1
+        });
+        const placeholderIndex = promptChat.messages.length - 1;
+        inputEl.value = '';
+        saveToStorage();
+        renderChatList();
+        renderMessages();
+
+        const finishPlaceholder = (message) => {
+            const chat = chats.find(c => c.id === activeChatId);
+            if (!chat) return;
+            chat.messages[placeholderIndex] = message;
+            saveToStorage();
+            renderChatList();
+            renderMessages();
+        };
+
         try {
             const response = await fetch('{% url "api_image_generate" %}', {
                 method: 'POST',
@@ -2616,41 +2648,31 @@
             });
 
             const data = await response.json();
-            
+
             if (data.status === 'success' && data.image_url) {
-                // Add the generated image to the chat
-                if (chats.length === 0 || !activeChatId) {
-                    createNewChat('Görsel Oluşturma', false);
-                }
-                
-                const currentChat = chats.find(c => c.id === activeChatId);
-                const timestamp = Date.now();
-                
-                // Add user message with prompt
-                currentChat.messages.push({ 
-                    sender: 'user', 
-                    text: `Görsel oluştur: ${prompt}`, 
-                    timestamp 
-                });
-                
-                // Add AI message with generated image
-                currentChat.messages.push({ 
-                    sender: 'ai', 
+                finishPlaceholder({
+                    sender: 'ai',
                     text: 'İşte istediğin görsel:',
                     images: [{ url: data.image_url, name: prompt }],
-                    timestamp 
+                    timestamp: Date.now()
                 });
-                
-                inputEl.value = '';
-                saveToStorage();
-                renderChatList();
-                renderMessages();
             } else {
-                alert('Görsel oluşturma başarısız: ' + (data.error || 'Bilinmeyen hata'));
+                finishPlaceholder({
+                    sender: 'ai',
+                    text: 'Görsel oluşturma başarısız: ' + (data.error || 'Bilinmeyen hata'),
+                    timestamp: Date.now()
+                });
             }
         } catch (err) {
-            if (err.name === 'AbortError') return;
-            alert('Görsel oluşturma sırasında hata oluştu: ' + err.message);
+            if (err.name === 'AbortError') {
+                finishPlaceholder({ sender: 'ai', text: 'Görsel oluşturma durduruldu.', timestamp: Date.now() });
+                return;
+            }
+            finishPlaceholder({
+                sender: 'ai',
+                text: 'Görsel oluşturma sırasında hata oluştu: ' + err.message,
+                timestamp: Date.now()
+            });
         } finally {
             imageGenerating = false;
             imageRequestController = null;
@@ -2826,9 +2848,6 @@
             });
 
             hideTypingIndicator();
-            if (wasDeepThink) {
-                hideReasoningAnimation();
-            }
 
             if (!response.ok) {
                 let errorData = {};
