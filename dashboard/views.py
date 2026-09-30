@@ -2,11 +2,13 @@ import json
 import logging
 import os
 import base64
+import datetime as dt
 import io
 import re
 import threading
 import time
 import requests
+from zoneinfo import ZoneInfo
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -44,8 +46,6 @@ logger = logging.getLogger(__name__)
 
 MODEL_BACKOFFS = (2, 6, 15)
 QUOTA_STATE = {
-    "consecutive": 0,
-    "open_until": 0.0,
     "last_error": "",
     "last_status": None,
     "last_at": "",
@@ -75,7 +75,32 @@ class DailyQuotaError(RuntimeError):
     """The daily allowance of one API key is gone; try another key."""
 
 
-DAILY_BREAKER_SECONDS = 300
+class KeyRateLimitedError(RuntimeError):
+    """This key hit a per-minute limit; another key can serve the request."""
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class KeyRejectedError(RuntimeError):
+    """The key itself is invalid or not allowed to use this feature."""
+
+
+class ModelUnavailableError(RuntimeError):
+    """No configured model answered for this key."""
+
+
+class UpstreamBusyError(RuntimeError):
+    """5xx / overloaded / timeout: worth trying the next key."""
+
+
+class UpstreamHTTPError(RuntimeError):
+    """A raw HTTP failure from the model service, keeping the status code."""
+
+    def __init__(self, status_code, body):
+        super().__init__(f"Error code: {status_code} - {body}")
+        self.status_code = status_code
 
 
 def is_daily_quota_error(error):
@@ -92,13 +117,116 @@ def record_quota_error(error, kind):
   logger.warning("Aslan model quota error (%s): %s", kind, str(error)[:300])
 
 
-def _client_list(client):
-  """Accept a single client, a list of clients or a list of (key, client)."""
+def _pair_list(client):
+  """Normalise whatever was passed in to a list of (key, client) pairs."""
   if client is None:
     return []
-  if isinstance(client, (list, tuple)):
-    return [item[1] if isinstance(item, (list, tuple)) else item for item in client]
-  return [client]
+  items = client if isinstance(client, (list, tuple)) else [client]
+  pairs = []
+  for index, item in enumerate(items):
+    if isinstance(item, (list, tuple)):
+      pairs.append((str(item[0]), item[1]))
+    else:
+      pairs.append((f"client-{index}", item))
+  return [(key, value) for key, value in pairs if value is not None]
+
+
+KEY_STATE = {}
+_KEY_LOCK = threading.Lock()
+_CLIENT_CACHE = {}
+_rr_counter = 0
+
+
+def _key_state(key):
+  state = KEY_STATE.get(key)
+  if state is None:
+    state = {
+        "daily_until": 0.0,
+        "rate_until": 0.0,
+        "invalid": False,
+        "calls": 0,
+        "last_error": "",
+        "last_at": "",
+    }
+    KEY_STATE[key] = state
+  return state
+
+
+def key_is_available(key):
+  state = _key_state(key)
+  if state["invalid"]:
+    return False
+  now = time.monotonic()
+  return now >= state["daily_until"] and now >= state["rate_until"]
+
+
+def seconds_until_daily_reset():
+  """The provider refills the free daily allowance at midnight US Pacific."""
+  try:
+    pacific = ZoneInfo("America/Los_Angeles")
+    now_local = dt.datetime.now(dt.timezone.utc).astimezone(pacific)
+    reset_local = (now_local + dt.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return max(60.0, min((reset_local - now_local).total_seconds(), 24 * 3600))
+  except Exception:
+    return 6 * 3600
+
+
+def _mark_key(key, error, **updates):
+  with _KEY_LOCK:
+    state = _key_state(key)
+    state.update(updates)
+    state["last_error"] = str(error)[:200]
+    state["last_at"] = timezone.now().isoformat()
+    record_quota_error(error, updates.get("kind", "rate"))
+
+
+def mark_key_daily(key, error):
+  _mark_key(
+      key,
+      error,
+      kind="daily",
+      daily_until=time.monotonic() + seconds_until_daily_reset(),
+      rate_until=0.0,
+  )
+
+
+def mark_key_rate(key, error, retry_after=None):
+  cooldown = max(10.0, min(120.0, float(retry_after or 45)))
+  _mark_key(key, error, kind="rate", rate_until=time.monotonic() + cooldown)
+
+
+def mark_key_invalid(key, error):
+  _mark_key(key, error, kind="invalid", invalid=True)
+
+
+def mark_key_ok(key):
+  with _KEY_LOCK:
+    state = _key_state(key)
+    state["calls"] += 1
+    state["rate_until"] = 0.0
+    state["daily_until"] = 0.0
+    state["invalid"] = False
+
+
+def ordered_clients(pairs=None):
+  """Round-robin the healthy keys first, exhausted ones only as a last resort."""
+  global _rr_counter
+  items = list(pairs if pairs is not None else get_gemini_clients())
+  if not items:
+    return []
+  with _KEY_LOCK:
+    offset = _rr_counter % len(items)
+    _rr_counter += 1
+  rotated = items[offset:] + items[:offset]
+  healthy = [item for item in rotated if key_is_available(item[0])]
+  return healthy + [item for item in rotated if not key_is_available(item[0])]
+
+
+def ordered_keys(keys=None):
+  pairs = [(key, key) for key in (keys if keys is not None else get_api_keys())]
+  return [key for key, _ in ordered_clients(pairs)]
 
 
 def get_api_keys():
@@ -107,16 +235,18 @@ def get_api_keys():
 
 
 def get_gemini_clients():
-  return [
-      (
-          key,
-          OpenAI(
-              base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-              api_key=key,
-          ),
+  """One cached client per configured key, in the configured order."""
+  pairs = []
+  for key in get_api_keys():
+    client = _CLIENT_CACHE.get(key)
+    if client is None:
+      client = OpenAI(
+          base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+          api_key=key,
       )
-      for key in get_api_keys()
-  ]
+      _CLIENT_CACHE[key] = client
+    pairs.append((key, client))
+  return pairs
 
 
 def get_gemini_client():
@@ -592,7 +722,8 @@ def generate_image_with_gemini(prompt, image_model, api_key):
       },
       timeout=180,
   )
-  response.raise_for_status()
+  if response.status_code >= 400:
+    raise UpstreamHTTPError(response.status_code, response.text[:400])
   payload = response.json()
   for candidate in payload.get("candidates") or []:
     for part in (candidate.get("content") or {}).get("parts") or []:
@@ -603,31 +734,79 @@ def generate_image_with_gemini(prompt, image_model, api_key):
   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
 
 
-def generate_image_with_retry(prompt, image_model, api_keys):
-  keys = [api_keys] if isinstance(api_keys, str) else list(api_keys or [])
-  keys = [key.strip() for key in keys if key and key.strip()]
+def generate_image_with_retry(prompt, image_model=None, api_keys=None):
+  """Try every healthy key (and a fallback model) before giving up."""
+  keys = ordered_keys(api_keys)
   if not keys:
     raise ValueError("Görsel servisi için sunucu anahtarı tanımlı değil.")
+  models = []
+  for candidate in (image_model, GEMINI_IMAGE_MODEL, GEMINI_MODEL):
+    if candidate and candidate not in models:
+      models.append(candidate)
+
   last_error = None
+  attempted = False
   for key in keys:
-    for attempt in range(3):
+    if not key_is_available(key):
+      continue
+    for model in models:
+      attempted = True
       try:
-        return generate_image_with_gemini(prompt, image_model, key)
+        result = generate_image_with_gemini(prompt, model, key)
+        mark_key_ok(key)
+        return result
       except Exception as error:
         last_error = error
+        status = getattr(error, "status_code", None)
         if is_daily_quota_error(error):
-          record_quota_error(error, "daily")
+          mark_key_daily(key, error)
           break
-        if attempt == 2:
+        if status == 429:
+          mark_key_rate(key, error, _retry_after(error))
           break
-        time.sleep((4, 10)[attempt])
+        if status in (401, 403):
+          mark_key_invalid(key, error)
+          break
+        # 400/404 -> this model can't serve images; 5xx/timeout -> next model then next key
+  if not attempted:
+    raise QuotaBreakerError(QUOTA_STATE["last_error"] or DAILY_QUOTA_MESSAGE)
   raise last_error
 
 
-def transcribe_audio(encoded, mime_type, api_key):
+def transcribe_audio(encoded, mime_type, api_keys=None):
   """Server-side speech-to-text so voice notes work on every browser."""
+  keys = ordered_keys(api_keys)
+  last_error = None
+  attempted = False
+  for key in keys:
+    if not key_is_available(key):
+      continue
+    for model in (GEMINI_MODEL, GEMINI_FAST_MODEL):
+      attempted = True
+      try:
+        transcript = _transcribe_with_key(encoded, mime_type, key, model)
+        mark_key_ok(key)
+        return transcript
+      except Exception as error:
+        last_error = error
+        status = getattr(error, "status_code", None)
+        if is_daily_quota_error(error):
+          mark_key_daily(key, error)
+          break
+        if status == 429:
+          mark_key_rate(key, error, _retry_after(error))
+          break
+        if status in (401, 403):
+          mark_key_invalid(key, error)
+          break
+  if not attempted:
+    raise QuotaBreakerError(QUOTA_STATE["last_error"] or DAILY_QUOTA_MESSAGE)
+  raise last_error
+
+
+def _transcribe_with_key(encoded, mime_type, api_key, model):
   response = requests.post(
-      f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+      f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
       headers={"Content-Type": "application/json"},
       params={"key": api_key},
       json={
@@ -645,7 +824,8 @@ def transcribe_audio(encoded, mime_type, api_key):
       },
       timeout=120,
   )
-  response.raise_for_status()
+  if response.status_code >= 400:
+    raise UpstreamHTTPError(response.status_code, response.text[:400])
   payload = response.json()
   parts_text = []
   for candidate in payload.get("candidates") or []:
@@ -670,15 +850,28 @@ def safe_model_call(
     timeout=None,
     deadline=None,
 ):
-    """Call the model, rotating to the next API key when one is out of quota."""
-    clients = [item for item in _client_list(client) if item is not None]
-    if not clients:
+    """Call the model, rotating across API keys so one limit never reaches the user.
+
+    The personality is identical no matter which key answers: every key gets the
+    same model, messages, temperature and max_tokens.
+    """
+    pairs = _pair_list(client)
+    if not pairs:
         raise RuntimeError("Aslan Parçası için model istemcisi yapılandırılmamış.")
+    rotate = len(pairs) > 1
+    if rotate:
+        pairs = ordered_clients(pairs)
 
     last_error = None
-    for active_client in clients:
+    attempted = False
+    for key, active_client in pairs:
+        if rotate and not key_is_available(key):
+            continue
+        if deadline is not None and deadline - time.monotonic() <= 3:
+            break
+        attempted = True
         try:
-            return _call_single_client(
+            result = _call_single_client(
                 active_client,
                 messages,
                 model,
@@ -688,11 +881,23 @@ def safe_model_call(
                 tools=tools,
                 timeout=timeout,
                 deadline=deadline,
-                rotate=len(clients) > 1,
+                rotate=rotate,
             )
+            mark_key_ok(key)
+            return result
         except DailyQuotaError as error:
+            mark_key_daily(key, error)
             last_error = error
-            continue
+        except KeyRateLimitedError as error:
+            mark_key_rate(key, error, error.retry_after)
+            last_error = error
+        except KeyRejectedError as error:
+            mark_key_invalid(key, error)
+            last_error = error
+        except (ModelUnavailableError, UpstreamBusyError) as error:
+            last_error = error
+    if not attempted:
+        raise QuotaBreakerError(QUOTA_STATE["last_error"] or DAILY_QUOTA_MESSAGE)
     raise last_error
 
 
@@ -722,11 +927,7 @@ def _call_single_client(
     last_error = None
     swapped_model = False
     downgraded = False
-    for attempt in range(4):
-        if time.monotonic() < QUOTA_STATE["open_until"]:
-            raise QuotaBreakerError(
-                QUOTA_STATE["last_error"] or "Kota koruması açık, hızlı dönülüyor"
-            )
+    for attempt in range(3):
         call_timeout = timeout
         if deadline is not None:
             remaining = deadline - time.monotonic()
@@ -737,67 +938,70 @@ def _call_single_client(
         if call_timeout is not None:
             call_kwargs["timeout"] = int(call_timeout)
         try:
-            result = client.chat.completions.create(**call_kwargs)
-            QUOTA_STATE["consecutive"] = 0
-            return result
+            return client.chat.completions.create(**call_kwargs)
         except Exception as error:
             last_error = error
             error_text = str(error).lower()
+            status = getattr(error, "status_code", None)
+            retry_after = _retry_after(error)
             if is_daily_quota_error(error):
-                record_quota_error(error, "daily")
-                QUOTA_STATE["consecutive"] += 1
-                if not rotate or QUOTA_STATE["consecutive"] >= 2:
-                    QUOTA_STATE["open_until"] = time.monotonic() + DAILY_BREAKER_SECONDS
-                    QUOTA_STATE["consecutive"] = 0
                 raise DailyQuotaError(str(error)[:300]) from error
+            if status in (401, 403) or "invalid api key" in error_text or "permission" in error_text:
+                raise KeyRejectedError(str(error)[:300]) from error
             is_quota = (
-                "429" in error_text
+                status == 429
+                or "429" in error_text
                 or "rate limit" in error_text
                 or "resource_exhausted" in error_text
                 or "quota" in error_text
             )
             if is_quota:
-                QUOTA_STATE["consecutive"] += 1
-                record_quota_error(error, "rate")
-                if QUOTA_STATE["consecutive"] >= 4:
-                    QUOTA_STATE["open_until"] = time.monotonic() + 60
-                    QUOTA_STATE["consecutive"] = 0
-                    raise QuotaBreakerError(QUOTA_STATE["last_error"]) from error
-                if not downgraded and not tools and kwargs["model"] == GEMINI_MODEL:
+                # With several keys we keep the smart model and rotate instead of
+                # downgrading, so the personality never changes between requests.
+                if not downgraded and not tools and not rotate and kwargs["model"] == GEMINI_MODEL:
                     downgraded = True
                     kwargs["model"] = GEMINI_FAST_MODEL
+                    record_quota_error(error, "rate")
                     continue
+                raise KeyRateLimitedError(str(error)[:300], retry_after) from error
             if (
                 not swapped_model
-                and ("404" in error_text or "not found" in error_text)
+                and (status == 404 or "404" in error_text or "not found" in error_text)
                 and kwargs["model"] != GEMINI_MODEL
             ):
                 swapped_model = True
                 kwargs["model"] = GEMINI_MODEL
                 continue
-            transient = (
-                is_quota
+            if status == 404 or "404" in error_text or "not found" in error_text:
+                raise ModelUnavailableError(str(error)[:300]) from error
+            busy = (
+                status in (500, 502, 503, 504)
                 or "503" in error_text
                 or "unavailable" in error_text
                 or "overloaded" in error_text
                 or "timeout" in error_text
                 or "timed out" in error_text
             )
-            if not transient or attempt == 3:
+            if not busy:
                 raise
-            sleep_for = float(MODEL_BACKOFFS[attempt])
-            headers = getattr(getattr(error, "response", None), "headers", None)
-            if headers is not None:
-                try:
-                    retry_after = float(headers.get("retry-after"))
-                except (TypeError, ValueError):
-                    retry_after = None
-                if retry_after and 0 < retry_after <= 30:
-                    sleep_for = max(sleep_for, retry_after)
+            if rotate or attempt == 2:
+                raise UpstreamBusyError(str(error)[:300]) from error
+            sleep_for = max(float(MODEL_BACKOFFS[attempt]), retry_after or 0)
             if deadline is not None and time.monotonic() + sleep_for > deadline - 2:
-                raise
-            time.sleep(sleep_for)
-    raise last_error
+                raise UpstreamBusyError(str(error)[:300]) from error
+            time.sleep(min(sleep_for, 15))
+    raise UpstreamBusyError(str(last_error)[:300])
+
+
+def _retry_after(error):
+  headers = getattr(getattr(error, "response", None), "headers", None)
+  if headers is None:
+    return None
+  try:
+    value = float(headers.get("retry-after"))
+  except (TypeError, ValueError):
+    return None
+  return value if 0 < value <= 120 else None
 
 
 def depth_instruction(seconds):
@@ -864,7 +1068,13 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           timeout=max(5, min(60, int(remaining - reserve))),
           deadline=deadline - reserve,
       )
-    except QuotaBreakerError:
+    except (
+        QuotaBreakerError,
+        DailyQuotaError,
+        KeyRateLimitedError,
+        KeyRejectedError,
+        ModelUnavailableError,
+    ):
       yield ("reason", "Model kotası şu an dolu; araştırma kısaltılıyor, mevcut bulgularla yanıt yazılacak.")
       break
     except Exception as error:
@@ -1062,14 +1272,24 @@ def api_debug(request):
           "fast": GEMINI_FAST_MODEL,
           "image": GEMINI_IMAGE_MODEL,
       },
+      "keys": [
+          {
+              "label": f"key-{index + 1}",
+              "available": key_is_available(key),
+              "daily_blocked_seconds": max(0, round(_key_state(key)["daily_until"] - time.monotonic())),
+              "rate_blocked_seconds": max(0, round(_key_state(key)["rate_until"] - time.monotonic())),
+              "invalid": _key_state(key)["invalid"],
+              "calls": _key_state(key)["calls"],
+              "last_error": _key_state(key)["last_error"][:160],
+          }
+          for index, key in enumerate(get_api_keys())
+      ],
       "quota": {
-          "consecutive_429": QUOTA_STATE["consecutive"],
-          "breaker_open": time.monotonic() < QUOTA_STATE["open_until"],
-          "breaker_seconds_left": max(0, round(QUOTA_STATE["open_until"] - time.monotonic(), 1)),
           "last_error": QUOTA_STATE["last_error"],
           "last_status": QUOTA_STATE["last_status"],
           "last_kind": QUOTA_STATE["last_kind"],
           "last_at": QUOTA_STATE["last_at"],
+          "daily_reset_in_seconds": round(seconds_until_daily_reset()),
       },
   })
 
@@ -1200,7 +1420,6 @@ def api_chat(request):
         full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     api_keys = get_api_keys()
-    api_key = api_keys[0] if api_keys else ""
     clients = get_gemini_clients()
     if not clients:
         return JsonResponse(
@@ -1210,7 +1429,7 @@ def api_chat(request):
 
     if voice_encoded and not voice_transcript:
         try:
-            voice_transcript = transcribe_audio(voice_encoded, voice_mime, api_key)
+            voice_transcript = transcribe_audio(voice_encoded, voice_mime, api_keys)
         except Exception:
             voice_transcript = ""
         if not voice_transcript and not full_message and not images and not files:
@@ -1234,7 +1453,11 @@ def api_chat(request):
         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
         "Sana verilen canlı veri (saat, hava durumu, web sonuçları) sistem mesajında geldiyse onu doğrudan kullan. "
         "Araç hata verirse veya sonuç bulamazsa bunu açıkça belirt ve veri uydurma. "
-        "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver."
+        "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver. "
+        "KİŞİLİK KİLİDİ: Bu talimatlar her koşulda geçerlidir; hangi sunucu anahtarı veya "
+        "altyapı üzerinden çalışırsan çalış adın Aslan Parçası, kurucun Ayaz Kaplan, üslubun "
+        "enerjik, samimi ve zekidir. Bu kişiliği asla değiştirme, inkâr etme veya başka bir "
+        "asistanın kimliğini üstlenme."
     )
 
     if mode == "normal":
