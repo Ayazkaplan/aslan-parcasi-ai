@@ -49,21 +49,79 @@ QUOTA_STATE = {
     "last_error": "",
     "last_status": None,
     "last_at": "",
+    "last_kind": "",
 }
+
+DAILY_QUOTA_MESSAGE = (
+    "Aslan Parçası'nın günlük ücretsiz kullanım hakkı şu an doldu; bu yüzden yanıt "
+    "üretemiyorum. Hak, Türkiye saatiyle sabah 10:00 civarında kendiliğinden yenilenir; "
+    "o saatten sonra aynı soruyu sorabilirsin. Bu arada saat, hava durumu ve internet "
+    "araması sorularına topladığım gerçek verilerle cevap verebiliyorum."
+)
+DAILY_QUOTA_FALLBACK_NOTE = (
+    "(Not: günlük ücretsiz kullanım hakkı şu an dolu olduğu için yanıtı model yazamadı; "
+    "yukarıdaki gerçek verileri doğrudan sundum. Hak Türkiye saatiyle ~10:00'da yenilenir.)"
+)
+BUSY_FALLBACK_NOTE = (
+    "(Not: yanıt modeli şu an aşırı yoğun olduğu için topladığım canlı verileri doğrudan sundum.)"
+)
 
 
 class QuotaBreakerError(RuntimeError):
     """Raised fast while the quota circuit breaker is open."""
 
 
+class DailyQuotaError(RuntimeError):
+    """The daily allowance of one API key is gone; try another key."""
+
+
+DAILY_BREAKER_SECONDS = 300
+
+
+def is_daily_quota_error(error):
+  """True when the provider reports the daily allowance is exhausted."""
+  text = str(error).lower()
+  return "exceeded your current quota" in text or "plan and billing" in text
+
+
+def record_quota_error(error, kind):
+  QUOTA_STATE["last_error"] = str(error)[:300]
+  QUOTA_STATE["last_status"] = getattr(error, "status_code", None)
+  QUOTA_STATE["last_at"] = timezone.now().isoformat()
+  QUOTA_STATE["last_kind"] = kind
+  logger.warning("Aslan model quota error (%s): %s", kind, str(error)[:300])
+
+
+def _client_list(client):
+  """Accept a single client, a list of clients or a list of (key, client)."""
+  if client is None:
+    return []
+  if isinstance(client, (list, tuple)):
+    return [item[1] if isinstance(item, (list, tuple)) else item for item in client]
+  return [client]
+
+
+def get_api_keys():
+  raw = (os.environ.get("GEMINI_API_KEY") or "").strip()
+  return [key.strip() for key in raw.replace(";", ",").split(",") if key.strip()]
+
+
+def get_gemini_clients():
+  return [
+      (
+          key,
+          OpenAI(
+              base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+              api_key=key,
+          ),
+      )
+      for key in get_api_keys()
+  ]
+
+
 def get_gemini_client():
-  api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-  if not api_key:
-    return None
-  return OpenAI(
-      base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-      api_key=api_key,
-  )
+  clients = get_gemini_clients()
+  return clients[0][1] if clients else None
 
 
 def get_user_profile(user):
@@ -491,6 +549,8 @@ def friendly_api_error(error):
     return "Aslan Parçası'nın beyin bağlantısı şu an doğrulanamadı. Lütfen biraz sonra tekrar deneyin."
   if "404" in error_text or "not found" in error_text:
     return "Aslan Parçası'nın istediğin yeteneği şu an erişilemiyor. Lütfen tekrar deneyin."
+  if is_daily_quota_error(error):
+    return DAILY_QUOTA_MESSAGE
   if (
       "429" in error_text
       or "rate limit" in error_text
@@ -543,15 +603,24 @@ def generate_image_with_gemini(prompt, image_model, api_key):
   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
 
 
-def generate_image_with_retry(prompt, image_model, api_key):
+def generate_image_with_retry(prompt, image_model, api_keys):
+  keys = [api_keys] if isinstance(api_keys, str) else list(api_keys or [])
+  keys = [key.strip() for key in keys if key and key.strip()]
+  if not keys:
+    raise ValueError("Görsel servisi için sunucu anahtarı tanımlı değil.")
   last_error = None
-  for attempt in range(4):
-    try:
-      return generate_image_with_gemini(prompt, image_model, api_key)
-    except Exception as error:
-      last_error = error
-      if attempt < 3:
-        time.sleep((4, 10, 20)[attempt])
+  for key in keys:
+    for attempt in range(3):
+      try:
+        return generate_image_with_gemini(prompt, image_model, key)
+      except Exception as error:
+        last_error = error
+        if is_daily_quota_error(error):
+          record_quota_error(error, "daily")
+          break
+        if attempt == 2:
+          break
+        time.sleep((4, 10)[attempt])
   raise last_error
 
 
@@ -601,6 +670,44 @@ def safe_model_call(
     timeout=None,
     deadline=None,
 ):
+    """Call the model, rotating to the next API key when one is out of quota."""
+    clients = [item for item in _client_list(client) if item is not None]
+    if not clients:
+        raise RuntimeError("Aslan Parçası için model istemcisi yapılandırılmamış.")
+
+    last_error = None
+    for active_client in clients:
+        try:
+            return _call_single_client(
+                active_client,
+                messages,
+                model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=stream,
+                tools=tools,
+                timeout=timeout,
+                deadline=deadline,
+                rotate=len(clients) > 1,
+            )
+        except DailyQuotaError as error:
+            last_error = error
+            continue
+    raise last_error
+
+
+def _call_single_client(
+    client,
+    messages,
+    model,
+    temperature=0.7,
+    max_tokens=4096,
+    stream=False,
+    tools=None,
+    timeout=None,
+    deadline=None,
+    rotate=False,
+):
     kwargs = {
         "model": model or GEMINI_MODEL,
         "messages": messages,
@@ -617,7 +724,9 @@ def safe_model_call(
     downgraded = False
     for attempt in range(4):
         if time.monotonic() < QUOTA_STATE["open_until"]:
-            raise QuotaBreakerError("429 kota koruması açık, beklemek yerine hızlı dönülüyor")
+            raise QuotaBreakerError(
+                QUOTA_STATE["last_error"] or "Kota koruması açık, hızlı dönülüyor"
+            )
         call_timeout = timeout
         if deadline is not None:
             remaining = deadline - time.monotonic()
@@ -634,6 +743,13 @@ def safe_model_call(
         except Exception as error:
             last_error = error
             error_text = str(error).lower()
+            if is_daily_quota_error(error):
+                record_quota_error(error, "daily")
+                QUOTA_STATE["consecutive"] += 1
+                if not rotate or QUOTA_STATE["consecutive"] >= 2:
+                    QUOTA_STATE["open_until"] = time.monotonic() + DAILY_BREAKER_SECONDS
+                    QUOTA_STATE["consecutive"] = 0
+                raise DailyQuotaError(str(error)[:300]) from error
             is_quota = (
                 "429" in error_text
                 or "rate limit" in error_text
@@ -642,14 +758,11 @@ def safe_model_call(
             )
             if is_quota:
                 QUOTA_STATE["consecutive"] += 1
-                QUOTA_STATE["last_error"] = str(error)[:300]
-                QUOTA_STATE["last_status"] = getattr(error, "status_code", None)
-                QUOTA_STATE["last_at"] = timezone.now().isoformat()
-                logger.warning("Aslan model quota error: %s", str(error)[:300])
+                record_quota_error(error, "rate")
                 if QUOTA_STATE["consecutive"] >= 4:
                     QUOTA_STATE["open_until"] = time.monotonic() + 60
                     QUOTA_STATE["consecutive"] = 0
-                    raise QuotaBreakerError("429 kota koruması açıldı") from error
+                    raise QuotaBreakerError(QUOTA_STATE["last_error"]) from error
                 if not downgraded and not tools and kwargs["model"] == GEMINI_MODEL:
                     downgraded = True
                     kwargs["model"] = GEMINI_FAST_MODEL
@@ -943,6 +1056,7 @@ def api_debug(request):
       "service": "aslan-parcasi-ai",
       "server_time": timezone.now().isoformat(),
       "key_set": bool((os.environ.get("GEMINI_API_KEY") or "").strip()),
+      "key_count": len(get_api_keys()),
       "models": {
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
@@ -954,6 +1068,7 @@ def api_debug(request):
           "breaker_seconds_left": max(0, round(QUOTA_STATE["open_until"] - time.monotonic(), 1)),
           "last_error": QUOTA_STATE["last_error"],
           "last_status": QUOTA_STATE["last_status"],
+          "last_kind": QUOTA_STATE["last_kind"],
           "last_at": QUOTA_STATE["last_at"],
       },
   })
@@ -981,8 +1096,8 @@ def api_image_generate(request):
     if not prompt:
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
     
-    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-    if not api_key:
+    api_keys = get_api_keys()
+    if not api_keys:
       return JsonResponse(
           {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
           status=503,
@@ -999,7 +1114,7 @@ def api_image_generate(request):
       _last_image_request_at[request.user.pk] = now
 
     try:
-      image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_key)
+      image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_keys)
       return JsonResponse({"status": "success", "image_url": image_url})
     except Exception as img_error:
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
@@ -1084,9 +1199,10 @@ def api_chat(request):
     if file_names and not full_message:
         full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
-    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-    client = get_gemini_client()
-    if client is None:
+    api_keys = get_api_keys()
+    api_key = api_keys[0] if api_keys else ""
+    clients = get_gemini_clients()
+    if not clients:
         return JsonResponse(
             {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
             status=503,
@@ -1257,12 +1373,7 @@ def api_chat(request):
         if item.get("snippet"):
           lines.append(f"   {item.get('snippet')}")
       fallback_parts.append("\n".join(lines))
-    deterministic_fallback = (
-        "\n\n".join(fallback_parts)
-        + "\n\n(Not: yanıt modeli şu an aşırı yoğun olduğu için topladığım canlı verileri doğrudan sundum.)"
-        if fallback_parts
-        else None
-    )
+    deterministic_fallback = "\n\n".join(fallback_parts) if fallback_parts else None
 
     if deep_think:
         minutes = deep_think_seconds // 60
@@ -1317,7 +1428,7 @@ def api_chat(request):
       try:
         if deep_think:
           for kind, text in deep_think_events(
-              client,
+              clients,
               messages,
               deep_think_seconds,
               temperature=temperature,
@@ -1330,7 +1441,7 @@ def api_chat(request):
               yield text
         else:
           completion = safe_model_call(
-              client,
+              clients,
               messages,
               model,
               temperature=temperature,
@@ -1347,7 +1458,12 @@ def api_chat(request):
           return
         if deterministic_fallback:
           answered = True
-          yield deterministic_fallback
+          note = (
+              DAILY_QUOTA_FALLBACK_NOTE
+              if is_daily_quota_error(error) or QUOTA_STATE["last_kind"] == "daily"
+              else BUSY_FALLBACK_NOTE
+          )
+          yield deterministic_fallback + "\n\n" + note
         else:
           errored = True
           yield friendly_api_error(error)
