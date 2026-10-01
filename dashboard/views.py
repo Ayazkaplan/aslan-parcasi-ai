@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import requests
+from collections import namedtuple
 from zoneinfo import ZoneInfo
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
@@ -37,8 +38,63 @@ IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 KNOWLEDGE_CUTOFF = "29 Eylül 2026"
 REASONING_MARKER = "\x00R\x00"
+
+Endpoint = namedtuple("Endpoint", "provider key client models fallback")
+
+# Free-tier providers, in priority order. Every endpoint receives the same
+# personality prompt, temperature and max_tokens, so the voice never changes
+# when the rotation moves to another provider.
+PROVIDER_SPECS = (
+    {
+        "name": "groq",
+        "env": "GROQ_API_KEY",
+        "base": "https://api.groq.com/openai/v1",
+        "normal": ("openai/gpt-oss-120b", "qwen/qwen3.8-27b"),
+        "fast": ("qwen/qwen3.8-27b", "openai/gpt-oss-20b"),
+    },
+    {
+        "name": "gemini",
+        "env": "GEMINI_API_KEY",
+        "base": GEMINI_BASE_URL,
+        "normal": (GEMINI_MODEL,),
+        "fast": (GEMINI_FAST_MODEL,),
+    },
+    {
+        "name": "nvidia",
+        "env": "NVIDIA_API_KEY",
+        "base": "https://integrate.api.nvidia.com/v1",
+        "normal": ("nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"),
+        "fast": ("nvidia/nemotron-3-super-120b-a12b",),
+    },
+    {
+        "name": "github",
+        "env": "GITHUB_TOKEN",
+        "base": "https://models.github.ai/inference",
+        "normal": ("meta-llama-3.3-70b-instruct", "gpt-4o-mini"),
+        "fast": ("gpt-4o-mini", "meta-llama-3.3-70b-instruct"),
+    },
+    {
+        "name": "mistral",
+        "env": "MISTRAL_API_KEY",
+        "base": "https://api.mistral.ai/v1",
+        "normal": ("ministral-8b-latest", "mistral-small-latest"),
+        "fast": ("ministral-8b-latest",),
+    },
+    {
+        "name": "openrouter",
+        "env": "OPENROUTER_API_KEY",
+        "base": "https://openrouter.ai/api/v1",
+        "normal": (
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "qwen/qwen3.8-27b:free",
+        ),
+        "fast": ("qwen/qwen3.8-27b:free", "nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+    },
+)
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 
@@ -117,20 +173,6 @@ def record_quota_error(error, kind):
   logger.warning("Aslan model quota error (%s): %s", kind, str(error)[:300])
 
 
-def _pair_list(client):
-  """Normalise whatever was passed in to a list of (key, client) pairs."""
-  if client is None:
-    return []
-  items = client if isinstance(client, (list, tuple)) else [client]
-  pairs = []
-  for index, item in enumerate(items):
-    if isinstance(item, (list, tuple)):
-      pairs.append((str(item[0]), item[1]))
-    else:
-      pairs.append((f"client-{index}", item))
-  return [(key, value) for key, value in pairs if value is not None]
-
-
 KEY_STATE = {}
 _KEY_LOCK = threading.Lock()
 _CLIENT_CACHE = {}
@@ -141,6 +183,7 @@ def _key_state(key):
   state = KEY_STATE.get(key)
   if state is None:
     state = {
+        "provider": "",
         "daily_until": 0.0,
         "rate_until": 0.0,
         "invalid": False,
@@ -150,6 +193,11 @@ def _key_state(key):
     }
     KEY_STATE[key] = state
   return state
+
+
+def bind_key_provider(key, provider):
+  with _KEY_LOCK:
+    _key_state(key)["provider"] = provider
 
 
 def key_is_available(key):
@@ -224,29 +272,57 @@ def ordered_clients(pairs=None):
   return healthy + [item for item in rotated if not key_is_available(item[0])]
 
 
+def ordered_endpoints(endpoints):
+  """Round-robin healthy provider endpoints first, blocked ones last resort."""
+  global _rr_counter
+  items = list(endpoints)
+  if not items:
+    return []
+  with _KEY_LOCK:
+    offset = _rr_counter % len(items)
+    _rr_counter += 1
+  rotated = items[offset:] + items[:offset]
+  healthy = [item for item in rotated if key_is_available(item.key)]
+  return healthy + [item for item in rotated if not key_is_available(item.key)]
+
+
 def ordered_keys(keys=None):
   pairs = [(key, key) for key in (keys if keys is not None else get_api_keys())]
   return [key for key, _ in ordered_clients(pairs)]
 
 
-def get_api_keys():
-  raw = (os.environ.get("GEMINI_API_KEY") or "").strip()
+def _env_keys(env):
+  raw = (os.environ.get(env) or "").strip()
   return [key.strip() for key in raw.replace(";", ",").split(",") if key.strip()]
+
+
+def get_api_keys():
+  return _env_keys("GEMINI_API_KEY")
+
+
+def _client_for(base_url, key):
+  cache_key = (base_url, key)
+  client = _CLIENT_CACHE.get(cache_key)
+  if client is None:
+    client = OpenAI(base_url=base_url, api_key=key)
+    _CLIENT_CACHE[cache_key] = client
+  return client
 
 
 def get_gemini_clients():
   """One cached client per configured key, in the configured order."""
-  pairs = []
-  for key in get_api_keys():
-    client = _CLIENT_CACHE.get(key)
-    if client is None:
-      client = OpenAI(
-          base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-          api_key=key,
-      )
-      _CLIENT_CACHE[key] = client
-    pairs.append((key, client))
-  return pairs
+  return [(key, _client_for(GEMINI_BASE_URL, key)) for key in get_api_keys()]
+
+
+def get_chat_endpoints(tier="normal"):
+  """Every configured provider key as an Endpoint, in provider priority order."""
+  endpoints = []
+  for spec in PROVIDER_SPECS:
+    models = spec["normal"] if tier == "normal" else spec["fast"]
+    fallback = spec["fast"][0] if tier == "normal" else None
+    for key in _env_keys(spec["env"]):
+      endpoints.append(Endpoint(spec["name"], key, _client_for(spec["base"], key), models, fallback))
+  return endpoints
 
 
 def get_gemini_client():
@@ -838,6 +914,29 @@ def _transcribe_with_key(encoded, mime_type, api_key, model):
   return transcript
 
 
+def _endpoint_list(client, model):
+  """Normalise whatever was passed in to a list of Endpoint tuples."""
+  if client is None:
+    return []
+  items = client if isinstance(client, (list, tuple)) else [client]
+  endpoints = []
+  for index, item in enumerate(items):
+    if isinstance(item, Endpoint):
+      if item.client is not None:
+        endpoints.append(item)
+    elif isinstance(item, (list, tuple)) and len(item) >= 2 and item[1] is not None:
+      base_model = model or GEMINI_MODEL
+      candidates = (base_model,) if base_model == GEMINI_MODEL else (base_model, GEMINI_MODEL)
+      fallback = GEMINI_FAST_MODEL if base_model == GEMINI_MODEL else None
+      endpoints.append(Endpoint("gemini", str(item[0]), item[1], candidates, fallback))
+    elif item is not None:
+      base_model = model or GEMINI_MODEL
+      candidates = (base_model,) if base_model == GEMINI_MODEL else (base_model, GEMINI_MODEL)
+      fallback = GEMINI_FAST_MODEL if base_model == GEMINI_MODEL else None
+      endpoints.append(Endpoint("gemini", f"client-{index}", item, candidates, fallback))
+  return endpoints
+
+
 def safe_model_call(
     client,
     messages,
@@ -850,31 +949,34 @@ def safe_model_call(
     timeout=None,
     deadline=None,
 ):
-    """Call the model, rotating across API keys so one limit never reaches the user.
+    """Call the model, rotating across providers and keys so one limit never
+    reaches the user.
 
-    The personality is identical no matter which key answers: every key gets the
-    same model, messages, temperature and max_tokens.
+    The personality is identical no matter which provider answers: every
+    endpoint gets the same messages, temperature and max_tokens.
     """
-    pairs = _pair_list(client)
-    if not pairs:
+    endpoints = _endpoint_list(client, model)
+    if not endpoints:
         raise RuntimeError("Aslan Parçası için model istemcisi yapılandırılmamış.")
-    rotate = len(pairs) > 1
+    rotate = len(endpoints) > 1
     if rotate:
-        pairs = ordered_clients(pairs)
+        endpoints = ordered_endpoints(endpoints)
 
     last_error = None
     attempted = False
-    for key, active_client in pairs:
-        if rotate and not key_is_available(key):
+    for endpoint in endpoints:
+        if rotate and not key_is_available(endpoint.key):
             continue
         if deadline is not None and deadline - time.monotonic() <= 3:
             break
         attempted = True
+        bind_key_provider(endpoint.key, endpoint.provider)
         try:
             result = _call_single_client(
-                active_client,
+                endpoint.client,
                 messages,
-                model,
+                endpoint.models,
+                endpoint.fallback,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=stream,
@@ -883,16 +985,16 @@ def safe_model_call(
                 deadline=deadline,
                 rotate=rotate,
             )
-            mark_key_ok(key)
+            mark_key_ok(endpoint.key)
             return result
         except DailyQuotaError as error:
-            mark_key_daily(key, error)
+            mark_key_daily(endpoint.key, error)
             last_error = error
         except KeyRateLimitedError as error:
-            mark_key_rate(key, error, error.retry_after)
+            mark_key_rate(endpoint.key, error, error.retry_after)
             last_error = error
         except KeyRejectedError as error:
-            mark_key_invalid(key, error)
+            mark_key_invalid(endpoint.key, error)
             last_error = error
         except (ModelUnavailableError, UpstreamBusyError) as error:
             last_error = error
@@ -904,7 +1006,8 @@ def safe_model_call(
 def _call_single_client(
     client,
     messages,
-    model,
+    models,
+    fallback_model=None,
     temperature=0.7,
     max_tokens=4096,
     stream=False,
@@ -913,8 +1016,9 @@ def _call_single_client(
     deadline=None,
     rotate=False,
 ):
+    candidates = [m for m in (models or ()) if m] or [GEMINI_MODEL]
     kwargs = {
-        "model": model or GEMINI_MODEL,
+        "model": candidates[0],
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -925,7 +1029,7 @@ def _call_single_client(
         kwargs["tool_choice"] = "auto"
 
     last_error = None
-    swapped_model = False
+    model_index = 0
     downgraded = False
     for attempt in range(3):
         call_timeout = timeout
@@ -956,23 +1060,19 @@ def _call_single_client(
                 or "quota" in error_text
             )
             if is_quota:
-                # With several keys we keep the smart model and rotate instead of
-                # downgrading, so the personality never changes between requests.
-                if not downgraded and not tools and not rotate and kwargs["model"] == GEMINI_MODEL:
+                # With several endpoints we keep the smart model and rotate
+                # instead of downgrading, so the personality never changes.
+                if not downgraded and not tools and not rotate and fallback_model and kwargs["model"] != fallback_model:
                     downgraded = True
-                    kwargs["model"] = GEMINI_FAST_MODEL
+                    kwargs["model"] = fallback_model
                     record_quota_error(error, "rate")
                     continue
                 raise KeyRateLimitedError(str(error)[:300], retry_after) from error
-            if (
-                not swapped_model
-                and (status == 404 or "404" in error_text or "not found" in error_text)
-                and kwargs["model"] != GEMINI_MODEL
-            ):
-                swapped_model = True
-                kwargs["model"] = GEMINI_MODEL
-                continue
             if status == 404 or "404" in error_text or "not found" in error_text:
+                if model_index + 1 < len(candidates):
+                    model_index += 1
+                    kwargs["model"] = candidates[model_index]
+                    continue
                 raise ModelUnavailableError(str(error)[:300]) from error
             busy = (
                 status in (500, 502, 503, 504)
@@ -1261,29 +1361,40 @@ def delete_account_view(request):
 @require_GET
 def api_debug(request):
   """Minimal public health endpoint used by deployment checks."""
+  providers = []
+  for spec in PROVIDER_SPECS:
+    keys = _env_keys(spec["env"])
+    providers.append({
+        "provider": spec["name"],
+        "configured": bool(keys),
+        "normal_model": spec["normal"][0],
+        "fast_model": spec["fast"][0],
+        "keys": [
+            {
+                "label": f"{spec['name']}-{index + 1}",
+                "available": key_is_available(key),
+                "daily_blocked_seconds": max(0, round(_key_state(key)["daily_until"] - time.monotonic())),
+                "rate_blocked_seconds": max(0, round(_key_state(key)["rate_until"] - time.monotonic())),
+                "invalid": _key_state(key)["invalid"],
+                "calls": _key_state(key)["calls"],
+                "last_error": _key_state(key)["last_error"][:160],
+            }
+            for index, key in enumerate(keys)
+        ],
+    })
   return JsonResponse({
       "status": "ok",
       "service": "aslan-parcasi-ai",
       "server_time": timezone.now().isoformat(),
-      "key_set": bool((os.environ.get("GEMINI_API_KEY") or "").strip()),
-      "key_count": len(get_api_keys()),
+      "key_set": bool(get_api_keys()),
+      "key_count": len(get_chat_endpoints("normal")),
+      "provider_count": sum(1 for item in providers if item["configured"]),
       "models": {
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
           "image": GEMINI_IMAGE_MODEL,
       },
-      "keys": [
-          {
-              "label": f"key-{index + 1}",
-              "available": key_is_available(key),
-              "daily_blocked_seconds": max(0, round(_key_state(key)["daily_until"] - time.monotonic())),
-              "rate_blocked_seconds": max(0, round(_key_state(key)["rate_until"] - time.monotonic())),
-              "invalid": _key_state(key)["invalid"],
-              "calls": _key_state(key)["calls"],
-              "last_error": _key_state(key)["last_error"][:160],
-          }
-          for index, key in enumerate(get_api_keys())
-      ],
+      "providers": providers,
       "quota": {
           "last_error": QUOTA_STATE["last_error"],
           "last_status": QUOTA_STATE["last_status"],
@@ -1420,8 +1531,7 @@ def api_chat(request):
         full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     api_keys = get_api_keys()
-    clients = get_gemini_clients()
-    if not clients:
+    if not get_chat_endpoints("normal"):
         return JsonResponse(
             {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
             status=503,
@@ -1513,6 +1623,9 @@ def api_chat(request):
         temperature = 0.6
         max_tokens = 2048
         history_limit = 16
+
+    tier = "fast" if model == GEMINI_FAST_MODEL else "normal"
+    clients = get_chat_endpoints(tier)
 
     messages = [{"role": "system", "content": system_instruction}]
 
