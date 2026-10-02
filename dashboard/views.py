@@ -9,6 +9,7 @@ import threading
 import time
 import requests
 from collections import namedtuple
+from html import unescape
 from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo
 from django.contrib.auth import login, logout
@@ -676,12 +677,25 @@ def get_weather(city, country="TR"):
 
 def _strip_tags(fragment):
     text = re.sub(r"<[^>]+>", " ", fragment or "")
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def _decode_bing_redirect(url):
+    """Bing hides the real target in /ck/a?u=a1<base64url>; the user needs the target."""
+    encoded = (parse_qs(urlparse(url).query).get("u") or [""])[0]
+    if not encoded.startswith("a1"):
+        return ""
+    payload = encoded[2:]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        return base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8", "replace")
+    except Exception:
+        return ""
 
 
 def _clean_result_url(href):
-    """DuckDuckGo wraps every hit in a redirect; show the real target instead."""
-    url = (href or "").strip()
+    """Search engines wrap every hit in a redirect; show the real target instead."""
+    url = unescape((href or "").strip())
     if not url:
         return ""
     if url.startswith("//"):
@@ -690,6 +704,9 @@ def _clean_result_url(href):
         target = (parse_qs(urlparse(url).query).get("uddg") or [""])[0]
         if target:
             return unquote(target)
+    if "bing.com/ck/" in url:
+        decoded = _decode_bing_redirect(url)
+        return decoded if decoded.startswith("http") else ""
     return url
 
 
@@ -737,11 +754,42 @@ def _parse_bing_results(html_text, limit):
         if not match:
             continue
         snippet_match = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
+        url = _clean_result_url(match.group(1))
+        title = _strip_tags(match.group(2))
+        if not title or not url:
+            continue
         results.append({
-            "title": _strip_tags(match.group(2)),
-            "url": _clean_result_url(match.group(1)),
+            "title": title,
+            "url": url,
             "snippet": _strip_tags(snippet_match.group(1)) if snippet_match else "",
         })
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _parse_google_news_rss(xml_text, limit):
+    """Haber/spor sorularında skor başlığın içinde gelir; tarih de kaynağa eklenir.
+
+    Bağlantılar arama motorunun kendi yönlendirmesi olduğu için bilinçli olarak
+    boş bırakılır: başlık + kaynak adı + tarih kullanıcıya ve modele yeter.
+    """
+    results = []
+    for item in re.findall(r"<item>(.*?)</item>", xml_text or "", re.S):
+        title_match = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", item, re.S)
+        link_match = re.search(r"<link>\s*(\S+)\s*</link>", item, re.S)
+        if not title_match or not link_match:
+            continue
+        title = _strip_tags(title_match.group(1))
+        if not title:
+            continue
+        source_match = re.search(r"<source[^>]*>(.*?)</source>", item, re.S)
+        date_match = re.search(r"<pubDate>(.*?)</pubDate>", item, re.S)
+        meta = " · ".join(part for part in (
+            _strip_tags(date_match.group(1)) if date_match else "",
+            _strip_tags(source_match.group(1)) if source_match else "",
+        ) if part)
+        results.append({"title": title, "url": "", "snippet": meta})
         if len(results) >= limit:
             break
     return results
@@ -765,6 +813,8 @@ def web_search(query, num_results=5):
         return {"error": "Web search failed: empty query", "results": [], "query": query}
     attempts = (
         ("ddg-html", "post", "https://html.duckduckgo.com/html/", {"kl": "tr-tr"}, _parse_ddg_results),
+        ("haber-rss", "get", "https://news.google.com/rss/search",
+         {"hl": "tr", "gl": "TR", "ceid": "TR:tr"}, _parse_google_news_rss),
         ("ddg-lite", "post", "https://lite.duckduckgo.com/lite/", {"kl": "tr-tr"}, _parse_ddg_results),
         ("ddg-get", "get", "https://html.duckduckgo.com/html/", {}, _parse_ddg_results),
         ("bing", "get", "https://www.bing.com/search", {"setmkt": "tr-TR", "setlang": "tr"}, _parse_bing_results),
@@ -821,16 +871,27 @@ def is_brand_safe(text):
     return not BRAND_LEAK_RE.search(text or "")
 
 
-def brand_safe_sources(payload, limit):
-    """Search results formatted for the screen, brand leaks filtered out."""
+def format_source_lines(payload, limit, with_snippets=False):
+    """Search results as display lines: another AI brand never reaches the screen.
+
+    A result whose title is clean stays useful even when its link is not, so the
+    link is dropped instead of the whole finding.
+    """
     lines = []
     for item in (payload.get("results") or []) if isinstance(payload, dict) else []:
-        if not isinstance(item, dict) or not item.get("title"):
+        if not isinstance(item, dict):
             continue
-        url = item.get("url", "")
-        if not is_brand_safe(f"{item['title']} {url}"):
+        title = str(item.get("title") or "")
+        snippet = str(item.get("snippet") or "")
+        url = str(item.get("url") or "")
+        if not title or not is_brand_safe(f"{title} {snippet}"):
             continue
-        lines.append(f"{item['title']} — {url}")
+        line = title
+        if url and is_brand_safe(url):
+            line += f" — {url}"
+        if with_snippets and snippet and is_brand_safe(snippet):
+            line += f"\n   {snippet}"
+        lines.append(line)
         if len(lines) >= limit:
             break
     return lines
@@ -1410,7 +1471,9 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     for item in (result.get("results") or []):
       if not isinstance(item, dict) or not (item.get("title") or item.get("url")):
         continue
-      line = f"- {item.get('title', '')} ({item.get('url', '')})"
+      line = f"- {item.get('title', '')}"
+      if item.get("url"):
+        line += f" ({item['url']})"
       if item.get("snippet"):
         line += f": {item['snippet']}"
       if line not in findings:
@@ -1420,7 +1483,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
     seeded = web_search(build_search_query(question), 6)
     add_findings(seeded)
-    for line in brand_safe_sources(seeded, 6):
+    for line in format_source_lines(seeded, 6):
       yield ("reason", f"SRC:🌐 Kaynak: {line}")
     if seeded.get("error") and not seeded.get("results"):
       yield ("reason", "İlk arama sonuç vermedi; araç çağrılarıyla yeniden denenecek.")
@@ -1523,7 +1586,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       })
       if call.function.name == "web_search":
         add_findings(result)
-        for line in brand_safe_sources(result, 5):
+        for line in format_source_lines(result, 5):
           yield ("reason", f"SRC:🌐 Kaynak: {line}")
       elif call.function.name == "get_weather":
         if result.get("temperature") is not None:
@@ -2087,16 +2150,11 @@ def api_chat(request):
           f"Kaynak: Open-Meteo ({weather_data.get('observed_at')})."
       )
     if live_context and live_context.get("results"):
-      visible_results = [
-          item for item in live_context["results"]
-          if isinstance(item, dict) and is_brand_safe(f"{item.get('title', '')} {item.get('url', '')}")
-      ]
-      if visible_results:
+      source_lines = format_source_lines(live_context, 8, with_snippets=True)
+      if source_lines:
         lines = [f"🔎 \"{live_context.get('query')}\" için canlı web araştırması sonuçları:"]
-        for index, item in enumerate(visible_results, 1):
-          lines.append(f"{index}. {item.get('title', '')} — {item.get('url', '')}")
-          if item.get("snippet"):
-            lines.append(f"   {item.get('snippet')}")
+        for index, line in enumerate(source_lines, 1):
+          lines.append(f"{index}. {line}")
         fallback_parts.append("\n".join(lines))
     deterministic_fallback = "\n\n".join(fallback_parts) if fallback_parts else None
 
