@@ -471,6 +471,7 @@
         }
 
         .gold-brand-text {
+            display: none;
             max-width: 0;
             opacity: 0;
             white-space: nowrap;
@@ -489,6 +490,7 @@
         }
 
         .ai-header-container.expanded .gold-brand-text {
+            display: inline-block;
             max-width: 180px;
             opacity: 1;
             margin-left: 8px;
@@ -2096,8 +2098,12 @@
         closeModal('deleteModal');
     }
 
+    // Mesajlar akış sırasında yeniden çizildiği için açılan isim etiketleri burada saklanır.
+    const expandedAiMessages = new Set();
+
     function selectChat(chatId) {
         activeChatId = chatId;
+        expandedAiMessages.clear();
         const chat = chats.find(c => c.id === chatId);
         if (chat) {
             currentMode = chat.mode || 'normal';
@@ -2178,8 +2184,14 @@
 
     function toggleBrandText(avatarEl) {
         const header = avatarEl.closest('.ai-header-container');
-        if (header) {
-            header.classList.toggle('expanded');
+        if (!header) return;
+        const isOpen = header.classList.toggle('expanded');
+        const key = header.dataset.msgKey;
+        if (!key) return;
+        if (isOpen) {
+            expandedAiMessages.add(key);
+        } else {
+            expandedAiMessages.delete(key);
         }
     }
 
@@ -2995,6 +3007,10 @@
         if (sender === 'ai') {
             const aiHeader = document.createElement('div');
             aiHeader.className = 'ai-header-container';
+            aiHeader.dataset.msgKey = `${activeChatId}:${msgIndex}`;
+            if (expandedAiMessages.has(aiHeader.dataset.msgKey)) {
+                aiHeader.classList.add('expanded');
+            }
             aiHeader.innerHTML = `
                 <div class="lion-avatar" onclick="toggleBrandText(this)" title="Profili Gör">
                     ${LION_SVG_HTML}

@@ -9,6 +9,7 @@ import threading
 import time
 import requests
 from collections import namedtuple
+from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
@@ -33,13 +34,13 @@ except ImportError:
 
 
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
-MAX_EXTRACTED_TEXT = 300_000
+# Büyük dosya dökümleri yanıtı dakikalarca geciktirir; bu yüzden bilinçli olarak küçük.
+MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-KNOWLEDGE_CUTOFF = "29 Eylül 2026"
 REASONING_MARKER = "\x00R\x00"
 
 Endpoint = namedtuple("Endpoint", "provider key client models fallback")
@@ -47,56 +48,67 @@ Endpoint = namedtuple("Endpoint", "provider key client models fallback")
 # Free-tier providers, in priority order. Every endpoint receives the same
 # personality prompt, temperature and max_tokens, so the voice never changes
 # when the rotation moves to another provider.
+#
+# "chat": False keeps a provider out of the plain-text rotation (its quota is
+# reserved for something else, e.g. Google for image generation and speech to
+# text). "vision" lists the models that actually accept an image part; a
+# provider without it is skipped when the user sends a photo.
 PROVIDER_SPECS = (
     {
         "name": "groq",
         "env": "GROQ_API_KEY",
         "base": "https://api.groq.com/openai/v1",
-        "normal": ("openai/gpt-oss-120b", "qwen/qwen3.8-27b"),
+        "normal": ("qwen/qwen3.8-27b", "openai/gpt-oss-120b"),
         "fast": ("qwen/qwen3.8-27b", "openai/gpt-oss-20b"),
-    },
-    {
-        "name": "gemini",
-        "env": "GEMINI_API_KEY",
-        "base": GEMINI_BASE_URL,
-        "normal": (GEMINI_MODEL,),
-        "fast": (GEMINI_FAST_MODEL,),
-    },
-    {
-        "name": "nvidia",
-        "env": "NVIDIA_API_KEY",
-        "base": "https://integrate.api.nvidia.com/v1",
-        "normal": ("nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"),
-        "fast": ("nvidia/nemotron-3-super-120b-a12b",),
-    },
-    {
-        "name": "github",
-        "env": "GITHUB_TOKEN",
-        "base": "https://models.github.ai/inference",
-        "normal": ("meta-llama-3.3-70b-instruct", "gpt-4o-mini"),
-        "fast": ("gpt-4o-mini", "meta-llama-3.3-70b-instruct"),
+        "vision": ("qwen/qwen3.8-27b",),
     },
     {
         "name": "mistral",
         "env": "MISTRAL_API_KEY",
         "base": "https://api.mistral.ai/v1",
-        "normal": ("ministral-8b-latest", "mistral-small-latest"),
-        "fast": ("ministral-8b-latest",),
+        "normal": ("ministral-14b-latest", "ministral-8b-latest", "mistral-small-latest"),
+        "fast": ("ministral-8b-latest", "ministral-3b-latest"),
+        "vision": ("ministral-14b-latest", "ministral-8b-latest"),
     },
     {
         "name": "openrouter",
         "env": "OPENROUTER_API_KEY",
         "base": "https://openrouter.ai/api/v1",
         "normal": (
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "nvidia/nemotron-3-super-120b-a12b:free",
             "qwen/qwen3.8-27b:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
         ),
-        "fast": ("qwen/qwen3.8-27b:free", "nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+        "fast": ("qwen/qwen3.8-27b:free", "nvidia/nemotron-3.5-lightning:free"),
+        "vision": ("qwen/qwen3.8-27b:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
+    },
+    {
+        "name": "nvidia",
+        "env": "NVIDIA_API_KEY",
+        "base": "https://integrate.api.nvidia.com/v1",
+        "chat": False,
+        "normal": ("meta/llama-3.2-11b-vision-instruct",),
+        "fast": ("meta/llama-3.2-11b-vision-instruct",),
+        "vision": ("meta/llama-3.2-11b-vision-instruct", "meta/llama-3.2-90b-vision-instruct"),
+    },
+    {
+        # Google kotası görsel üretimi, ses çevirisi ve görsel anlama için saklı;
+        # düz metin sohbeti diğer sağlayıcılardan döner.
+        "name": "gemini",
+        "env": "GEMINI_API_KEY",
+        "base": GEMINI_BASE_URL,
+        "chat": False,
+        "normal": (GEMINI_MODEL,),
+        "fast": (GEMINI_FAST_MODEL,),
+        "vision": (GEMINI_MODEL, GEMINI_FAST_MODEL),
     },
 )
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
+# Görsel üretimi Google kotasını kullanır; tek bir kullanıcının herkesin hakkını
+# bitirmemesi için günlük bir üst sınır var.
+IMAGE_DAILY_LIMIT = 20
+_image_daily_usage = {}
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +132,11 @@ DAILY_QUOTA_FALLBACK_NOTE = (
 )
 BUSY_FALLBACK_NOTE = (
     "(Not: yanıt modeli şu an aşırı yoğun olduğu için topladığım canlı verileri doğrudan sundum.)"
+)
+EMPTY_ANSWER_MESSAGE = (
+    "Aslan Parçası bu isteğe boş yanıt döndürdü; yedek beyinleri de denedim ama metin "
+    "gelmedi. Mesajını bir kez daha gönderir misin? Uzun dosya veya görsel eklediysen "
+    "kısaltıp denemek genelde çözer."
 )
 
 
@@ -314,14 +331,34 @@ def get_gemini_clients():
   return [(key, _client_for(GEMINI_BASE_URL, key)) for key in get_api_keys()]
 
 
-def get_chat_endpoints(tier="normal"):
-  """Every configured provider key as an Endpoint, in provider priority order."""
+def _build_endpoints(tier="normal", need_vision=False, chat_only=True):
   endpoints = []
   for spec in PROVIDER_SPECS:
-    models = spec["normal"] if tier == "normal" else spec["fast"]
-    fallback = spec["fast"][0] if tier == "normal" else None
+    if need_vision:
+      models = tuple(spec.get("vision") or ())
+      fallback = None
+    else:
+      if chat_only and not spec.get("chat", True):
+        continue
+      models = spec["normal"] if tier == "normal" else spec["fast"]
+      fallback = spec["fast"][0] if tier == "normal" else None
+    if not models:
+      continue
     for key in _env_keys(spec["env"]):
       endpoints.append(Endpoint(spec["name"], key, _client_for(spec["base"], key), models, fallback))
+  return endpoints
+
+
+def get_chat_endpoints(tier="normal", need_vision=False):
+  """Every configured provider key as an Endpoint, in provider priority order.
+
+  Plain-text chat skips the providers whose quota is reserved for image
+  generation and speech, but when nothing else is configured they are used
+  anyway instead of leaving the app without a brain.
+  """
+  endpoints = _build_endpoints(tier, need_vision)
+  if not endpoints and not need_vision:
+    endpoints = _build_endpoints(tier, False, chat_only=False)
   return endpoints
 
 
@@ -353,6 +390,18 @@ def sync_app_clock():
   return clock
 
 
+def _clip_extracted(text):
+  """Keep the prompt small and tell the model the dump was shortened."""
+  content = text or ""
+  clipped = content[:MAX_EXTRACTED_TEXT]
+  if len(content) > MAX_EXTRACTED_TEXT:
+    clipped += (
+        f"\n\n[... dosyanın geri kalanı kısaltıldı, ilk {MAX_EXTRACTED_TEXT} karakter işlendi. "
+        "Kullanıcıya dosyanın tamamını değil bu bölümü görebildiğini söyle. ...]"
+    )
+  return clipped
+
+
 def extract_uploaded_file_text(file_item):
   """Extract useful text from common uploaded formats before sending to AI."""
   if not isinstance(file_item, dict):
@@ -364,7 +413,7 @@ def extract_uploaded_file_text(file_item):
   encoded = file_item.get("base64") or ""
   text_content = file_item.get("text")
   if text_content is not None and str(text_content).strip():
-    return str(text_content)[:MAX_EXTRACTED_TEXT]
+    return _clip_extracted(str(text_content))
   if not encoded:
     if content_type.startswith("text/") or extension in {
         ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts", ".html",
@@ -393,7 +442,7 @@ def extract_uploaded_file_text(file_item):
         ".css", ".java", ".c", ".cpp", ".sql", ".xml", ".yaml", ".yml",
         ".log",
     }:
-      return raw.decode("utf-8", errors="replace")[:MAX_EXTRACTED_TEXT]
+      return _clip_extracted(raw.decode("utf-8", errors="replace"))
     if (extension == ".pdf" or content_type == "application/pdf") and PdfReader:
       pages = PdfReader(io.BytesIO(raw)).pages
       extracted = "\n\n".join((page.extract_text() or "") for page in pages)
@@ -401,13 +450,13 @@ def extract_uploaded_file_text(file_item):
         raise ValueError(
             f"{filename} içinde seçilebilir metin yok. Taranmış PDF'ler şu anda okunamıyor."
         )
-      return extracted[:MAX_EXTRACTED_TEXT]
+      return _clip_extracted(extracted)
     if (extension == ".docx" or content_type.endswith("wordprocessingml.document")) and Document:
       document = Document(io.BytesIO(raw))
       extracted = "\n".join(paragraph.text for paragraph in document.paragraphs)
       if not extracted.strip():
         raise ValueError(f"{filename} içinde okunabilir metin bulunamadı.")
-      return extracted[:MAX_EXTRACTED_TEXT]
+      return _clip_extracted(extracted)
   except ValueError:
     raise
   except Exception as error:
@@ -625,68 +674,166 @@ def get_weather(city, country="TR"):
         return {"error": f"Weather error: {str(e)}"}
 
 
+def _strip_tags(fragment):
+    text = re.sub(r"<[^>]+>", " ", fragment or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_result_url(href):
+    """DuckDuckGo wraps every hit in a redirect; show the real target instead."""
+    url = (href or "").strip()
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    if "duckduckgo.com/l/" in url:
+        target = (parse_qs(urlparse(url).query).get("uddg") or [""])[0]
+        if target:
+            return unquote(target)
+    return url
+
+
 def _parse_ddg_results(html_text, limit):
-    """Parse DuckDuckGo result pages without depending on BeautifulSoup."""
+    """Parse DuckDuckGo html/lite result pages with plain regular expressions."""
     results = []
-    try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html_text, "html.parser")
-        for result in soup.select(".result")[:limit]:
-            title = result.select_one(".result__a")
-            snippet = result.select_one(".result__snippet")
-            if title or snippet:
-                results.append({
-                    "title": title.get_text(" ", strip=True) if title else "",
-                    "url": title.get("href", "") if title else "",
-                    "snippet": snippet.get_text(" ", strip=True) if snippet else "",
-                })
-        return results
-    except ImportError:
-        pass
     blocks = re.findall(
         r'<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
         html_text,
         re.S,
     )
-    snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html_text, re.S)
+    if not blocks:
+        blocks = re.findall(
+            r'<a[^>]+href="([^"]*)"[^>]*class="result__a"[^>]*>(.*?)</a>',
+            html_text,
+            re.S,
+        )
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html_text, re.S)
     for index, (href, title_html) in enumerate(blocks[:limit]):
+        title = _strip_tags(title_html)
+        url = _clean_result_url(href)
+        if not title and not url:
+            continue
         snippet_html = snippets[index] if index < len(snippets) else ""
-        results.append({
-            "title": re.sub(r"<[^>]+>", "", title_html).strip(),
-            "url": href.strip(),
-            "snippet": re.sub(r"<[^>]+>", "", snippet_html).strip(),
-        })
+        results.append({"title": title, "url": url, "snippet": _strip_tags(snippet_html)})
+    if not results:
+        # lite.duckduckgo.com serves a plain table of follow links.
+        for href, title_html in re.findall(
+            r'<a[^>]+rel="nofollow"[^>]+href="([^"]*)"[^>]*>(.*?)</a>', html_text, re.S
+        ):
+            title = _strip_tags(title_html)
+            url = _clean_result_url(href)
+            if title and url:
+                results.append({"title": title, "url": url, "snippet": ""})
+            if len(results) >= limit:
+                break
     return results
 
 
+def _parse_bing_results(html_text, limit):
+    """Backup engine when DuckDuckGo blocks the server."""
+    results = []
+    for block in re.findall(r'<li class="b_algo".*?</li>', html_text, re.S):
+        match = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not match:
+            continue
+        snippet_match = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
+        results.append({
+            "title": _strip_tags(match.group(2)),
+            "url": _clean_result_url(match.group(1)),
+            "snippet": _strip_tags(snippet_match.group(1)) if snippet_match else "",
+        })
+        if len(results) >= limit:
+            break
+    return results
+
+
+SEARCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.7,en;q=0.6",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
 def web_search(query, num_results=5):
-    """Search current web results using DuckDuckGo (no API key needed)."""
+    """Current web results with no API key: DuckDuckGo first, Bing as backup."""
     limit = max(1, min(int(num_results), 10))
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-    endpoints = (
-        ("post", "https://html.duckduckgo.com/html/"),
-        ("post", "https://lite.duckduckgo.com/lite/"),
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return {"error": "Web search failed: empty query", "results": [], "query": query}
+    attempts = (
+        ("ddg-html", "post", "https://html.duckduckgo.com/html/", {"kl": "tr-tr"}, _parse_ddg_results),
+        ("ddg-lite", "post", "https://lite.duckduckgo.com/lite/", {"kl": "tr-tr"}, _parse_ddg_results),
+        ("ddg-get", "get", "https://html.duckduckgo.com/html/", {}, _parse_ddg_results),
+        ("bing", "get", "https://www.bing.com/search", {"setmkt": "tr-TR", "setlang": "tr"}, _parse_bing_results),
     )
     last_error = None
-    for method, url in endpoints:
+    for engine, method, url, extra, parser in attempts:
         try:
             if method == "post":
-                response = requests.post(url, data={"q": query}, headers=headers, timeout=8)
+                response = requests.post(
+                    url, data={"q": clean_query, **extra}, headers=SEARCH_HEADERS, timeout=10
+                )
             else:
-                response = requests.get(url, params={"q": query}, headers=headers, timeout=8)
-            response.raise_for_status()
-            results = _parse_ddg_results(response.text, limit)
+                response = requests.get(
+                    url, params={"q": clean_query, **extra}, headers=SEARCH_HEADERS, timeout=10
+                )
+            if response.status_code >= 400:
+                last_error = f"{engine} HTTP {response.status_code}"
+                continue
+            results = parser(response.text, limit)
             if results:
-                return {"query": query, "results": results}
-            last_error = "no results parsed"
+                return {"query": clean_query, "results": results, "engine": engine}
+            last_error = f"{engine}: no results parsed"
         except Exception as error:
-            last_error = str(error)
-    return {"error": f"Web search failed: {last_error}", "results": [], "query": query}
+            last_error = f"{engine}: {error}"
+    return {"error": f"Web search failed: {last_error}", "results": [], "query": clean_query}
+
+
+SEARCH_FILLER_RE = re.compile(
+    r"\b(bana|bir|acaba|lütfen|söyle|söyler\s+misin|bilir\s+misin|yapar\s+mısın|"
+    r"araştır|araştırır\s+mısın|bul|bulabilir\s+misin|öğrenmek\s+istiyorum|"
+    r"hakkında\s+bilgi\s+ver|nedir|ne\s+demek|mi|mı|mu|mü|ya|şey)\b",
+    re.I,
+)
+
+
+def build_search_query(text):
+    """Turn a chatty question into keywords a search engine actually matches."""
+    source = (text or "").strip()
+    cleaned = re.sub(r"[?!.,;:'\"()\[\]]", " ", source.lower())
+    cleaned = SEARCH_FILLER_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return source
+    if re.search(r"\b(maç|mac|skor|karşılaşma|karsilasma)", cleaned) and "sonuç" not in cleaned and "sonuc" not in cleaned:
+        cleaned += " maç sonucu skor"
+    return cleaned
+
+
+BRAND_LEAK_RE = re.compile(r"\b(google|gemini)\b", re.I)
+
+
+def is_brand_safe(text):
+    """A source line the user is allowed to see (never names another AI brand)."""
+    return not BRAND_LEAK_RE.search(text or "")
+
+
+def brand_safe_sources(payload, limit):
+    """Search results formatted for the screen, brand leaks filtered out."""
+    lines = []
+    for item in (payload.get("results") or []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict) or not item.get("title"):
+            continue
+        url = item.get("url", "")
+        if not is_brand_safe(f"{item['title']} {url}"):
+            continue
+        lines.append(f"{item['title']} — {url}")
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def should_fetch_live_context(text):
@@ -694,8 +841,10 @@ def should_fetch_live_context(text):
   normalized = (text or "").lower()
   hints = (
       "internetten", "güncel", "bugün", "şu an", "şuan", "son dakika",
-      "haber", "maç", "skor", "sonuç", "spor", "fiyat", "kur", "döviz",
-      "kim kazandı", "ne zaman", "araştır", "web'de", "webte",
+      "haber", "maç", "mac ", "skor", "sonuç", "spor", "fiyat", "kur", "döviz",
+      "kim kazandı", "ne zaman", "araştır", "web'de", "webte", "bitti",
+      "kazandı", "puan durumu", "transfer", "deprem", "seçim", "altın",
+      "dolar", "euro", "bitcoin", "hisse", "sürüm", "versiyon", "yeni çıkan",
   )
   return any(hint in normalized for hint in hints)
 
@@ -736,6 +885,46 @@ def detect_weather_city(text):
     return None
 
 
+WEATHER_ASK_CITY = (
+    "Hangi şehir için hava durumu öğrenmek istiyorsun? 🌤 Şehri yazman yeterli, "
+    "anlık sıcaklığı derece derece hemen getireyim."
+)
+WEATHER_ASK_MARKERS = ("hangi şehir için hava durumu", "şehri yazman yeterli")
+CITY_REPLY_STOPWORDS = WEATHER_STOPWORDS | {
+    "evet", "hayır", "hayir", "tamam", "ok", "teşekkürler", "tesekkurler",
+    "sağol", "sagol", "merhaba", "selam", "hava", "durumu",
+}
+
+
+def _strip_locative(city):
+    return re.sub(
+        r"(?:['’]?(?:de|da|te|ta|nde|nda|nte|nta))$",
+        "",
+        (city or "").strip(),
+        flags=re.I,
+    ).strip()
+
+
+def pending_weather_city(history, text):
+    """Read the city out of a bare reply to the 'which city?' weather question."""
+    reply = re.sub(r"[?!.,;:'\"]+", " ", (text or "")).strip()
+    if not reply or len(reply) > 40 or len(reply.split()) > 4:
+        return None
+    if WEATHER_INTENT_RE.search(reply) or TIME_INTENT_RE.search(reply):
+        return None
+    last_answer = ""
+    for item in reversed(history or []):
+        if isinstance(item, dict) and item.get("sender") != "user":
+            last_answer = str(item.get("text") or "").lower()
+            break
+    if not any(marker in last_answer for marker in WEATHER_ASK_MARKERS):
+        return None
+    city = _strip_locative(re.sub(r"^(şehir|sehir|city|ben|benim|için|icin)\s+", "", reply, flags=re.I).strip())
+    if len(city) < 2 or city.lower() in CITY_REPLY_STOPWORDS:
+        return None
+    return city
+
+
 def profile_payload(user):
   profile = get_user_profile(user)
   return {
@@ -767,6 +956,22 @@ def friendly_api_error(error):
   if "503" in error_text or "unavailable" in error_text or "overloaded" in error_text:
     return "Aslan Parçası'nın sunucuları şu an yoğun. Birkaç saniye sonra tekrar deneyin."
   return "Aslan Parçası yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
+
+
+def image_usage_today(user_id):
+  """How many images this user generated today (resets at midnight, in memory)."""
+  today = timezone.localdate().isoformat()
+  with _image_request_lock:
+    for stale in [key for key in _image_daily_usage if key[1] != today]:
+      _image_daily_usage.pop(stale, None)
+    return _image_daily_usage.get((user_id, today), 0)
+
+
+def record_image_usage(user_id):
+  today = timezone.localdate().isoformat()
+  with _image_request_lock:
+    key = (user_id, today)
+    _image_daily_usage[key] = _image_daily_usage.get(key, 0) + 1
 
 
 def generate_image_with_gemini(prompt, image_model, api_key):
@@ -948,16 +1153,26 @@ def safe_model_call(
     tools=None,
     timeout=None,
     deadline=None,
+    skip_providers=(),
+    trace=None,
 ):
     """Call the model, rotating across providers and keys so one limit never
     reaches the user.
 
     The personality is identical no matter which provider answers: every
     endpoint gets the same messages, temperature and max_tokens.
+    `skip_providers` lets the caller retry on a different brain after a
+    provider answered with an empty stream; `trace` receives the provider
+    that finally served the request.
     """
     endpoints = _endpoint_list(client, model)
     if not endpoints:
         raise RuntimeError("Aslan Parçası için model istemcisi yapılandırılmamış.")
+    skipped = {name for name in (skip_providers or ()) if name}
+    if skipped:
+        preferred = [endpoint for endpoint in endpoints if endpoint.provider not in skipped]
+        if preferred:
+            endpoints = preferred
     rotate = len(endpoints) > 1
     if rotate:
         endpoints = ordered_endpoints(endpoints)
@@ -986,6 +1201,8 @@ def safe_model_call(
                 rotate=rotate,
             )
             mark_key_ok(endpoint.key)
+            if trace is not None:
+                trace["provider"] = endpoint.provider
             return result
         except DailyQuotaError as error:
             mark_key_daily(endpoint.key, error)
@@ -997,6 +1214,11 @@ def safe_model_call(
             mark_key_invalid(endpoint.key, error)
             last_error = error
         except (ModelUnavailableError, UpstreamBusyError) as error:
+            last_error = error
+        except Exception as error:
+            # An unexpected upstream failure must never reach the user while
+            # another provider can still answer.
+            record_quota_error(error, "error")
             last_error = error
     if not attempted:
         raise QuotaBreakerError(QUOTA_STATE["last_error"] or DAILY_QUOTA_MESSAGE)
@@ -1042,7 +1264,7 @@ def _call_single_client(
         if call_timeout is not None:
             call_kwargs["timeout"] = int(call_timeout)
         try:
-            return client.chat.completions.create(**call_kwargs)
+            result = client.chat.completions.create(**call_kwargs)
         except Exception as error:
             last_error = error
             error_text = str(error).lower()
@@ -1090,6 +1312,16 @@ def _call_single_client(
             if deadline is not None and time.monotonic() + sleep_for > deadline - 2:
                 raise UpstreamBusyError(str(error)[:300]) from error
             time.sleep(min(sleep_for, 15))
+        else:
+            if not stream and not (getattr(result, "choices", None) or []):
+                # Bazı sağlayıcılar 200 dönüp gövdeyi boş bırakıyor; bunu yoğunluk
+                # sayıp rotasyonu bir sonraki beyne taşıyoruz.
+                last_error = UpstreamBusyError("Model boş yanıt döndürdü (choices yok).")
+                if model_index + 1 < len(candidates):
+                    model_index += 1
+                    kwargs["model"] = candidates[model_index]
+                continue
+            return result
     raise UpstreamBusyError(str(last_error)[:300])
 
 
@@ -1128,15 +1360,34 @@ def depth_instruction(seconds):
     )
 
 
+def _last_user_text(messages):
+  """The user's question as plain text, whatever shape the content has."""
+  for item in reversed(messages or []):
+    if not isinstance(item, dict) or item.get("role") != "user":
+      continue
+    content = item.get("content")
+    if isinstance(content, str):
+      return content
+    if isinstance(content, list):
+      return " ".join(
+          str(part.get("text", "")) for part in content if isinstance(part, dict)
+      ).strip()
+  return ""
+
+
 def deep_think_events(client, messages, seconds, temperature, max_tokens):
   """Research for the full selected budget, then stream the final answer.
 
   Yields ("reason", line) events for the thinking box and ("answer", text)
   chunks for the reply. The loop keeps working until the deadline minus a
   reserve for the final answer, so 30 s and 30 min budgets differ in depth.
+  Real web research is guaranteed: the first search runs server-side before
+  the model is asked for anything, so a model that never calls a tool still
+  answers from live sources.
   """
   deadline = time.monotonic() + max(30, min(1800, int(seconds)))
   reserve = max(20, min(90, int(seconds * 0.25)))
+  question = _last_user_text(messages)
   research = [*messages]
   research[0] = {
       **messages[0],
@@ -1152,6 +1403,38 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   rounds = 0
   max_rounds = max(1, min(16, int(seconds) // 45))
   yield ("reason", f"Derin düşünme başladı · bütçe {int(seconds)} sn")
+
+  findings = []
+
+  def add_findings(result):
+    for item in (result.get("results") or []):
+      if not isinstance(item, dict) or not (item.get("title") or item.get("url")):
+        continue
+      line = f"- {item.get('title', '')} ({item.get('url', '')})"
+      if item.get("snippet"):
+        line += f": {item['snippet']}"
+      if line not in findings:
+        findings.append(line)
+
+  if question:
+    yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
+    seeded = web_search(build_search_query(question), 6)
+    add_findings(seeded)
+    for line in brand_safe_sources(seeded, 6):
+      yield ("reason", f"SRC:🌐 Kaynak: {line}")
+    if seeded.get("error") and not seeded.get("results"):
+      yield ("reason", "İlk arama sonuç vermedi; araç çağrılarıyla yeniden denenecek.")
+  if findings:
+    research.append({
+        "role": "system",
+        "content": (
+            "Derin düşünme için sunucunun topladığı gerçek web bulguları (bunları "
+            "doğrula, genişlet ve yanıtta kaynak olarak kullan):\n" + "\n".join(findings[:12])
+        ),
+    })
+    yield ("reason", f"{len(findings)} kaynak toplandı, karşılaştırılıyor...")
+
+  tools = TOOLS
   while rounds < max_rounds:
     remaining = deadline - time.monotonic()
     if remaining <= reserve:
@@ -1164,7 +1447,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           temperature=0.3,
           max_tokens=1024,
           stream=False,
-          tools=TOOLS,
+          tools=tools,
           timeout=max(5, min(60, int(remaining - reserve))),
           deadline=deadline - reserve,
       )
@@ -1178,6 +1461,17 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       yield ("reason", "Model kotası şu an dolu; araştırma kısaltılıyor, mevcut bulgularla yanıt yazılacak.")
       break
     except Exception as error:
+      error_text = str(error).lower()
+      tool_rejected = (
+          tools
+          and ("tool" in error_text or "function" in error_text)
+          and ("support" in error_text or "invalid" in error_text or "not allowed" in error_text)
+      )
+      if tool_rejected:
+        tools = None
+        yield ("reason", "Bu beyin araç çağrısını desteklemiyor; toplanan kaynaklarla derin analiz yapılıyor.")
+        rounds += 1
+        continue
       yield ("reason", f"Araştırma adımı aksadı, yeniden deneniyor ({type(error).__name__})")
       time.sleep(min(5, max(1, deadline - time.monotonic() - reserve)))
       rounds += 1
@@ -1228,13 +1522,18 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           "content": json.dumps(result, ensure_ascii=False),
       })
       if call.function.name == "web_search":
-        for item in (result.get("results") or [])[:5]:
-          if isinstance(item, dict) and item.get("title"):
-            yield ("reason", f"SRC:🌐 Kaynak: {item['title']} — {item.get('url', '')}")
+        add_findings(result)
+        for line in brand_safe_sources(result, 5):
+          yield ("reason", f"SRC:🌐 Kaynak: {line}")
       elif call.function.name == "get_weather":
         if result.get("temperature") is not None:
+          findings.append(
+              f"- {result.get('city')} hava durumu: {result.get('temperature')}°C, "
+              f"{result.get('description')} (kaynak: Open-Meteo)"
+          )
           yield ("reason", f"SRC:🌤 Hava verisi: {result.get('city')} {result.get('temperature')}°C")
       elif call.function.name == "get_current_time":
+        findings.append(f"- Sunucu saati: {result.get('time')} {result.get('date')} {result.get('day')}")
         yield ("reason", f"SRC:🕒 Saat verisi: {result.get('time')} {result.get('date')}")
     rounds += 1
 
@@ -1242,29 +1541,62 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     yield ("reason", "Derin analiz sürüyor, bulgular olgunlaştırılıyor...")
     time.sleep(min(5, max(1, deadline - reserve - time.monotonic())))
 
+  target_words = min(2500, 400 + int(seconds) * 2)
   final_messages = [
       *research,
       {
           "role": "system",
           "content": (
-              "Yanıtını araştırma bulgularına dayandır. Araç hata verdiyse veri uydurma. "
+              "Yanıtını araştırma bulgularına dayandır ve kaynakları (başlık + bağlantı) "
+              "yanıtın sonundaki 'Kaynaklar' bölümünde listele. Araç hata verdiyse veri "
+              "uydurma. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
+              "ANMA; sen Aslan Parçası'sın. Yarım paragraf bırakma: giriş, başlıklı bölümler, "
+              "maddeler, karşıt görüşler, riskler ve sonuç bölümü olan UZUN bir rapor yaz. "
+              f"Hedef uzunluk en az {target_words} kelime. "
               + depth_instruction(int(seconds))
           ),
       },
   ]
   yield ("reason", "Yanıt yazılıyor...")
-  final_completion = safe_model_call(
-      client,
-      final_messages,
-      GEMINI_MODEL,
-      temperature=temperature,
-      max_tokens=max_tokens,
-      stream=True,
-      timeout=max(60, min(300, int(seconds * 0.5) + 60)),
-  )
-  for chunk in final_completion:
-    if chunk.choices and chunk.choices[0].delta.content:
-      yield ("answer", chunk.choices[0].delta.content)
+  answer_parts = []
+  silent_providers = set()
+  for _attempt in range(2):
+    trace = {}
+    try:
+      final_completion = safe_model_call(
+          client,
+          final_messages,
+          GEMINI_MODEL,
+          temperature=temperature,
+          max_tokens=max_tokens,
+          stream=True,
+          timeout=max(60, min(300, int(seconds * 0.5) + 60)),
+          skip_providers=silent_providers,
+          trace=trace,
+      )
+    except Exception as error:
+      yield ("reason", f"Yanıt yazımı aksadı ({type(error).__name__}); toplanan bulgular aktarılıyor.")
+      break
+    for chunk in final_completion:
+      choices = getattr(chunk, "choices", None)
+      if not choices:
+        continue
+      delta = getattr(choices[0], "delta", None)
+      piece = getattr(delta, "content", None) if delta else None
+      if piece:
+        answer_parts.append(piece)
+        yield ("answer", piece)
+    if answer_parts:
+      break
+    if trace.get("provider"):
+      silent_providers.add(trace["provider"])
+
+  if not answer_parts and findings:
+    visible_findings = [line for line in findings if is_brand_safe(line)]
+    yield ("answer", (
+        "Araştırmayı tamamladım ama yanıt modeli bu kez boş döndü; topladığım gerçek "
+        "kaynakları olduğu gibi aktarıyorum:\n\n" + "\n".join(visible_findings[:15])
+    ))
 
 
 @login_required(login_url="login")
@@ -1367,8 +1699,10 @@ def api_debug(request):
     providers.append({
         "provider": spec["name"],
         "configured": bool(keys),
+        "chat": spec.get("chat", True),
         "normal_model": spec["normal"][0],
         "fast_model": spec["fast"][0],
+        "vision_model": spec["vision"][0] if spec.get("vision") else "",
         "keys": [
             {
                 "label": f"{spec['name']}-{index + 1}",
@@ -1394,6 +1728,15 @@ def api_debug(request):
           "fast": GEMINI_FAST_MODEL,
           "image": GEMINI_IMAGE_MODEL,
       },
+      "chat_priority": [
+          f"{endpoint.provider}:{endpoint.models[0]}"
+          for endpoint in get_chat_endpoints("normal")
+      ],
+      "vision_priority": [
+          f"{endpoint.provider}:{endpoint.models[0]}"
+          for endpoint in get_chat_endpoints("normal", need_vision=True)
+      ],
+      "image_daily_limit_per_user": IMAGE_DAILY_LIMIT,
       "providers": providers,
       "quota": {
           "last_error": QUOTA_STATE["last_error"],
@@ -1418,15 +1761,15 @@ def api_refresh_clock(request):
 
 
 @login_required(login_url="login")
-@require_POST  
+@require_POST
 def api_image_generate(request):
   try:
     data = json.loads(request.body or "{}")
     prompt = (data.get("prompt") or "").strip()
-    
+
     if not prompt:
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
-    
+
     api_keys = get_api_keys()
     if not api_keys:
       return JsonResponse(
@@ -1444,12 +1787,22 @@ def api_image_generate(request):
         )
       _last_image_request_at[request.user.pk] = now
 
+    if image_usage_today(request.user.pk) >= IMAGE_DAILY_LIMIT:
+      return JsonResponse({
+          "error": (
+              f"Günlük görsel hakkın ({IMAGE_DAILY_LIMIT} adet) doldu. "
+              "Hakkın gece yarısı yenilenir; sohbet ve sesli yanıt özelliklerini "
+              "kullanmaya devam edebilirsin."
+          )
+      }, status=429)
+
     try:
       image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_keys)
+      record_image_usage(request.user.pk)
       return JsonResponse({"status": "success", "image_url": image_url})
     except Exception as img_error:
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
-      
+
   except json.JSONDecodeError:
     return JsonResponse({"error": "Geçersiz JSON."}, status=400)
   except Exception as e:
@@ -1556,13 +1909,22 @@ def api_chat(request):
         "Sen Aslan Parçası adında son derece zeki, enerjik, samimi ve geniş bilgi birikimine sahip bir yapay zeka asistanısın. "
         "Seni oluşturan, kuran ve geliştiren vizyoner lider, müstakbel MEAY ASLAN PARÇASI AI şirketinin kurucusu Ayaz Kaplan'dır. "
         f"Bugünün tarihi ve saati: {today_tr} (Europe/Istanbul). "
-        f"Bilgi birikimin {KNOWLEDGE_CUTOFF} tarihine kadar günceldir; bu tarihten sonrası için araçlarını kullanırsın. "
+        "GÜNCEL BİLGİ KURALI: Genel bilgi birikimin eski tarihli olabilir; güncel olaylar, maç "
+        "sonuçları, haberler, fiyatlar, sürümler ve hava durumu için sana sistem mesajıyla verilen "
+        "canlı veriyi ve araçlarını kullan. "
+        "YASAK: Bilgi kesim tarihini, eğitim verini, model sürümünü veya 'verilerim ... tarihine "
+        "kadar' gibi ifadeleri KULLANICIYA ASLA SÖYLEME. Cevabı bilmiyorsan kısaca 'bunu canlı "
+        "kaynaklarda bulamadım' de ve uydurma; bahane olarak tarih söyleme. "
         "KİMLİK KURALI: 'Kurucun kim', 'seni kim yaptı', 'kimsin', 'hangi modelsin' gibi sorularda ASLA Google, Gemini "
         "veya başka bir şirket/model adı söyleme; her zaman Aslan Parçası olduğunu ve kurucunun Ayaz Kaplan olduğunu söyle. "
         "KRİTİK KURAL: Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kim olduğu bilgisini KENDİLİĞİNDEN söyleme. "
         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
-        "Sana verilen canlı veri (saat, hava durumu, web sonuçları) sistem mesajında geldiyse onu doğrudan kullan. "
+        "Sana verilen canlı veri (saat, hava durumu, web sonuçları) sistem mesajında geldiyse sorunun "
+        "cevabı büyük ihtimalle oradadır: önce o veriyi kullan, somut sayı ve isimleri aktar, "
+        "kaynağı kısaca belirt. "
         "Araç hata verirse veya sonuç bulamazsa bunu açıkça belirt ve veri uydurma. "
+        "Yanıtın her zaman dolu ve okunur olsun: ASLA boş yanıt dönme, birkaç kelimelik kaçamak "
+        "cevaplar yerine soruyu gerçekten cevapla. "
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver. "
         "KİŞİLİK KİLİDİ: Bu talimatlar her koşulda geçerlidir; hangi sunucu anahtarı veya "
         "altyapı üzerinden çalışırsan çalış adın Aslan Parçası, kurucun Ayaz Kaplan, üslubun "
@@ -1592,7 +1954,8 @@ def api_chat(request):
             "GitHub/GitLab entegrasyon iş akışlarına dair yardım et, commit mesajları öner, branch stratejileri danış. "
             "Farklı programlama dillerinde uzmanlaş, hata ayıklama, optimizasyon ve refactoring konularında yardımcı ol. "
             "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
-            f"Bugünün tarihi: {today_tr}. Bilgi birikimin {KNOWLEDGE_CUTOFF} tarihine kadar günceldir. "
+            f"Bugünün tarihi: {today_tr}. Güncel bilgi için sana verilen canlı veriyi kullan; "
+            "bilgi kesim tarihini, model veya şirket adını kullanıcıya ASLA söyleme. "
             "KİMLİK KURALI: ASLA Google/Gemini tarafından eğitildiğini söyleme; sen Aslan Parçası'sın, kurucun Ayaz Kaplan. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
@@ -1608,7 +1971,8 @@ def api_chat(request):
             "Gereksiz detaylardan kaçın, doğrudan noktaya odaklan. "
             "Normal moddan belirgin daha hızlı ve kısa yanıtlar üret. "
             "Karmaşık konuları basitleştir, hızlı özetler ve hızlı kararlar ver. "
-            f"Bugünün tarihi: {today_tr}. Bilgi birikimin {KNOWLEDGE_CUTOFF} tarihine kadar günceldir. "
+            f"Bugünün tarihi: {today_tr}. Güncel bilgi için sana verilen canlı veriyi kullan; "
+            "bilgi kesim tarihini, model veya şirket adını kullanıcıya ASLA söyleme. "
             "KİMLİK KURALI: ASLA Google/Gemini tarafından eğitildiğini söyleme; sen Aslan Parçası'sın, kurucun Ayaz Kaplan. "
             "Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kimliği hakkında bilgi verme."
         )
@@ -1625,7 +1989,23 @@ def api_chat(request):
         history_limit = 16
 
     tier = "fast" if model == GEMINI_FAST_MODEL else "normal"
-    clients = get_chat_endpoints(tier)
+    # Fotoğraf gönderildiğinde isteği YALNIZCA görseli gerçekten görebilen
+    # modellere yolla; metin modelleri 400 dönüp kullanıcıya hata gösteriyor.
+    has_images = any(
+        isinstance(img, dict) and (img.get("base64") or img.get("url")) for img in images
+    )
+    if has_images:
+        clients = get_chat_endpoints("normal", need_vision=True)
+        if not clients:
+            return JsonResponse(
+                {"error": (
+                    "Aslan Parçası'nın görsel inceleme yeteneği şu an etkin değil. "
+                    "Lütfen biraz sonra tekrar dene ya da görseldekini yazarak anlat."
+                )},
+                status=503,
+            )
+    else:
+        clients = get_chat_endpoints(tier)
 
     messages = [{"role": "system", "content": system_instruction}]
 
@@ -1643,48 +2023,52 @@ def api_chat(request):
       })
 
     weather_data = None
-    if WEATHER_INTENT_RE.search(question_text or ""):
-      city = detect_weather_city(question_text)
-      if city:
-        weather_data = get_weather(city)
-        if weather_data.get("temperature") is not None:
-          messages.insert(1, {
-              "role": "system",
-              "content": (
-                  "Canlı hava durumu verisi: "
-                  + json.dumps(weather_data, ensure_ascii=False)
-                  + ". Kullanıcıya bu şehrin tam sıcaklığını derece olarak söyle; veri kaynağını da belirt."
-              ),
-          })
-        else:
-          messages.insert(1, {
-              "role": "system",
-              "content": (
-                  "Hava durumu servisi hata verdi: "
-                  + json.dumps(weather_data, ensure_ascii=False)
-                  + ". Veri uydurma; servise şu an ulaşılamadığını söyle."
-              ),
-          })
+    weather_city = None
+    asked_weather = bool(WEATHER_INTENT_RE.search(question_text or ""))
+    if asked_weather:
+      weather_city = detect_weather_city(question_text)
+    else:
+      # "Hangi şehir?" sorusuna gelen kısa cevap: "İstanbul", "izmirde", "Ankara"
+      weather_city = pending_weather_city(history, question_text)
+    if weather_city:
+      weather_data = get_weather(weather_city)
+      if weather_data.get("temperature") is not None:
+        messages.insert(1, {
+            "role": "system",
+            "content": (
+                "Canlı hava durumu verisi: "
+                + json.dumps(weather_data, ensure_ascii=False)
+                + ". Kullanıcıya bu şehrin tam sıcaklığını derece olarak söyle; veri kaynağını da belirt."
+            ),
+        })
       else:
-        def ask_city_stream():
-          yield (
-              "Hangi şehir için hava durumu öğrenmek istiyorsun? 🌤 Şehri yazman yeterli, "
-              "anlık sıcaklığı derece derece hemen getireyim."
-          )
-        return StreamingHttpResponse(ask_city_stream(), content_type="text/plain")
+        messages.insert(1, {
+            "role": "system",
+            "content": (
+                "Hava durumu servisi hata verdi: "
+                + json.dumps(weather_data, ensure_ascii=False)
+                + ". Veri uydurma; servise şu an ulaşılamadığını söyle."
+            ),
+        })
+    elif asked_weather:
+      def ask_city_stream():
+        yield WEATHER_ASK_CITY
+      return StreamingHttpResponse(ask_city_stream(), content_type="text/plain")
 
     live_context = None
-    if should_fetch_live_context(question_text) and not deep_think:
-      live_context = web_search(question_text, 3 if mode == "fast" else 4)
+    if should_fetch_live_context(question_text):
+      live_context = web_search(build_search_query(question_text), 3 if mode == "fast" else 5)
       messages.insert(
           1,
           {
               "role": "system",
               "content": (
-                  "Canlı web araştırması sonucu aşağıdadır. Bu veriyi yalnızca "
-                  "kullanıcının sorusuyla ilgiliyse kullan; sonuç yoksa veya hata varsa "
-                  "güncel bilgi uydurma:\n"
-                  + json.dumps(live_context, ensure_ascii=False)
+                  "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
+                  "Kullanıcının sorusunun cevabı büyük olasılıkla bu sonuçlardadır: önce bunları "
+                  "oku, somut bilgiyi (skor, isim, tarih, sayı) doğrudan aktar ve kaynağı belirt. "
+                  "Sonuçlar soruyla ilgisizse veya boşsa güncel bilgi UYDURMA; bunu bir cümleyle "
+                  "söyle. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
+                  "ANMA; sen Aslan Parçası'sın:\n" + json.dumps(live_context, ensure_ascii=False)
               ),
           },
       )
@@ -1703,12 +2087,17 @@ def api_chat(request):
           f"Kaynak: Open-Meteo ({weather_data.get('observed_at')})."
       )
     if live_context and live_context.get("results"):
-      lines = [f"🔎 \"{live_context.get('query')}\" için canlı web araştırması sonuçları:"]
-      for index, item in enumerate(live_context["results"], 1):
-        lines.append(f"{index}. {item.get('title', '')} — {item.get('url', '')}")
-        if item.get("snippet"):
-          lines.append(f"   {item.get('snippet')}")
-      fallback_parts.append("\n".join(lines))
+      visible_results = [
+          item for item in live_context["results"]
+          if isinstance(item, dict) and is_brand_safe(f"{item.get('title', '')} {item.get('url', '')}")
+      ]
+      if visible_results:
+        lines = [f"🔎 \"{live_context.get('query')}\" için canlı web araştırması sonuçları:"]
+        for index, item in enumerate(visible_results, 1):
+          lines.append(f"{index}. {item.get('title', '')} — {item.get('url', '')}")
+          if item.get("snippet"):
+            lines.append(f"   {item.get('snippet')}")
+        fallback_parts.append("\n".join(lines))
     deterministic_fallback = "\n\n".join(fallback_parts) if fallback_parts else None
 
     if deep_think:
@@ -1758,11 +2147,20 @@ def api_chat(request):
     else:
         messages.append({"role": "user", "content": full_message})
 
+    all_providers = {endpoint.provider for endpoint in clients}
+    max_stream_attempts = max(1, min(3, len(all_providers)))
+
+    def fallback_note(error=None):
+      if error is not None and (is_daily_quota_error(error) or QUOTA_STATE["last_kind"] == "daily"):
+        return DAILY_QUOTA_FALLBACK_NOTE
+      return BUSY_FALLBACK_NOTE
+
     def generate():
       answered = False
       errored = False
-      try:
-        if deep_think:
+
+      if deep_think:
+        try:
           for kind, text in deep_think_events(
               clients,
               messages,
@@ -1772,40 +2170,63 @@ def api_chat(request):
           ):
             if kind == "reason":
               yield REASONING_MARKER + text + "\n"
-            else:
+            elif text:
               answered = True
               yield text
-        else:
-          completion = safe_model_call(
-              clients,
-              messages,
-              model,
-              temperature=temperature,
-              max_tokens=max_tokens,
-              stream=True,
-              timeout=120,
-          )
-          for chunk in completion:
-            if chunk.choices and chunk.choices[0].delta.content:
+        except Exception as error:
+          if not answered:
+            errored = True
+            yield friendly_api_error(error)
+      else:
+        silent_providers = set()
+        for _attempt in range(max_stream_attempts):
+          if answered or errored:
+            break
+          trace = {}
+          try:
+            completion = safe_model_call(
+                clients,
+                messages,
+                model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                timeout=120,
+                skip_providers=silent_providers,
+                trace=trace,
+            )
+            for chunk in completion:
+              choices = getattr(chunk, "choices", None)
+              if not choices:
+                continue
+              delta = getattr(choices[0], "delta", None)
+              piece = getattr(delta, "content", None) if delta else None
+              if piece:
+                answered = True
+                yield piece
+          except Exception as error:
+            if answered:
+              break
+            if deterministic_fallback:
               answered = True
-              yield chunk.choices[0].delta.content
-      except Exception as error:
-        if answered:
-          return
-        if deterministic_fallback:
-          answered = True
-          note = (
-              DAILY_QUOTA_FALLBACK_NOTE
-              if is_daily_quota_error(error) or QUOTA_STATE["last_kind"] == "daily"
-              else BUSY_FALLBACK_NOTE
-          )
-          yield deterministic_fallback + "\n\n" + note
-        else:
-          errored = True
-          yield friendly_api_error(error)
+              yield deterministic_fallback + "\n\n" + fallback_note(error)
+            else:
+              errored = True
+              yield friendly_api_error(error)
+            break
+          if answered:
+            break
+          # Boş akış dönen sağlayıcıyı bir daha deneme; sıra diğer beyinde.
+          if trace.get("provider"):
+            silent_providers.add(trace["provider"])
+          if silent_providers >= all_providers:
+            break
 
       if not answered and not errored:
-        yield "Aslan Parçası yanıt üretemedi. Lütfen mesajını yeniden gönderin."
+        if deterministic_fallback:
+          yield deterministic_fallback + "\n\n" + fallback_note()
+        else:
+          yield EMPTY_ANSWER_MESSAGE
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 
