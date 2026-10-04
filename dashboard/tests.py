@@ -105,6 +105,7 @@ class ImageGenerationTests(TestCase):
 
     def test_dedicated_image_api_returns_embedded_generated_image(self):
         image_response = Mock()
+        image_response.status_code = 200
         image_response.json.return_value = {
             "candidates": [{
                 "content": {
