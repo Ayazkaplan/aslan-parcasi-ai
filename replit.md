@@ -31,5 +31,9 @@ Uygulama kapalıyken kendi Python sürecinin çalışması mümkün değildir; b
 
 ## Yapay zekâ özellikleri
 
-Sohbet için yalnızca `gemini-3.5-flash-lite`, görsel oluşturma için Gemini image generation endpoint'i kullanılır. Kullanıcı promptu ve gerçekçi/kompozisyon talepleri istek içinde açıkça korunur. Aynı kullanıcıdan gelen görsel istekleri arasında kısa bir koruma aralığı vardır.
+Sohbet için ücretsiz sağlayıcılar (Groq, Mistral, OpenRouter) arasında rotasyon yapılır; Google kotası görsel üretimi, ses çevirisi ve görsel anlamaya ayrılmıştır. Görsel oluşturmada önce Gemini image generation endpoint'i denenir; tüm anahtarlar kota/yoğunluk nedeniyle kullanılamazsa anahtarsız ücretsiz yedek servis (Pollinations) devreye girer, böylece kullanıcı asla "kota doldu" hatası almaz. Türkçe görsel promptları yedek servise gönderilmeden önce yaygın kelimeler İngilizce karşılıklarıyla desteklenir. Kota sınıflandırması dakikalık (per-minute) ve günlük (per-day) sınırları ayırt eder; dakikalık sınırlar kısa beklemeden sonra kendiliğinden açılır. Kullanıcı promptu ve gerçekçi/kompozisyon talepleri istek içinde açıkça korunur. Aynı kullanıcıdan gelen görsel istekleri arasında kısa bir koruma aralığı vardır.
 Anahtar tanımlı değilse uygulama çalışmaya devam eder ancak ilgili isteklerde kullanıcıya açık bir yapılandırma hatası gösterir.
+
+## Hava durumu
+
+Hava durumu Open-Meteo'dan anahtarsız alınır. Şehir çözümlemesi esnektir: "Balıkesir Erdek" gibi il+ilçe yazımlarında ilçe tek başına denenir, "Erdek'te" gibi bulunma ekli yazımlar ve küçük/büyük harf farkları normalize edilir, sonuçlar ülke/il/nüfus puanlamasıyla seçilir.
