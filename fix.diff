@@ -1,0 +1,612 @@
+diff --git a/dashboard/templates/dashboard/index.html b/dashboard/templates/dashboard/index.html
+index bb9532f..97d01a5 100644
+--- a/dashboard/templates/dashboard/index.html
++++ b/dashboard/templates/dashboard/index.html
+@@ -471,7 +471,7 @@
+         }
+ 
+         .gold-brand-text {
+-            display: none;
++            display: inline-block;
+             max-width: 0;
+             opacity: 0;
+             white-space: nowrap;
+@@ -480,7 +480,7 @@
+             letter-spacing: 1px;
+             margin-left: 0;
+             overflow: hidden;
+-            transition: max-width 0.5s ease, opacity 0.3s ease, margin-left 0.3s ease;
++            transition: max-width 0.45s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, margin-left 0.3s ease;
+             background: linear-gradient(135deg, #fff2a3 0%, #ffd700 30%, #cca010 70%, #fff2a3 100%);
+             -webkit-background-clip: text;
+             -webkit-text-fill-color: transparent;
+@@ -490,7 +490,6 @@
+         }
+ 
+         .ai-header-container.expanded .gold-brand-text {
+-            display: inline-block;
+             max-width: 180px;
+             opacity: 1;
+             margin-left: 8px;
+@@ -1979,6 +1978,10 @@
+         document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+         document.getElementById(`mode-${mode}`).classList.add('active');
+ 
++        // Hızlı Analiz anında kısa yanıt verir; uzun düşünme tuşu bu modda
++        // mantıksız olduğu için gizlenir ve açık ayar varsa kapatılır.
++        updateThinkButtonVisibility();
++
+         const modeTitles = {
+             'normal': 'Normal Asistan',
+             'code': 'Kod Asistanı',
+@@ -1988,6 +1991,17 @@
+         createNewChat(modeTitles[mode], false);
+     }
+ 
++    function updateThinkButtonVisibility() {
++        const thinkBtn = document.getElementById('thinkBtn');
++        if (!thinkBtn) return;
++        if (currentMode === 'fast') {
++            thinkBtn.style.display = 'none';
++            closeDeepThinkSettings();
++        } else {
++            thinkBtn.style.display = '';
++        }
++    }
++
+     function filterChats() {
+         const query = document.getElementById('chatSearchInput').value.toLowerCase();
+         document.querySelectorAll('.chat-item').forEach(item => {
+@@ -2111,6 +2125,7 @@
+             const activeBtn = document.getElementById(`mode-${currentMode}`);
+             if (activeBtn) activeBtn.classList.add('active');
+         }
++        updateThinkButtonVisibility();
+         renderChatList();
+         renderMessages();
+     }
+diff --git a/dashboard/tests.py b/dashboard/tests.py
+index 1e79457..88ac860 100644
+--- a/dashboard/tests.py
++++ b/dashboard/tests.py
+@@ -105,6 +105,7 @@ class ImageGenerationTests(TestCase):
+ 
+     def test_dedicated_image_api_returns_embedded_generated_image(self):
+         image_response = Mock()
++        image_response.status_code = 200
+         image_response.json.return_value = {
+             "candidates": [{
+                 "content": {
+diff --git a/dashboard/views.py b/dashboard/views.py
+index a616eee..c83a7c8 100644
+--- a/dashboard/views.py
++++ b/dashboard/views.py
+@@ -4,13 +4,14 @@ import os
+ import base64
+ import datetime as dt
+ import io
++import random
+ import re
+ import threading
+ import time
+ import requests
+ from collections import namedtuple
+ from html import unescape
+-from urllib.parse import parse_qs, unquote, urlparse
++from urllib.parse import parse_qs, quote, unquote, urlparse
+ from zoneinfo import ZoneInfo
+ from django.contrib.auth import login, logout
+ from django.contrib.auth.decorators import login_required
+@@ -178,9 +179,22 @@ class UpstreamHTTPError(RuntimeError):
+ 
+ 
+ def is_daily_quota_error(error):
+-  """True when the provider reports the daily allowance is exhausted."""
++  """True only when the provider says the DAILY allowance is exhausted.
++
++  Gemini uses the same "exceeded your current quota" sentence for both
++  per-minute and per-day limits; the quota id in the body tells them apart.
++  Per-minute limits recover in seconds, so treating them as daily benched
++  every key until midnight and broke image generation for the whole day.
++  """
+   text = str(error).lower()
+-  return "exceeded your current quota" in text or "plan and billing" in text
++  if "exceeded your current quota" not in text and "plan and billing" not in text:
++    return False
++  compact = re.sub(r"[\s_\-]+", "", text)
++  mentions_minute = "perminute" in compact or "per_minute" in text or "per minute" in text
++  mentions_day = "perday" in compact or "per_day" in text or "per day" in text or "daily" in text
++  if mentions_minute and not mentions_day:
++    return False
++  return True
+ 
+ 
+ def record_quota_error(error, kind):
+@@ -529,7 +543,11 @@ TOOLS = [
+                 "properties": {
+                     "city": {
+                         "type": "string",
+-                        "description": "City name (e.g., Istanbul, Ankara, Izmir)"
++                        "description": (
++                            "Yalnızca yerleşim adı: 'Erdek', 'Balıkesir', 'Istanbul' gibi. "
++                            "İl ve ilçeyi birlikte yazma ('Balıkesir Erdek' YANLIŞ); kullanıcı "
++                            "ilçe söylediyse yalnızca ilçe adını ver."
++                        )
+                     },
+                     "country": {
+                         "type": "string",
+@@ -594,6 +612,84 @@ def get_current_time():
+     }
+ 
+ 
++_TR_FOLD_MAP = str.maketrans({
++    "ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u",
++    "â": "a", "î": "i", "û": "u",
++})
++
++
++def _fold_tr(text):
++    """Turkish-insensitive, case-insensitive comparison form of a place name."""
++    return (text or "").lower().translate(_TR_FOLD_MAP).strip()
++
++
++def _weather_query_variants(city):
++    """Search candidates from the raw user/model text, most specific first.
++
++    Handles 'Balıkesir Erdek' (province + district), 'Erdek'te' (locative
++    suffix), lowercase 'erdek' and diacritic-free spellings: every variant
++    list includes progressive word drops and ASCII-folded forms.
++    """
++    base = re.sub(r"\s+", " ", (city or "").strip(" ?!.,'’\"’"))
++    if not base:
++        return []
++    variants = []
++    # "Erdek'te" / "izmirde" gibi bulunma ekli yazımlar
++    stripped = _strip_locative(base)
++    if stripped and stripped != base:
++        variants.append(stripped)
++    words = (stripped or base).split()
++    # "balıkesir erdek" -> "erdek" (il + ilçe yazımı)
++    for start in range(len(words)):
++        candidate = " ".join(words[start:])
++        if candidate and candidate not in variants:
++            variants.append(candidate)
++    # "erdek balıkesir" -> "erdek" (ilçe + il yazımı)
++    for end in range(len(words) - 1, 0, -1):
++        candidate = " ".join(words[:end])
++        if candidate and candidate not in variants:
++            variants.append(candidate)
++    folded = []
++    for variant in variants:
++        form = _fold_tr(variant)
++        if form and form not in variants and form not in folded:
++            folded.append(form)
++    return variants + folded
++
++
++def _geocode_candidates(variant):
++    response = requests.get(
++        "https://geocoding-api.open-meteo.com/v1/search",
++        params={"name": variant, "count": 10, "language": "tr", "format": "json"},
++        timeout=10,
++    )
++    response.raise_for_status()
++    return response.json().get("results") or []
++
++
++def _pick_location(matches, country, original_city, variant):
++    """Rank geocoder hits: right country, matching province, exact name, population."""
++    original_words = [_fold_tr(word) for word in _strip_locative(original_city).split()]
++
++    def score(result):
++        value = 0.0
++        if country and (result.get("country_code") or "").upper() == country:
++            value += 100.0
++        admin1 = _fold_tr(result.get("admin1") or "")
++        for word in original_words:
++            if word and len(word) >= 3 and (word in admin1 or (admin1 and admin1 in word)):
++                value += 40.0
++        name = _fold_tr(result.get("name") or "")
++        if name == _fold_tr(variant):
++            value += 25.0
++        elif name and (name in _fold_tr(variant) or _fold_tr(variant) in name):
++            value += 10.0
++        value += min(float(result.get("population") or 0), 2_000_000.0) / 100_000.0
++        return value
++
++    return max(matches, key=score)
++
++
+ def get_weather(city, country="TR"):
+     """Get current weather from Open-Meteo without a paid API key."""
+     city = (city or "").strip()
+@@ -602,21 +698,21 @@ def get_weather(city, country="TR"):
+         return {"error": "Hava durumunu bulmak için bir şehir adı gerekli."}
+ 
+     try:
+-        geo_response = requests.get(
+-            "https://geocoding-api.open-meteo.com/v1/search",
+-            params={"name": city, "count": 10, "language": "tr", "format": "json"},
+-            timeout=10,
+-        )
+-        geo_response.raise_for_status()
+-        matches = geo_response.json().get("results") or []
+-        if country:
+-            matches = sorted(
+-                matches,
+-                key=lambda result: result.get("country_code", "").upper() != country,
+-            )
+-        if not matches:
+-            return {"error": f"City '{city}' not found"}
+-        location = matches[0]
++        location = None
++        matches = []
++        for variant in _weather_query_variants(city):
++            matches = _geocode_candidates(variant)
++            if matches:
++                location = _pick_location(matches, country, city, variant)
++                break
++        if location is None:
++            return {
++                "error": (
++                    f"'{city}' adında bir yerleşim hava durumu kaynağında bulunamadı. "
++                    "İlçe adı geçiyorsa tek başına dene (örn. 'Balıkesir Erdek' yerine "
++                    "sadece 'Erdek'); olmazsa en yakın ili sor."
++                )
++            }
+         weather_response = requests.get(
+             "https://api.open-meteo.com/v1/forecast",
+             params={
+@@ -656,8 +752,10 @@ def get_weather(city, country="TR"):
+             99: "Kuvvetli dolulu fırtına",
+         }
+         weather_code = current.get("weather_code")
++        region = location.get("admin1") or ""
+         return {
+             "city": location.get("name", city),
++            "region": region,
+             "country": location.get("country", country),
+             "temperature": current.get("temperature_2m"),
+             "feels_like": current.get("apparent_temperature"),
+@@ -668,11 +766,11 @@ def get_weather(city, country="TR"):
+             "source": "Open-Meteo",
+         }
+     except requests.Timeout:
+-        return {"error": "Weather service timeout"}
++        return {"error": "Hava durumu servisi zaman aşımına uğradı; biraz sonra tekrar dene."}
+     except requests.RequestException as e:
+-        return {"error": f"Weather service error: {str(e)}"}
++        return {"error": f"Hava durumu servisine ulaşılamadı: {str(e)}"}
+     except Exception as e:
+-        return {"error": f"Weather error: {str(e)}"}
++        return {"error": f"Hava durumu hatası: {str(e)}"}
+ 
+ 
+ def _strip_tags(fragment):
+@@ -844,11 +942,42 @@ def web_search(query, num_results=5):
+ 
+ SEARCH_FILLER_RE = re.compile(
+     r"\b(bana|bir|acaba|lütfen|söyle|söyler\s+misin|bilir\s+misin|yapar\s+mısın|"
+-    r"araştır|araştırır\s+mısın|bul|bulabilir\s+misin|öğrenmek\s+istiyorum|"
+-    r"hakkında\s+bilgi\s+ver|nedir|ne\s+demek|mi|mı|mu|mü|ya|şey)\b",
++    r"araştır|araştırır\s+mısın|araştırırmısın|araştırır\s+mısınız|anlatır\s+mısın|"
++    r"anlatırmısın|anlat|açıkla|açıklar\s+mısın|bul|bulabilir\s+misin|"
++    r"öğrenmek\s+istiyorum|hakkında\s+bilgi\s+ver|nedir|ne\s+demek|"
++    r"mi|mı|mu|mü|misin|mısın|musun|müsün|misiniz|mısınız|ya|şey)\b",
+     re.I,
+ )
+ 
++# Türkçe hal/çekim ekleri arama motorunu yanıltıyor: "evreni" araması Evren
++# isimli dizi karakterini getiriyor, "evren" araması kozmosu. Gövdeyi bul.
++_TR_VOWELS = "aeıioöuü"
++_TR_PAST_SUFFIXES = ("dı", "di", "du", "dü", "tı", "ti", "tu", "tü")
++_TR_BUFFER_SUFFIXES = ("yı", "yi", "yu", "yü", "nı", "ni", "nu", "nü",
++                       "sı", "si", "su", "sü")
++
++
++def _strip_tr_case_suffix(word):
++    """'evreni' -> 'evren', 'dünyayı' -> 'dünya', 'keşfetti' -> 'keşfet'.
++
++    Kısa veya belirsiz kelimelere dokunulmaz; amaç mükemmel morfoloji değil,
++    arama motorunun anlayacağı bir gövde üretmek.
++    """
++    if len(word) < 5:
++        return word
++    for suffix in _TR_PAST_SUFFIXES:
++        if word.endswith(suffix) and len(word) - 2 >= 4:
++            return word[:-2]
++    if word[-1] in ("ı", "i", "u", "ü"):
++        stem1 = word[:-1]
++        if len(stem1) >= 4 and stem1[-1] not in _TR_VOWELS:
++            # Türkçe kelime 'y' ile bitmez: "dünyay" geçersiz gövde, tampon
++            # harfli iki harfli eki at ("dünyayı" -> "dünya").
++            if stem1[-1] == "y" and word.endswith(_TR_BUFFER_SUFFIXES):
++                return word[:-2]
++            return stem1
++    return word
++
+ 
+ def build_search_query(text):
+     """Turn a chatty question into keywords a search engine actually matches."""
+@@ -858,6 +987,8 @@ def build_search_query(text):
+     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+     if not cleaned:
+         return source
++    words = [_strip_tr_case_suffix(word) for word in cleaned.split()]
++    cleaned = " ".join(word for word in words if word) or cleaned
+     if re.search(r"\b(maç|mac|skor|karşılaşma|karsilasma)", cleaned) and "sonuç" not in cleaned and "sonuc" not in cleaned:
+         cleaned += " maç sonucu skor"
+     return cleaned
+@@ -1076,11 +1207,134 @@ def generate_image_with_gemini(prompt, image_model, api_key):
+   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
+ 
+ 
++# Yedek görsel servisi (Pollinations) Türkçe prompt'u zayıf anlıyor; sık
++# kullanılan görsel kelimelerini İngilizce karşılığıyla değiştiriyoruz.
++_TR_EN_IMAGE_WORDS = {
++    "kırmızı": "red", "mavi": "blue", "yeşil": "green", "sarı": "yellow",
++    "turuncu": "orange", "mor": "purple", "pembe": "pink", "siyah": "black",
++    "beyaz": "white", "gri": "gray", "kahverengi": "brown", "altın": "golden",
++    "gümüş": "silver", "turkuaz": "turquoise", "lacivert": "navy blue",
++    "aslan": "lion", "kedi": "cat", "köpek": "dog", "kuş": "bird",
++    "at": "horse", "kaplan": "tiger", "ayı": "bear", "kurt": "wolf",
++    "kartal": "eagle", "balık": "fish", "kelebek": "butterfly", "ejderha": "dragon",
++    "ev": "house", "araba": "car", "uçak": "airplane", "gemi": "ship",
++    "ağaç": "tree", "çiçek": "flower", "dağ": "mountain", "deniz": "sea",
++    "okyanus": "ocean", "nehir": "river", "göl": "lake", "orman": "forest",
++    "güneş": "sun", "ay": "moon", "yıldız": "star", "bulut": "cloud",
++    "gökkuşağı": "rainbow", "şehir": "city", "köy": "village", "kale": "castle",
++    "köprü": "bridge", "kule": "tower", "cam": "glass", "kitap": "book",
++    "logo": "logo", "rozet": "badge", "poster": "poster", "afiş": "poster",
++    "portre": "portrait", "manzara": "landscape", "karikatür": "cartoon",
++    "çizgi": "line", "film": "movie", "futbol": "soccer", "top": "ball",
++    "kız": "girl", "erkek": "boy", "kadın": "woman", "adam": "man",
++    "çocuk": "child", "bebek": "baby", "robot": "robot", "uzay": "space",
++    "gezegen": "planet", "galaksi": "galaxy", "roket": "rocket",
++    "görsel": "image", "resim": "painting", "fotoğraf": "photo",
++    "fotogerçekçi": "photorealistic", "gerçekçi": "realistic",
++    "minimalist": "minimalist", "vektör": "vector", "dijital": "digital",
++    "tasarım": "design", "arka plan": "background",
++    "bir": "a", "tane": "", "adet": "", "için": "for", "ile": "with",
++    "üzerinde": "on", "içinde": "in", "yanında": "next to",
++    "oluştur": "create", "çiz": "draw", "yap": "make", "üret": "generate",
++    "tasarla": "design", "istiyorum": "", "lütfen": "", "bana": "",
++    "gün batımı": "sunset", "gün doğumu": "sunrise", "gece": "night",
++    "sabah": "morning", "kar": "snow", "yağmur": "rain", "sis": "fog",
++    "plaj": "beach", "sahil": "coast", "çöl": "desert", "ada": "island",
++}
++_TR_LETTERS = "a-zçğıöşüâîû"
++
++
++def _image_prompt_en_hint(prompt):
++    """Turkish-heavy prompts get an English gloss so the fallback model
++    draws what was actually asked (it understands English far better).
++
++    Kelime kelime çalışır; hal ve iyelik ekleri gövdeye indirgenir
++    ("logosu" -> "logo" -> "logo", "uçak" -> "airplane").
++    """
++    def _lookup(token):
++        candidates = [token, _strip_tr_case_suffix(token)]
++        if len(token) > 4 and token[-1] in ("ı", "i", "u", "ü"):
++            candidates.append(token[:-2])  # iyelik: "logosu" -> "logo"
++        if token.endswith(("lar", "ler")) and len(token) > 5:
++            candidates.append(token[:-3])
++        for candidate in candidates:
++            if candidate in _TR_EN_IMAGE_WORDS:
++                return _TR_EN_IMAGE_WORDS[candidate]
++        return None
++
++    # Önce çok kelimeli deyimler ("arka plan" -> "background")
++    text = prompt.lower()
++    for phrase in sorted((w for w in _TR_EN_IMAGE_WORDS if " " in w), key=len, reverse=True):
++        text = re.sub(
++            r"(?<!["
++            + _TR_LETTERS
++            + r"])"
++            + re.escape(phrase)
++            + r"(?!["
++            + _TR_LETTERS
++            + r"])",
++            " " + _TR_EN_IMAGE_WORDS[phrase] + " ",
++            text,
++        )
++
++    out = []
++    for token in re.split(r"\s+", text):
++        clean = token.strip(".,;:!?()\"'")
++        if not clean:
++            continue
++        en = _lookup(clean)
++        if en is None:
++            out.append(token)
++        elif en:
++            out.append(en)
++    gloss = re.sub(r"\s+", " ", " ".join(out)).strip(" ,;")
++    return gloss
++
++
++def generate_image_with_pollinations(prompt):
++  """Keyless free image service; keeps 'görsel oluştur' alive when every
++  Gemini key is rate-limited or its daily image quota is gone."""
++  safe_prompt = re.sub(r"\s+", " ", (prompt or "").strip())[:480]
++  if not safe_prompt:
++    raise ValueError("Görsel için boş prompt gönderilemez.")
++  gloss = _image_prompt_en_hint(safe_prompt)
++  attempts = []
++  if gloss and gloss != safe_prompt.lower():
++    attempts.append(gloss)
++  attempts.append(safe_prompt)
++  last_error = None
++  for final_prompt in attempts:
++    for _try in range(2):
++      try:
++        url = (
++            f"https://image.pollinations.ai/prompt/{quote(final_prompt, safe='')}"
++            f"?width=1024&height=1024&nologo=true&model=flux&seed={random.randint(1, 999999)}"
++        )
++        response = requests.get(
++            url,
++            timeout=180,
++            headers={"User-Agent": "AslanParcasiAI/1.0 (+image-fallback)"},
++        )
++        response.raise_for_status()
++        content_type = (response.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
++        if not content_type.startswith("image/") or len(response.content) < 2048:
++          raise ValueError("Yedek görsel servisi geçerli bir görsel döndürmedi.")
++        return f"data:{content_type};base64,{base64.b64encode(response.content).decode('ascii')}"
++      except Exception as error:
++        last_error = error
++        time.sleep(2)
++  raise last_error if last_error is not None else ValueError(
++      "Yedek görsel servisi görsel üretemedi."
++  )
++
++
+ def generate_image_with_retry(prompt, image_model=None, api_keys=None):
+-  """Try every healthy key (and a fallback model) before giving up."""
++  """Try every healthy key (and a fallback model) before giving up.
++
++  When every Gemini key is blocked (or all attempts fail), the free keyless
++  fallback service still produces the image instead of showing a quota error.
++  """
+   keys = ordered_keys(api_keys)
+-  if not keys:
+-    raise ValueError("Görsel servisi için sunucu anahtarı tanımlı değil.")
+   models = []
+   for candidate in (image_model, GEMINI_IMAGE_MODEL, GEMINI_MODEL):
+     if candidate and candidate not in models:
+@@ -1110,9 +1364,17 @@ def generate_image_with_retry(prompt, image_model=None, api_keys=None):
+           mark_key_invalid(key, error)
+           break
+         # 400/404 -> this model can't serve images; 5xx/timeout -> next model then next key
++
++  # Anahtarlar tükendiyse ya da hepsi hata verdiyse ücretsiz yedek servisle dene.
++  try:
++    return generate_image_with_pollinations(prompt)
++  except Exception as fallback_error:
++    logger.warning("Pollinations image fallback failed: %s", str(fallback_error)[:200])
+   if not attempted:
+     raise QuotaBreakerError(QUOTA_STATE["last_error"] or DAILY_QUOTA_MESSAGE)
+-  raise last_error
++  raise last_error if last_error is not None else ValueError(
++      "Görsel servisi için sunucu anahtarı tanımlı değil."
++  )
+ 
+ 
+ def transcribe_audio(encoded, mime_type, api_keys=None):
+@@ -1479,6 +1741,38 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
+       if line not in findings:
+         findings.append(line)
+ 
++  # Süre dolana kadar aralıksız araştırma: model araç çağırmayı bıraksa bile
++  # sunucu farklı açılardan arama yapmaya devam eder.
++  RESEARCH_ANGLES = (
++      "nedir nasıl çalışır",
++      "tarihçesi gelişimi",
++      "güncel gelişmeler haberler",
++      "ilginç gerçekler sayılar",
++      "uzman görüşleri tartışmalar",
++      "sık sorulan sorular cevaplar",
++      "geleceği tahminler",
++      "örnekler detaylı açıklama",
++  )
++  angle_index = [0]
++
++  def extra_research_round():
++    """One more server-side search from a fresh angle; True when it ran."""
++    base = build_search_query(question) if question else ""
++    if not base:
++      return False
++    angle = RESEARCH_ANGLES[angle_index[0] % len(RESEARCH_ANGLES)]
++    angle_index[0] += 1
++    query = f"{base} {angle}"
++    yield ("reason", f"SRC:🔎 Canlı arama: {query[:90]}")
++    result = web_search(query, 5)
++    add_findings(result)
++    for line in format_source_lines(result, 5):
++      yield ("reason", f"SRC:🌐 Kaynak: {line}")
++    if result.get("error") and not result.get("results"):
++      yield ("reason", "Bu açıdan sonuç gelmedi; başka bir açı deneniyor...")
++    else:
++      yield ("reason", f"Toplam {len(findings)} bulgu toplandı, araştırma sürüyor...")
++
+   if question:
+     yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
+     seeded = web_search(build_search_query(question), 6)
+@@ -1549,9 +1843,11 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
+           "noktaları belirle; gerekirse araç çağır, değilse bulgularını maddele."
+       )
+       research.append({"role": "user", "content": gap_note})
+-      yield ("reason", "Bulgular gözden geçiriliyor, eksikler aranıyor...")
++      yield ("reason", "Bulgular gözden geçiriliyor, yeni açılardan araştırma sürüyor...")
++      # Boş beklemek yerine sunucu tarafında yeni bir açıdan arama yap.
++      if time.monotonic() < deadline - reserve:
++        yield from extra_research_round()
+       rounds += 1
+-      time.sleep(min(6, max(0, deadline - time.monotonic() - reserve)))
+       continue
+ 
+     research.append({
+@@ -1600,9 +1896,12 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
+         yield ("reason", f"SRC:🕒 Saat verisi: {result.get('time')} {result.get('date')}")
+     rounds += 1
+ 
++  # Bütçe bitene kadar bekleme yok: kalan süre boyunca farklı açılardan
++  # canlı arama yapılmaya devam eder, kullanıcı akışı sürekli görür.
+   while time.monotonic() < deadline - reserve:
+-    yield ("reason", "Derin analiz sürüyor, bulgular olgunlaştırılıyor...")
+-    time.sleep(min(5, max(1, deadline - reserve - time.monotonic())))
++    yield ("reason", "Derin analiz sürüyor, yeni kaynaklar taranıyor...")
++    yield from extra_research_round()
++    time.sleep(min(2, max(0.5, deadline - reserve - time.monotonic())))
+ 
+   target_words = min(2500, 400 + int(seconds) * 2)
+   final_messages = [
+@@ -1834,11 +2133,7 @@ def api_image_generate(request):
+       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
+ 
+     api_keys = get_api_keys()
+-    if not api_keys:
+-      return JsonResponse(
+-          {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
+-          status=503,
+-      )
++    # Anahtar yoksa bile ücretsiz yedek görsel servisi devreye girer.
+ 
+     now = time.monotonic()
+     with _image_request_lock:
+@@ -1982,6 +2277,8 @@ def api_chat(request):
+         "veya başka bir şirket/model adı söyleme; her zaman Aslan Parçası olduğunu ve kurucunun Ayaz Kaplan olduğunu söyle. "
+         "KRİTİK KURAL: Sana sorulmadıkça saat, tarih, hava durumu veya kurucunun kim olduğu bilgisini KENDİLİĞİNDEN söyleme. "
+         "Bu bilgileri SADECE kullanıcı açıkça sorduğunda ver. "
++        "İSİM KURALI: Kullanıcının veya kurucunun gerçek adını, kullanıcı açıkça istemedikçe "
++        "ürettiğin içeriklerin (kod, örnek veri, senaryo, metin) içine KENDİLİĞİNDEN ekleme. "
+         "Sana verilen canlı veri (saat, hava durumu, web sonuçları) sistem mesajında geldiyse sorunun "
+         "cevabı büyük ihtimalle oradadır: önce o veriyi kullan, somut sayı ve isimleri aktar, "
+         "kaynağı kısaca belirt. "
+@@ -2017,6 +2314,14 @@ def api_chat(request):
+             "GitHub/GitLab entegrasyon iş akışlarına dair yardım et, commit mesajları öner, branch stratejileri danış. "
+             "Farklı programlama dillerinde uzmanlaş, hata ayıklama, optimizasyon ve refactoring konularında yardımcı ol. "
+             "Kod örneklerinde her zaman gerçekçi ve kullanılabilir kod ver. "
++            f"KODDA İSİM KURALI: Ürettiğin kodun içine (değişken, yorum, örnek veri, ekran "
++            f"metni) kullanıcının veya kurucunun gerçek adını (örn. 'Ayaz Kaplan') KENDİLİĞİNDEN "
++            f"YAZMA; bu kesinlikle yasak. Kodda bir kullanıcı adı gerekiyorsa ve kullanıcı açıkça "
++            f"başka bir isim vermediyse kullanıcının kullanıcı adını kullan: '{request.user.username}'. "
++            "Kodda birden fazla isim gerekiyorsa ilkine bu kullanıcı adını, diğerlerine genel "
++            "isimler ver (kullanıcı Türkçe konuşuyorsa yaygın Türk isimleri, başka dilde "
++            "konuşuyorsa o dile uygun isimler). Aslan Parçası kendi adını başlık/marka olarak "
++            "kullanabilir ama kurucunun adını koda ekleme. "
+             f"Bugünün tarihi: {today_tr}. Güncel bilgi için sana verilen canlı veriyi kullan; "
+             "bilgi kesim tarihini, model veya şirket adını kullanıcıya ASLA söyleme. "
+             "KİMLİK KURALI: ASLA Google/Gemini tarafından eğitildiğini söyleme; sen Aslan Parçası'sın, kurucun Ayaz Kaplan. "
+diff --git a/replit.md b/replit.md
+index f998fca..11dcccc 100644
+--- a/replit.md
++++ b/replit.md
+@@ -36,4 +36,4 @@ Anahtar tanımlı değilse uygulama çalışmaya devam eder ancak ilgili istekle
+ 
+ ## Hava durumu
+ 
+-Hava durumu Open-Meteo'dan anahtarsız alınır. Şehir çözümlemesi esnektir: "Balıkesir Erdek" gibi il+ilçe yazımlarında ilçe tek başına denenir, "Erdek'te" gibi bulunma ekli yazımlar ve küçük/büyük harf farkları normalize edilir, sonuçlar ülke/il/nüfus puanlamasıyla seçilir.
++Hava durumu Open-Meteo'dan anahtarsız alınır. Şehir çözümlemesi esnektir: "Balıkesir Erdek" gibi il+ilçe yazımlarında ilçe tek başına denenir, "Erdek'te" gibi bulunma ekli yazımlar ve küçük/büyük harf farkları normalize edilir, sonuçlar ülke/il/nüfus puanlamasıyla seçilir.
+\ No newline at end of file
