@@ -8,6 +8,7 @@ import random
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import requests
 from collections import namedtuple
@@ -813,6 +814,82 @@ def _geocode_city(city, country="TR"):
     return None
 
 
+def _fresh_wttr_observation(location, timezone_name, now=None):
+    try:
+        latitude = float(location["latitude"])
+        longitude = float(location["longitude"])
+        response = requests.get(
+            f"https://wttr.in/{latitude},{longitude}?format=j1",
+            headers={**SEARCH_HEADERS, "Accept": "application/json"},
+            timeout=5,
+        )
+        response.raise_for_status()
+        current = (response.json().get("current_condition") or [])[0]
+        temperature = float(current["temp_C"])
+        time_text = str(current.get("observation_time") or "").strip()
+        observation_clock = None
+        for time_format in ("%I:%M %p", "%H:%M"):
+            try:
+                observation_clock = dt.datetime.strptime(time_text, time_format).time()
+                break
+            except ValueError:
+                continue
+        if observation_clock is None:
+            return None
+
+        zone = ZoneInfo(timezone_name or "UTC")
+        local_now = now.astimezone(zone) if now is not None else dt.datetime.now(zone)
+        observed_at = dt.datetime.combine(local_now.date(), observation_clock, tzinfo=zone)
+        if observed_at - local_now > dt.timedelta(minutes=15):
+            observed_at -= dt.timedelta(days=1)
+        age = local_now - observed_at
+        if age < dt.timedelta(0) or age > dt.timedelta(minutes=90):
+            return None
+        feels_like = current.get("FeelsLikeC")
+        return {
+            "temperature": temperature,
+            "feels_like": float(feels_like) if feels_like not in (None, "") else None,
+            "observed_at": observed_at.isoformat(),
+            "source": "wttr.in",
+            "age_minutes": age.total_seconds() / 60,
+        }
+    except (requests.RequestException, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def format_weather_answer(weather_data):
+    temperature = weather_data.get("temperature")
+    city = weather_data.get("city") or "Seçilen şehir"
+    if weather_data.get("temperature_conflict"):
+        observed = weather_data.get("observed_temperature")
+        forecast = weather_data.get("forecast_temperature")
+        observed_time = weather_data.get("observed_at") or "güncel gözlem"
+        return (
+            f"🌤 {city} için kaynaklar uyuşmuyor: {weather_data.get('source')} gözlemi "
+            f"{observed:g}°C ({observed_time}), Open-Meteo tahmini {forecast:g}°C. "
+            "Bu fark nedeniyle tek bir kesin sıcaklık vermiyorum."
+        )
+
+    temperature_text = f"{float(temperature):g}"
+    feels_like = weather_data.get("feels_like")
+    answer = f"🌤 {city} için güncel sıcaklık {temperature_text}°C"
+    if feels_like is not None:
+        answer += f", hissedilen {float(feels_like):g}°C"
+    description = weather_data.get("description")
+    if description:
+        answer += f", {description.lower()}"
+    answer += "."
+    if weather_data.get("source"):
+        answer += f" Kaynak: {weather_data['source']}"
+    if weather_data.get("observed_at"):
+      timestamp = weather_data["observed_at"]
+      timezone_name = weather_data.get("timezone")
+      if timezone_name and not re.search(r"[+-]\d{2}:?\d{2}$", str(timestamp)):
+        timestamp = f"{timestamp} {timezone_name}"
+      answer += f" ({timestamp})"
+    return answer
+
+
 def get_weather(city, country="TR"):
     """Get current weather from Open-Meteo without a paid API key."""
     city = (city or "").strip()
@@ -827,21 +904,32 @@ def get_weather(city, country="TR"):
                 "not_found": True,
                 "error": f"'{city}' adında bir yer bulunamadı.",
             }
-        weather_response = requests.get(
+        forecast_params = {
+          "latitude": location["latitude"],
+          "longitude": location["longitude"],
+          "current": (
+            "temperature_2m,relative_humidity_2m,apparent_temperature,"
+            "weather_code,wind_speed_10m"
+          ),
+          "timezone": "auto",
+        }
+        with ThreadPoolExecutor(max_workers=2) as executor:
+          forecast_future = executor.submit(
+            requests.get,
             "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-                "current": (
-                    "temperature_2m,relative_humidity_2m,apparent_temperature,"
-                    "weather_code,wind_speed_10m"
-                ),
-                "timezone": "auto",
-            },
+            params=forecast_params,
             timeout=10,
-        )
+          )
+          observation_future = executor.submit(
+            _fresh_wttr_observation,
+            location,
+            location.get("timezone") or "Europe/Istanbul",
+          )
+          weather_response = forecast_future.result()
+          observation = observation_future.result()
         weather_response.raise_for_status()
-        current = weather_response.json().get("current") or {}
+        weather_payload = weather_response.json()
+        current = weather_payload.get("current") or {}
         weather_descriptions = {
             0: "Açık",
             1: "Çoğunlukla açık",
@@ -873,16 +961,38 @@ def get_weather(city, country="TR"):
             if region and _ascii_fold(region).lower() != _ascii_fold(place_name).lower()
             else place_name
         )
+        forecast_temperature = current.get("temperature_2m")
+        temperature = forecast_temperature
+        temperature_source = "Open-Meteo tahmini"
+        temperature_conflict = False
+        if observation is not None:
+          temperature = observation["temperature"]
+          temperature_source = observation["source"]
+          temperature_conflict = (
+            forecast_temperature is not None
+            and abs(float(forecast_temperature) - temperature) >= 3
+          )
         return {
             "city": display_city,
             "country": location.get("country", country),
-            "temperature": current.get("temperature_2m"),
-            "feels_like": current.get("apparent_temperature"),
+          "temperature": temperature,
+          "feels_like": (
+            observation.get("feels_like")
+            if observation and observation.get("feels_like") is not None
+            else current.get("apparent_temperature")
+          ),
             "humidity": current.get("relative_humidity_2m"),
             "description": weather_descriptions.get(weather_code, "Güncel hava durumu"),
             "wind_speed": current.get("wind_speed_10m"),
-            "observed_at": current.get("time"),
-            "source": "Open-Meteo",
+          "observed_at": (
+            observation.get("observed_at") if observation else current.get("time")
+          ),
+          "source": temperature_source,
+          "forecast_temperature": forecast_temperature,
+          "observed_temperature": observation.get("temperature") if observation else None,
+          "temperature_conflict": temperature_conflict,
+          "forecast_source": "Open-Meteo",
+          "timezone": weather_payload.get("timezone"),
         }
     except requests.Timeout:
         return {"error": "Weather service timeout"}
@@ -1301,6 +1411,38 @@ def should_fetch_live_context(text):
   return any(hint in normalized for hint in hints)
 
 
+SPORTS_FACTS_RE = re.compile(
+    r"\b(maç|mac|futbol|gol|skor|puan|derbi|lig|transfer|kadrosu|golcü|golcu)\b|"
+    r"(fenerbahçe|fenerbahce|eyüpspor|eyupspor|galatasaray|beşiktaş|besiktas|"
+    r"trabzonspor|başakşehir|basaksehir|süper lig|super lig)",
+    re.I,
+)
+SPORTS_FOLLOWUP_RE = re.compile(
+    r"\b(o|bu|şu|su|bunun|bunu|onun|onda|o\s+nasıl|bu\s+nasıl|neden|"
+    r"nasıl\s+oldu|ne\s+yapmış|ne\s+yapmis|kim\s+attı|kim\s+atti|"
+    r"detay|ayrıntı|ayrinti)\b",
+    re.I,
+)
+
+
+def is_sports_question(text):
+    return bool(SPORTS_FACTS_RE.search(text or ""))
+
+
+def build_live_search_query(text, history=None):
+    """Resolve a sports follow-up from prior user questions, never prior AI claims."""
+    current = (text or "").strip()
+    if not is_sports_question(current) or not SPORTS_FOLLOWUP_RE.search(current):
+        return build_search_query(current)
+    for message in reversed(history or []):
+        if not isinstance(message, dict) or message.get("sender") != "user":
+            continue
+        previous_question = str(message.get("text") or "").strip()
+        if is_sports_question(previous_question):
+            return build_search_query(f"{previous_question} {current}")
+    return build_search_query(current)
+
+
 TIME_INTENT_RE = re.compile(
     r"(saat\s+kaç|saat\s+kaçtır|şu\s+an\s+saat|saati\s+söyle|tarih\s+(ne|kaç)|"
     r"bugün\s+(ayın\s+kaçı|ne\s+günü|hangi\s+gün)|günlerden\s+(ne|hangi)|"
@@ -1428,6 +1570,7 @@ def record_image_usage(user_id):
 
 def generate_image_with_gemini(prompt, image_model, api_key):
   """Generate an image through the generateContent endpoint."""
+  image_size = "1K" if image_model == "gemini-2.5-flash-image" else "4K"
   image_prompt = (
       "Create exactly one exceptionally detailed image that follows the user's brief. "
       "Unless the brief explicitly requests an illustration, cartoon, logo, or another "
@@ -1456,7 +1599,7 @@ def generate_image_with_gemini(prompt, image_model, api_key):
           }],
           "generationConfig": {
             "responseModalities": ["IMAGE"],
-            "imageConfig": {"imageSize": "4K"},
+              "imageConfig": {"imageSize": image_size},
           },
       },
       timeout=180,
@@ -1543,7 +1686,19 @@ def generate_image_with_pollinations(prompt, seed=None):
 
 def generate_image_with_retry(prompt, image_model=None, api_keys=None):
   """Try premium Gemini image models first, then configured Flux without public branding."""
+  configured_keys = list(api_keys if api_keys is not None else get_api_keys())
   keys = ordered_keys(api_keys)
+  flux_configured = bool(
+      os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN")
+  )
+  if not configured_keys and not flux_configured:
+    try:
+      return generate_image_with_pollinations(prompt)
+    except Exception as fallback_error:
+      logger.warning("Keyless image fallback failed: %s", fallback_error)
+      raise ImageUnavailableError(
+          "Sunucuda görsel API anahtarı tanımlı değil ve yedek görsel servisi de yanıt vermedi."
+      ) from fallback_error
   models = []
   for candidate in (image_model, GEMINI_IMAGE_MODEL, *GEMINI_IMAGE_FALLBACK_MODELS):
     if candidate and candidate not in models:
@@ -1573,11 +1728,48 @@ def generate_image_with_retry(prompt, image_model=None, api_keys=None):
 
   if last_error is not None:
     logger.warning("Primary image provider failed, falling back: %s", last_error)
+  flux_error = None
   if os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN"):
     try:
       return generate_image_with_flux_hf(prompt)
     except Exception as image_error:
+      flux_error = image_error
       logger.warning("Flux image generation failed after Gemini fallbacks: %s", image_error)
+  fallback_error = None
+  try:
+    return generate_image_with_pollinations(prompt)
+  except Exception as image_error:
+    fallback_error = image_error
+    logger.warning("Keyless image fallback failed after primary providers: %s", image_error)
+  if last_error is not None:
+    status = getattr(last_error, "status_code", None)
+    error_text = str(last_error).lower()
+    if is_daily_quota_error(last_error) or status == 429 or "rate limit" in error_text:
+      raise ImageUnavailableError(
+          "Görsel üretim kotası dolmuş veya hız sınırına ulaşılmış. Bir süre sonra tekrar dene."
+      ) from last_error
+    if status in (401, 403):
+      raise ImageUnavailableError(
+          "Görsel üretim anahtarı doğrulanamadı veya bu modele erişemiyor. Sunucu yapılandırması kontrol edilmeli."
+      ) from last_error
+    if status == 404:
+      raise ImageUnavailableError(
+          "Görsel modelleri bu sunucu anahtarı için etkin değil. Sunucu model erişimi kontrol edilmeli."
+      ) from last_error
+    if status == 400:
+      raise ImageUnavailableError(
+          "Görsel isteği model tarafından kabul edilmedi. İstek boyutu veya görsel ayarları kontrol edilmeli."
+      ) from last_error
+  if flux_error is not None:
+    status = getattr(flux_error, "status_code", None)
+    if status in (401, 403):
+      raise ImageUnavailableError(
+          "Görsel yedeği doğrulanamadı. Sunucudaki görsel erişim anahtarı kontrol edilmeli."
+      ) from flux_error
+  if fallback_error is not None and not keys:
+    raise ImageUnavailableError(
+        "Görsel üretim anahtarları kota sınırında ve yedek görsel servisi yanıt vermedi."
+    ) from fallback_error
   raise ImageUnavailableError(IMAGE_UNAVAILABLE_MESSAGE)
 
 
@@ -2681,6 +2873,10 @@ def api_chat(request):
         "cevabı büyük ihtimalle oradadır: önce o veriyi kullan, somut sayı ve isimleri aktar, "
         "kaynağı kısaca belirt. "
         "Araç hata verirse veya sonuç bulamazsa bunu açıkça belirt ve veri uydurma. "
+        "GÜNCEL SPOR BİLGİSİ: Skor, golcü, oyuncu, dakika, kadro ve maç özeti gibi her somut "
+        "iddia canlı kaynakta açıkça yazmıyorsa ASLA üretme. Önceki asistan mesajları doğrulanmış "
+        "kaynak değildir; kaynakla uyuşmuyorsa düzelt. Kaynak yalnızca skoru veriyorsa oyuncu adı "
+        "ve maç akışı ekleme; ayrıntı bulunamadığını söyle. "
         "Yanıtın her zaman dolu ve okunur olsun: ASLA boş yanıt dönme, birkaç kelimelik kaçamak "
         "cevaplar yerine soruyu gerçekten cevapla. "
         "Hangi dilde yazılırsa yazılsın yüksek kalitede, akıcı bir dost gibi yanıt ver. "
@@ -2838,9 +3034,37 @@ def api_chat(request):
         yield WEATHER_ASK_CITY
       return StreamingHttpResponse(ask_city_stream(), content_type="text/plain")
 
+    if weather_data and weather_data.get("temperature") is not None:
+      def weather_answer_stream():
+        yield format_weather_answer(weather_data)
+
+      return StreamingHttpResponse(
+          weather_answer_stream(), content_type="text/plain; charset=utf-8"
+      )
+
     live_context = None
-    if should_fetch_live_context(question_text):
-      live_context = web_search(build_search_query(question_text), 3 if mode == "fast" else 5)
+    live_search_query = build_live_search_query(question_text, history)
+    sports_question = is_sports_question(question_text)
+    if should_fetch_live_context(question_text) or (
+      sports_question and live_search_query != build_search_query(question_text)
+    ):
+      live_context = web_search(
+        live_search_query,
+        3 if mode == "fast" else 5,
+        duckduckgo_only=sports_question,
+      )
+      if sports_question and (
+        live_context.get("blocked")
+        or live_context.get("engine") == "weak-match"
+        or not live_context.get("results")
+      ):
+        def unverifiable_sports_stream():
+          yield (
+              "Bu maç ayrıntılarını DuckDuckGo kaynaklarında doğrulayamadım. "
+              "Oyuncu, golcü veya maç akışı uydurmak yerine doğrulanabilir kaynak bekliyorum."
+          )
+
+        return StreamingHttpResponse(unverifiable_sports_stream(), content_type="text/plain")
       messages.insert(
           1,
           {
@@ -2849,7 +3073,9 @@ def api_chat(request):
                   "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
                   "Kullanıcının sorusunun cevabı büyük olasılıkla bu sonuçlardadır: önce bunları "
                   "oku, somut bilgiyi (skor, isim, tarih, sayı) doğrudan aktar ve kaynağı belirt. "
-                  "Sonuçlar soruyla ilgisizse veya boşsa güncel bilgi UYDURMA; bunu bir cümleyle "
+                  "Arama sorgusu şudur: " + live_search_query + ". Özellikle spor sorularında "
+                  "kaynakta açıkça yazmayan golcü, oyuncu, dakika, kadro veya maç akışı UYDURMA. "
+                  "Önceki asistan yanıtlarını doğrulanmış bilgi sayma. Sonuçlar soruyla ilgisizse veya boşsa güncel bilgi UYDURMA; bunu bir cümleyle "
                   "söyle. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
                   "ANMA; sen Aslan Parçası'sın:\n" + json.dumps(live_context, ensure_ascii=False)
               ),

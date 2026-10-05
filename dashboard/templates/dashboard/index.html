@@ -852,6 +852,22 @@
             white-space: pre-line;
             font-style: normal;
         }
+        .reasoning-sources:not(:empty) {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 160px;
+            overflow: auto;
+        }
+        .reasoning-source-item {
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .reasoning-source-item a {
+            color: #77d9ff;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
 
         /* DÜŞÜNME BUTONU */
         .think-btn {
@@ -1328,13 +1344,31 @@
                 padding-left: 60px;
             }
             .chat-input-container {
-                flex-wrap: wrap;
+                display: grid;
+                grid-template-columns: 36px minmax(0, 1fr) 36px;
+                grid-template-areas:
+                    "think input send"
+                    "media input send";
+                gap: 6px 8px;
             }
             .media-buttons {
-                order: 2;
-                width: 100%;
+                grid-area: media;
+                order: 0;
+                width: 36px;
                 justify-content: center;
-                margin-top: 8px;
+                margin: 0;
+            }
+            .think-btn {
+                grid-area: think;
+            }
+            .chat-input-container textarea {
+                grid-area: input;
+                width: 100%;
+                min-width: 0;
+            }
+            .send-btn {
+                grid-area: send;
+                align-self: center;
             }
             .user-avatar-header,
             .ai-header-container {
@@ -2305,6 +2339,30 @@
         }
     }
 
+    function renderReasoningSources(container, sourceLines) {
+        container.replaceChildren();
+        sourceLines.forEach((line) => {
+            const row = document.createElement('div');
+            row.className = 'reasoning-source-item';
+            const match = line.match(/https?:\/\/[^\s)]+/i);
+            if (!match) {
+                row.textContent = line;
+                container.appendChild(row);
+                return;
+            }
+
+            const url = match[0].replace(/[.,;!?]+$/, '');
+            const label = line.slice(0, match.index).replace(/[\s—(]+$/, '').trim();
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = label || new URL(url).hostname;
+            row.appendChild(link);
+            container.appendChild(row);
+        });
+    }
+
     function pushReasoningLine(line) {
         if (!line) return;
         reasoningLines.push(line);
@@ -2316,11 +2374,10 @@
         }
         const sourcesEl = document.getElementById('reasoningSources');
         if (sourcesEl && isSource) {
-            sourcesEl.textContent = reasoningLines
+            renderReasoningSources(sourcesEl, reasoningLines
                 .filter(l => l.startsWith('SRC:'))
                 .slice(-6)
-                .map(l => l.slice(4))
-                .join('\n');
+                .map(l => l.slice(4)));
         }
         scrollMessagesToBottom();
     }
@@ -2625,7 +2682,7 @@
 
         const footerHeight = Math.max(48, Math.min(112, Math.round(Math.min(canvas.width, canvas.height) * 0.035)));
         const footerTop = canvas.height - footerHeight;
-        context.fillStyle = 'rgba(5, 10, 18, 0.76)';
+        context.fillStyle = 'rgba(5, 10, 18, 1)';
         context.fillRect(0, footerTop, canvas.width, footerHeight);
 
         const avatarSize = Math.round(footerHeight * 0.72);

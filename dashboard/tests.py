@@ -1,7 +1,9 @@
 import base64
+import datetime as dt
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.test import Client, SimpleTestCase, TestCase
@@ -71,21 +73,107 @@ class WeatherTests(TestCase):
                 "time": "2026-09-25T12:00",
             }
         }
+        observation = Mock()
+        observation.status_code = 200
+        observation.json.return_value = {}
 
-        with patch("dashboard.views.requests.get", side_effect=[geocode, current]) as get:
+        def weather_response(url, **_kwargs):
+            if "geocoding-api.open-meteo.com" in url:
+                return geocode
+            if "api.open-meteo.com" in url:
+                return current
+            if "wttr.in" in url:
+                return observation
+            raise AssertionError(f"Unexpected weather URL: {url}")
+
+        with patch("dashboard.views.requests.get", side_effect=weather_response) as get:
             result = views.get_weather("Erdek")
 
         self.assertEqual(result["city"], "Erdek")
         self.assertEqual(result["temperature"], 16.7)
         self.assertEqual(result["description"], "Parçalı bulutlu")
-        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_count, 3)
+        forecast_call = next(
+            call for call in get.call_args_list if "/v1/forecast" in call.args[0]
+        )
         self.assertEqual(
-            get.call_args_list[1].kwargs["params"]["current"],
+            forecast_call.kwargs["params"]["current"],
             "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
         )
 
+    def test_recent_independent_observation_is_selected_and_forecast_conflict_is_reported(self):
+        now = dt.datetime(2026, 10, 5, 14, 30, tzinfo=ZoneInfo("Europe/Istanbul"))
+        payload = {
+            "current_condition": [{
+                "temp_C": "12",
+                "FeelsLikeC": "10",
+                "observation_time": "02:00 PM",
+            }],
+        }
+        with patch("dashboard.views.requests.get") as get:
+            get.return_value.status_code = 200
+            get.return_value.json.return_value = payload
+            get.return_value.raise_for_status.return_value = None
+            observation = views._fresh_wttr_observation(
+                {"latitude": 41.0, "longitude": 29.0},
+                "Europe/Istanbul",
+                now=now,
+            )
+
+        self.assertEqual(observation["temperature"], 12)
+        self.assertEqual(observation["age_minutes"], 30)
+        answer = views.format_weather_answer({
+            "city": "İstanbul",
+            "temperature": 12,
+            "observed_temperature": 12,
+            "forecast_temperature": 19.4,
+            "temperature_conflict": True,
+            "source": "wttr.in",
+            "observed_at": observation["observed_at"],
+        })
+        self.assertIn("12°C", answer)
+        self.assertIn("19.4°C", answer)
+        self.assertIn("kaynaklar uyuşmuyor", answer)
+
+    def test_stale_independent_weather_observation_is_ignored(self):
+        now = dt.datetime(2026, 10, 5, 14, 30, tzinfo=ZoneInfo("Europe/Istanbul"))
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "current_condition": [{
+                "temp_C": "12",
+                "observation_time": "12:00 PM",
+            }],
+        }
+        response.raise_for_status.return_value = None
+
+        with patch("dashboard.views.requests.get", return_value=response):
+            observation = views._fresh_wttr_observation(
+                {"latitude": 41.0, "longitude": 29.0},
+                "Europe/Istanbul",
+                now=now,
+            )
+
+        self.assertIsNone(observation)
+
 
 class SearchTests(SimpleTestCase):
+    def test_sports_followup_search_uses_the_previous_user_question_only(self):
+        history = [
+            {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
+            {"sender": "ai", "text": "8-0; Valencia 2 gol attı."},
+        ]
+
+        query = views.build_live_search_query(
+            "O nasıl maç, Fenerbahçe ne yapmış öyle?",
+            history,
+        )
+        normalized = views._ascii_fold(query).lower()
+
+        self.assertIn("fenerbahce", normalized)
+        self.assertIn("eyupspor", normalized)
+        self.assertNotIn("valencia", normalized)
+
     def test_duckduckgo_search_returns_only_relevant_results(self):
         response = Mock()
         response.status_code = 200
@@ -144,6 +232,7 @@ class AppClockTests(TestCase):
 class ImageGenerationTests(TestCase):
     def setUp(self):
         views._last_image_request_at.clear()
+        views.KEY_STATE.clear()
         self.user = User.objects.create_user(
             username="image-user",
             email="image@example.com",
@@ -199,27 +288,120 @@ class ImageGenerationTests(TestCase):
         self.assertIn("uçak", image_prompt)
         self.assertIn("ultra-photorealistic", image_prompt)
 
-    def test_image_generation_never_falls_back_to_a_branded_provider(self):
-        with (
-            patch("dashboard.views.ordered_keys", return_value=["test-key"]),
-            patch(
-                "dashboard.views.generate_image_with_gemini",
-                side_effect=RuntimeError("unavailable"),
-            ) as gemini,
-            patch("dashboard.views.generate_image_with_pollinations") as pollinations,
-        ):
-            with self.assertRaises(views.ImageUnavailableError):
-                views.generate_image_with_retry("Bir dağ manzarası")
+    def test_legacy_image_fallback_uses_supported_one_k_resolution(self):
+        image_response = Mock()
+        image_response.status_code = 200
+        image_response.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"inlineData": {
+                    "data": "cG5nLWJ5dGVz",
+                    "mimeType": "image/png",
+                }}]},
+            }],
+        }
+        with patch("dashboard.views.requests.post", return_value=image_response) as post:
+            views.generate_image_with_gemini(
+                "Bir kedi", "gemini-2.5-flash-image", "test-key"
+            )
 
         self.assertEqual(
-            [call.args[1] for call in gemini.call_args_list],
-            [
-                "gemini-3-pro-image",
-                "gemini-3.1-flash-image",
-                "gemini-2.5-flash-image",
-            ],
+            post.call_args.kwargs["json"]["generationConfig"]["imageConfig"]["imageSize"],
+            "1K",
         )
-        pollinations.assert_not_called()
+
+    def test_missing_image_credentials_returns_a_specific_error(self):
+        with (
+            patch.dict("os.environ", {"HF_API_TOKEN": "", "HUGGINGFACE_API_TOKEN": ""}),
+            patch(
+                "dashboard.views.generate_image_with_pollinations",
+                side_effect=RuntimeError("fallback unavailable"),
+            ),
+            self.assertRaisesRegex(views.ImageUnavailableError, "API anahtarı tanımlı değil"),
+        ):
+            views.generate_image_with_retry("Bir dağ manzarası", api_keys=[])
+
+    def test_image_api_explains_missing_server_credentials(self):
+        with (
+            patch.dict("os.environ", {"HF_API_TOKEN": "", "HUGGINGFACE_API_TOKEN": ""}),
+            patch("dashboard.views.get_api_keys", return_value=[]),
+            patch(
+                "dashboard.views.generate_image_with_pollinations",
+                side_effect=RuntimeError("fallback unavailable"),
+            ),
+        ):
+            response = self.client.post(
+                reverse("api_image_generate"),
+                data=json.dumps({"prompt": "Bir dağ manzarası"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("API anahtarı tanımlı değil", response.json()["error"])
+
+    def test_image_api_explains_model_access_denial(self):
+        with (
+            patch.dict("os.environ", {
+                "GEMINI_API_KEY": "test-key",
+                "HF_API_TOKEN": "",
+                "HUGGINGFACE_API_TOKEN": "",
+            }),
+            patch("dashboard.views.get_api_keys", return_value=["test-key"]),
+            patch("dashboard.views.ordered_keys", return_value=["test-key"]),
+            patch("dashboard.views.key_is_available", return_value=True),
+            patch(
+                "dashboard.views.generate_image_with_gemini",
+                side_effect=views.UpstreamHTTPError(403, "model access denied"),
+            ),
+            patch(
+                "dashboard.views.generate_image_with_pollinations",
+                side_effect=RuntimeError("fallback unavailable"),
+            ),
+        ):
+            response = self.client.post(
+                reverse("api_image_generate"),
+                data=json.dumps({"prompt": "Bir dağ manzarası"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("modele erişemiyor", response.json()["error"])
+
+    def test_configured_image_fallback_runs_after_gemini_rejects_access(self):
+        with (
+            patch.dict("os.environ", {"HF_API_TOKEN": "test-token"}),
+            patch("dashboard.views.get_api_keys", return_value=["test-key"]),
+            patch("dashboard.views.ordered_keys", return_value=["test-key"]),
+            patch("dashboard.views.key_is_available", return_value=True),
+            patch(
+                "dashboard.views.generate_image_with_gemini",
+                side_effect=views.UpstreamHTTPError(403, "model access denied"),
+            ),
+            patch(
+                "dashboard.views.generate_image_with_flux_hf",
+                return_value="data:image/png;base64,backup",
+            ) as flux,
+        ):
+            result = views.generate_image_with_retry("Bir dağ manzarası")
+
+        self.assertEqual(result, "data:image/png;base64,backup")
+        flux.assert_called_once_with("Bir dağ manzarası")
+
+    def test_keyless_image_fallback_returns_only_image_data(self):
+        with (
+            patch.dict("os.environ", {"HF_API_TOKEN": "", "HUGGINGFACE_API_TOKEN": ""}),
+            patch("dashboard.views.get_api_keys", return_value=[]),
+            patch(
+                "dashboard.views.generate_image_with_pollinations",
+                return_value="data:image/jpeg;base64,backup",
+            ) as fallback,
+        ):
+            result = views.generate_image_with_retry(
+                "Bir dağ manzarası",
+                api_keys=[],
+            )
+
+        self.assertEqual(result, "data:image/jpeg;base64,backup")
+        fallback.assert_called_once_with("Bir dağ manzarası")
 
     def test_explicit_illustration_style_is_not_forced_into_photorealism(self):
         prompt = views.enhance_image_prompt("Bir çizim: kedi")
@@ -480,6 +662,112 @@ class ChatFeatureTests(TestCase):
         search.assert_called_once()
         sent_messages = model_call.call_args.args[1]
         self.assertIn("Canlı sonuç", sent_messages[1]["content"])
+
+    def test_current_weather_reply_uses_source_value_without_model_rephrasing(self):
+        weather = {
+            "city": "İstanbul",
+            "temperature": 12,
+            "feels_like": 10,
+            "description": "Parçalı bulutlu",
+            "source": "wttr.in",
+            "observed_at": "2026-10-05T14:00:00+03:00",
+        }
+
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[object()]),
+            patch("dashboard.views.get_weather", return_value=weather),
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "İstanbul'da hava kaç derece?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("12°C", answer)
+        self.assertNotIn("19.4", answer)
+        model_call.assert_not_called()
+
+    def test_sports_followup_fails_closed_when_ddg_cannot_verify_match_details(self):
+        history = [
+            {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
+            {"sender": "ai", "text": "8-0; Valencia 2 gol attı."},
+        ]
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[object()]),
+            patch("dashboard.views.web_search", return_value={
+                "blocked": True,
+                "engine": "ddg-html",
+                "results": [],
+            }) as search,
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({
+                    "message": "O nasıl maç, Fenerbahçe ne yapmış öyle?",
+                    "history": history,
+                }),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("doğrulayamadım", answer)
+        self.assertNotIn("Valencia", answer)
+        self.assertIn("eyupspor", views._ascii_fold(search.call_args.args[0]).lower())
+        model_call.assert_not_called()
+
+    def test_sports_answer_prompt_rejects_unverified_prior_assistant_details(self):
+        chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Kaynakta doğrulanan skor 8-0.", tool_calls=None),
+        )])
+        model_call = Mock(return_value=iter([chunk]))
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        history = [
+            {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
+            {"sender": "ai", "text": "8-0; Valencia 2 gol attı."},
+        ]
+
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.web_search", return_value={
+                "engine": "ddg-html",
+                "results": [{
+                    "title": "Fenerbahçe Eyüpspor maç sonucu 8-0",
+                    "url": "https://sports.example/result",
+                    "snippet": "Fenerbahçe Eyüpspor karşılaşması 8-0 sona erdi.",
+                }, {
+                    "title": "Fenerbahçe Eyüpspor 8-0 maç raporu",
+                    "url": "https://sports.example/report",
+                    "snippet": "Resmi maç raporu ve skor bilgisi.",
+                }],
+            }) as search,
+            patch("dashboard.views.safe_model_call", model_call),
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({
+                    "message": "O nasıl maç, Fenerbahçe ne yapmış öyle?",
+                    "history": history,
+                }),
+                content_type="application/json",
+            )
+            b"".join(response.streaming_content)
+
+        normalized_query = views._ascii_fold(search.call_args.args[0]).lower()
+        self.assertIn("eyupspor", normalized_query)
+        self.assertTrue(search.call_args.kwargs["duckduckgo_only"])
+        model_messages = model_call.call_args.args[1]
+        system_text = "\n".join(
+            str(message.get("content") or "")
+            for message in model_messages
+            if message.get("role") == "system"
+        )
+        self.assertIn("golcü, oyuncu, dakika", system_text)
+        self.assertIn("Önceki asistan yanıtlarını doğrulanmış bilgi sayma", system_text)
 
 
 class GeminiClientTests(TestCase):
