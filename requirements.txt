@@ -7,3 +7,4 @@ python-docx
 psycopg[binary]
 requests
 beautifulsoup4
+python-dotenv>=1.0.1
