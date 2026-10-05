@@ -2010,6 +2010,7 @@
     }
 
     function setMode(mode) {
+        if (streamBusy || imageGenerating) return;
         if (currentMode === mode) return;
         currentMode = mode;
 
@@ -2023,17 +2024,7 @@
         };
 
         updateThinkButtonAvailability();
-
-        // Mevcut sohbetin modunu güncelle - yeni sohbet açma
-        const activeChat = chats.find(c => c.id === currentChatId);
-        if (activeChat) {
-            activeChat.mode = mode;
-            if (!activeChat.isCustomTitle) {
-                activeChat.title = modeTitles[mode];
-                renderChatList();
-            }
-            saveChats();
-        }
+        createNewChat(modeTitles[mode], false);
     }
 
     // Hızlı Analiz "anında cevap" sözü verir; uzun düşünme oraya ait değil.
@@ -2264,6 +2255,7 @@
     }
 
     function toggleDeepThink() {
+        if (streamBusy || imageGenerating) return;
         deepThinkEnabled = !deepThinkEnabled;
         const thinkBtn = document.getElementById('thinkBtn');
         thinkBtn.classList.toggle('active', deepThinkEnabled);
