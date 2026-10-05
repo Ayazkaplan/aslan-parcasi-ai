@@ -471,16 +471,17 @@
         }
 
         .gold-brand-text {
-            display: none;
             max-width: 0;
             opacity: 0;
+            visibility: hidden;
             white-space: nowrap;
             font-weight: 800;
             font-size: 13px;
             letter-spacing: 1px;
             margin-left: 0;
             overflow: hidden;
-            transition: max-width 0.5s ease, opacity 0.3s ease, margin-left 0.3s ease;
+            transition: max-width 0.45s ease, opacity 0.35s ease, margin-left 0.35s ease,
+                        visibility 0s linear 0.45s;
             background: linear-gradient(135deg, #fff2a3 0%, #ffd700 30%, #cca010 70%, #fff2a3 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -490,10 +491,12 @@
         }
 
         .ai-header-container.expanded .gold-brand-text {
-            display: inline-block;
+            visibility: visible;
             max-width: 180px;
             opacity: 1;
             margin-left: 8px;
+            transition: max-width 0.45s ease, opacity 0.35s ease, margin-left 0.35s ease,
+                        visibility 0s;
         }
 
         .message {
@@ -1985,7 +1988,19 @@
             'fast': 'Hızlı Analiz'
         };
 
+        updateThinkButtonAvailability();
         createNewChat(modeTitles[mode], false);
+    }
+
+    // Hızlı Analiz "anında cevap" sözü verir; uzun düşünme oraya ait değil.
+    function updateThinkButtonAvailability() {
+        const thinkBtn = document.getElementById('thinkBtn');
+        if (!thinkBtn) return;
+        const allowDeepThink = currentMode !== 'fast';
+        thinkBtn.style.display = allowDeepThink ? '' : 'none';
+        if (!allowDeepThink) {
+            closeDeepThinkSettings();
+        }
     }
 
     function filterChats() {
@@ -2111,6 +2126,7 @@
             const activeBtn = document.getElementById(`mode-${currentMode}`);
             if (activeBtn) activeBtn.classList.add('active');
         }
+        updateThinkButtonAvailability();
         renderChatList();
         renderMessages();
     }
@@ -2816,8 +2832,8 @@
         renderImagePreviews();
         removeVoice();
 
-        // Store deep think state before disabling
-        const wasDeepThink = deepThinkEnabled;
+        // Store deep think state before disabling (Hızlı Analiz asla uzun düşünmez)
+        const wasDeepThink = deepThinkEnabled && currentMode !== 'fast';
         
         // Disable deep think after sending
         if (deepThinkEnabled) {
@@ -3216,6 +3232,7 @@
     }
 
     document.getElementById('thinkDurationLabel').textContent = formatThinkDuration(deepThinkSeconds);
+    updateThinkButtonAvailability();
     loadChatsFromServer();
     setInterval(refreshChatsFromServer, 6000);
 </script>

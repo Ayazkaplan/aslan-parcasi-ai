@@ -4,13 +4,14 @@ import os
 import base64
 import datetime as dt
 import io
+import random
 import re
 import threading
 import time
 import requests
 from collections import namedtuple
 from html import unescape
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from zoneinfo import ZoneInfo
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
@@ -139,6 +140,15 @@ EMPTY_ANSWER_MESSAGE = (
     "gelmedi. Mesajını bir kez daha gönderir misin? Uzun dosya veya görsel eklediysen "
     "kısaltıp denemek genelde çözer."
 )
+IMAGE_UNAVAILABLE_MESSAGE = (
+    "Görsel oluşturma servislerim şu an bu isteği tamamlayamadı; ikisini de denedim. "
+    "Birkaç dakika sonra tekrar dene, büyük ihtimalle düzelir. Bu arada sohbet, hava "
+    "durumu ve internet araştırması özelliklerim çalışmaya devam ediyor."
+)
+
+
+class ImageUnavailableError(RuntimeError):
+    """Every image provider failed; the message is safe to show the user."""
 
 
 class QuotaBreakerError(RuntimeError):
@@ -594,6 +604,81 @@ def get_current_time():
     }
 
 
+TURKISH_ASCII_MAP = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+
+
+def _ascii_fold(text):
+    return (text or "").translate(TURKISH_ASCII_MAP)
+
+
+def _city_candidates(city):
+    """Geocoders index districts on their own, so 'balıkesir erdek' -> 'erdek' -> 'balıkesir'."""
+    cleaned = re.sub(r"\s+", " ", (city or "").strip(" .,;:!?'’\"")).strip()
+    cleaned = re.sub(
+        r"^(?:şehir|sehir|city|ben|benim|için|icin)\s+", "", cleaned, flags=re.I
+    ).strip()
+    cleaned = _strip_locative(cleaned)
+    candidates = []
+    seen = set()
+
+    def push(value):
+        value = (value or "").strip()
+        if len(value) < 2:
+            return
+        marker = _ascii_fold(value).lower()
+        if marker in seen:
+            return
+        seen.add(marker)
+        candidates.append(value)
+
+    push(cleaned)
+    words = cleaned.split()
+    if len(words) > 1:
+        for word in reversed(words):
+            push(word)
+    push(_ascii_fold(cleaned))
+    for word in reversed(words):
+        push(_ascii_fold(word))
+    return candidates
+
+
+def _rank_geocode_matches(matches, wanted, country):
+    """Exact name match wins, then the requested country, then the biggest place."""
+    wanted_key = _ascii_fold(wanted).lower()
+
+    def score(result):
+        name_key = _ascii_fold(result.get("name") or "").lower()
+        return (
+            0 if name_key == wanted_key else 1,
+            0 if (result.get("country_code") or "").upper() == country else 1,
+            -(result.get("population") or 0),
+        )
+
+    return sorted(matches, key=score)
+
+
+def _geocode_city(city, country="TR"):
+    """Resolve a Turkish city/district name (any case, with or without suffix)."""
+    last_error = None
+    for candidate in _city_candidates(city):
+        try:
+            response = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": candidate, "count": 10, "language": "tr", "format": "json"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            matches = response.json().get("results") or []
+        except requests.RequestException as error:
+            last_error = error
+            continue
+        if matches:
+            return _rank_geocode_matches(matches, candidate, country)[0]
+    if last_error is not None:
+        raise last_error
+    return None
+
+
 def get_weather(city, country="TR"):
     """Get current weather from Open-Meteo without a paid API key."""
     city = (city or "").strip()
@@ -602,21 +687,12 @@ def get_weather(city, country="TR"):
         return {"error": "Hava durumunu bulmak için bir şehir adı gerekli."}
 
     try:
-        geo_response = requests.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": city, "count": 10, "language": "tr", "format": "json"},
-            timeout=10,
-        )
-        geo_response.raise_for_status()
-        matches = geo_response.json().get("results") or []
-        if country:
-            matches = sorted(
-                matches,
-                key=lambda result: result.get("country_code", "").upper() != country,
-            )
-        if not matches:
-            return {"error": f"City '{city}' not found"}
-        location = matches[0]
+        location = _geocode_city(city, country)
+        if not location:
+            return {
+                "not_found": True,
+                "error": f"'{city}' adında bir yer bulunamadı.",
+            }
         weather_response = requests.get(
             "https://api.open-meteo.com/v1/forecast",
             params={
@@ -656,8 +732,15 @@ def get_weather(city, country="TR"):
             99: "Kuvvetli dolulu fırtına",
         }
         weather_code = current.get("weather_code")
+        place_name = location.get("name") or city
+        region = location.get("admin1") or ""
+        display_city = (
+            f"{place_name}, {region}"
+            if region and _ascii_fold(region).lower() != _ascii_fold(place_name).lower()
+            else place_name
+        )
         return {
-            "city": location.get("name", city),
+            "city": display_city,
             "country": location.get("country", country),
             "temperature": current.get("temperature_2m"),
             "feels_like": current.get("apparent_temperature"),
@@ -805,40 +888,135 @@ SEARCH_HEADERS = {
 }
 
 
-def web_search(query, num_results=5):
-    """Current web results with no API key: DuckDuckGo first, Bing as backup."""
-    limit = max(1, min(int(num_results), 10))
-    clean_query = (query or "").strip()
-    if not clean_query:
-        return {"error": "Web search failed: empty query", "results": [], "query": query}
-    attempts = (
+NEWS_HINT_RE = re.compile(
+    r"(son\s*dakika|haber|maç|mac\b|skor|puan\s*durumu|dolar|euro|altın|altin|fiyat|zam\b|"
+    r"seçim|secim|deprem|kaza|yangın|yangin|istifa|transfer|borsa|enflasyon|faiz|"
+    r"cumhurbaşkan|cumhurbaskan|bakan|belediye|saldırı|saldiri|operasyon|fragman|"
+    r"bilet|yeni\s+bölüm|yeni\s+bolum|son\s+bölüm|son\s+bolum|\b20\d\d\b)",
+    re.I,
+)
+SEARCH_STOPWORDS = {
+    "ve", "ile", "için", "icin", "bir", "bu", "şu", "onu", "değil", "degil", "nasıl",
+    "nasil", "nedir", "hakkında", "hakkinda", "son", "güncel", "guncel", "araştır",
+    "arastir", "mısın", "misin", "bana", "söyle", "soyle", "kaç", "kac", "derece",
+    "the", "and", "for", "with", "what", "how",
+}
+# Kullanıcı dizi/film/haber sormadıysa bu başlıklar bulgu diye gösterilmez.
+CHATTER_TITLE_RE = re.compile(
+    r"(fragman|vizyon|dizi|film|sinema|oyuncu|çizgi roman|cizgi roman|magazin|şarkı|sarki|"
+    r"klip|albüm|album|derbi|transfer|sezon finali|yarışma|yarisma|evlilik|boşanma|bosanma|"
+    r"sevgili|son\s*dakika)",
+    re.I,
+)
+ENTERTAINMENT_ASK_RE = re.compile(
+    r"(dizi|film|sinema|fragman|oyuncu|şarkı|sarki|klip|albüm|album|belgesel|kitap|roman|"
+    r"oyun\b|marvel|dc\b|netflix)",
+    re.I,
+)
+# "evreni" aranınca motor yalnızca magazin buluyor; yalın hâl ("evren") ansiklopedik sonuç verir.
+TURKISH_CASE_ENDING_RE = re.compile(
+    r"(?:ler|lar)?(?:in|ın|un|ün|de|da|te|ta|den|dan|ten|tan|i|ı|u|ü|e|a)$"
+)
+
+
+def _strip_case(word):
+    """Drop a Turkish case ending: 'evreni' only finds entertainment news."""
+    match = TURKISH_CASE_ENDING_RE.search(word)
+    if not match:
+        return word
+    stem = word[: match.start()]
+    return stem if len(stem) >= 4 else word
+
+
+def _query_variants(query):
+    """The question as asked, then the same keywords in their plain form."""
+    cleaned = (query or "").strip()
+    variants = [cleaned]
+    stripped = " ".join(_strip_case(word) for word in cleaned.split()).strip()
+    if stripped and stripped != cleaned:
+        variants.append(stripped)
+    return variants
+
+
+def _query_tokens(text):
+    words = re.findall(r"[a-z0-9]{3,}", _ascii_fold(text or "").lower())
+    return [word for word in dict.fromkeys(words) if word not in SEARCH_STOPWORDS]
+
+
+def _relevance(result, tokens):
+    """How many query stems appear in the result text (Turkish suffixes ignored)."""
+    haystack = _ascii_fold(f"{result.get('title', '')} {result.get('snippet', '')}").lower()
+    if not haystack.strip():
+        return 0
+    return sum(1 for token in tokens if token[:5] in haystack)
+
+
+def _is_relevant(result, tokens, allow_chatter):
+    """On-topic and, unless the user asked for it, not entertainment noise."""
+    if tokens and _relevance(result, tokens) <= 0:
+        return False
+    if allow_chatter:
+        return True
+    return not CHATTER_TITLE_RE.search(str(result.get("title") or ""))
+
+
+def _search_attempts(query):
+    """News engine first only for news-like queries; it is junk for general topics."""
+    general = (
         ("ddg-html", "post", "https://html.duckduckgo.com/html/", {"kl": "tr-tr"}, _parse_ddg_results),
-        ("haber-rss", "get", "https://news.google.com/rss/search",
-         {"hl": "tr", "gl": "TR", "ceid": "TR:tr"}, _parse_google_news_rss),
         ("ddg-lite", "post", "https://lite.duckduckgo.com/lite/", {"kl": "tr-tr"}, _parse_ddg_results),
         ("ddg-get", "get", "https://html.duckduckgo.com/html/", {}, _parse_ddg_results),
         ("bing", "get", "https://www.bing.com/search", {"setmkt": "tr-TR", "setlang": "tr"}, _parse_bing_results),
     )
+    news = (
+        ("haber-rss", "get", "https://news.google.com/rss/search",
+         {"hl": "tr", "gl": "TR", "ceid": "TR:tr"}, _parse_google_news_rss),
+    )
+    return news + general if NEWS_HINT_RE.search(query or "") else general + news
+
+
+def web_search(query, num_results=5):
+    """Current web results with no API key, filtered for relevance to the query."""
+    limit = max(1, min(int(num_results), 10))
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return {"error": "Web search failed: empty query", "results": [], "query": query}
+    allow_chatter = bool(
+        NEWS_HINT_RE.search(clean_query) or ENTERTAINMENT_ASK_RE.search(clean_query)
+    )
     last_error = None
-    for engine, method, url, extra, parser in attempts:
-        try:
-            if method == "post":
-                response = requests.post(
-                    url, data={"q": clean_query, **extra}, headers=SEARCH_HEADERS, timeout=10
-                )
-            else:
-                response = requests.get(
-                    url, params={"q": clean_query, **extra}, headers=SEARCH_HEADERS, timeout=10
-                )
-            if response.status_code >= 400:
-                last_error = f"{engine} HTTP {response.status_code}"
-                continue
-            results = parser(response.text, limit)
-            if results:
-                return {"query": clean_query, "results": results, "engine": engine}
-            last_error = f"{engine}: no results parsed"
-        except Exception as error:
-            last_error = f"{engine}: {error}"
+    partial = None
+    for variant in _query_variants(clean_query):
+        tokens = _query_tokens(variant)
+        for engine, method, url, extra, parser in _search_attempts(variant):
+            try:
+                if method == "post":
+                    response = requests.post(
+                        url, data={"q": variant, **extra}, headers=SEARCH_HEADERS, timeout=10
+                    )
+                else:
+                    response = requests.get(
+                        url, params={"q": variant, **extra}, headers=SEARCH_HEADERS, timeout=10
+                    )
+                if response.status_code >= 400:
+                    last_error = f"{engine} HTTP {response.status_code}"
+                    continue
+                results = parser(response.text, limit * 2)
+                if not results:
+                    last_error = f"{engine}: no results parsed"
+                    continue
+                relevant = [item for item in results if _is_relevant(item, tokens, allow_chatter)]
+                relevant.sort(key=lambda item: -_relevance(item, tokens))
+                # Tek sonuç tesadüf olabilir; yalın hâl varyantı genelde çok daha isabetli.
+                if len(relevant) >= 2:
+                    return {"query": variant, "results": relevant[:limit], "engine": engine}
+                if relevant and partial is None:
+                    partial = relevant[:limit]
+                last_error = f"{engine}: sonuç soruyla ilgili değil"
+            except Exception as error:
+                last_error = f"{engine}: {error}"
+    if partial:
+        return {"query": clean_query, "results": partial, "engine": "weak-match"}
     return {"error": f"Web search failed: {last_error}", "results": [], "query": clean_query}
 
 
@@ -861,6 +1039,11 @@ def build_search_query(text):
     if re.search(r"\b(maç|mac|skor|karşılaşma|karsilasma)", cleaned) and "sonuç" not in cleaned and "sonuc" not in cleaned:
         cleaned += " maç sonucu skor"
     return cleaned
+
+
+def search_topic(text):
+    """Nominative keywords, so appended facets stay grammatical ('evren' + 'tarihçesi')."""
+    return " ".join(_strip_case(word) for word in build_search_query(text).split()).strip()
 
 
 BRAND_LEAK_RE = re.compile(r"\b(google|gemini)\b", re.I)
@@ -895,6 +1078,52 @@ def format_source_lines(payload, limit, with_snippets=False):
         if len(lines) >= limit:
             break
     return lines
+
+
+FOUNDER_NAME_RE = re.compile(r"\bayaz\s+kaplan\b", re.I)
+FOUNDER_ASK_RE = re.compile(
+    r"(kurucu|kuran|sahibi|seni kim|kim yap|kim gelişt|kim gelistir|kimin eseri|yaratıcın|yaraticin)",
+    re.I,
+)
+# Akış parça parça geldiği için adın yarısı bir parçada, yarısı diğerinde kalabilir;
+# bu yüzden olası her yarım eşleşme tamamlanana kadar buffer'da tutulur.
+FOUNDER_NAME_PARTIALS = sorted(
+    ("ayaz kaplan"[:length] for length in range(1, len("ayaz kaplan"))),
+    key=len,
+    reverse=True,
+)
+
+
+class NameScrubber:
+  """Keeps the founder's name out of samples; the stream is scanned across chunks."""
+
+  def __init__(self, replacement, enabled=True):
+    self.replacement = replacement or "Kullanıcı"
+    self.enabled = enabled
+    self.buffer = ""
+
+  def feed(self, piece):
+    if not piece:
+      return ""
+    if not self.enabled:
+      return piece
+    self.buffer += piece
+    emit = self.buffer
+    lowered = emit.lower()
+    for partial in FOUNDER_NAME_PARTIALS:
+      if lowered.endswith(partial):
+        emit = emit[: len(emit) - len(partial)]
+        break
+    self.buffer = self.buffer[len(emit):]
+    if not emit:
+      return ""
+    return FOUNDER_NAME_RE.sub(self.replacement, emit)
+
+  def flush(self):
+    if not self.enabled or not self.buffer:
+      return ""
+    emit, self.buffer = self.buffer, ""
+    return FOUNDER_NAME_RE.sub(self.replacement, emit)
 
 
 def should_fetch_live_context(text):
@@ -1076,23 +1305,45 @@ def generate_image_with_gemini(prompt, image_model, api_key):
   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
 
 
+def generate_image_with_pollinations(prompt, seed=None):
+  """Keyless backup generator so images still work when the primary is blocked."""
+  if seed is None:
+    seed = random.randint(1, 999_999_999)
+  response = requests.get(
+      f"https://image.pollinations.ai/prompt/{quote(prompt.strip()[:500])}",
+      params={
+          "width": 1024,
+          "height": 1024,
+          "nologo": "true",
+          "safe": "true",
+          "model": "flux",
+          "seed": seed,
+      },
+      headers={"User-Agent": "Mozilla/5.0 (compatible; AslanParcasi/1.0)"},
+      timeout=150,
+  )
+  if response.status_code >= 400:
+    raise UpstreamHTTPError(response.status_code, response.text[:200])
+  content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+  if not response.content or not content_type.startswith("image/"):
+    raise ValueError(f"Yedek görsel servisi görsel döndürmedi ({content_type or 'boş yanıt'}).")
+  encoded = base64.b64encode(response.content).decode("ascii")
+  return f"data:{content_type};base64,{encoded}"
+
+
 def generate_image_with_retry(prompt, image_model=None, api_keys=None):
-  """Try every healthy key (and a fallback model) before giving up."""
+  """Try every healthy key, then the keyless backup, before giving up."""
   keys = ordered_keys(api_keys)
-  if not keys:
-    raise ValueError("Görsel servisi için sunucu anahtarı tanımlı değil.")
   models = []
-  for candidate in (image_model, GEMINI_IMAGE_MODEL, GEMINI_MODEL):
+  for candidate in (image_model, GEMINI_IMAGE_MODEL):
     if candidate and candidate not in models:
       models.append(candidate)
 
   last_error = None
-  attempted = False
   for key in keys:
     if not key_is_available(key):
       continue
     for model in models:
-      attempted = True
       try:
         result = generate_image_with_gemini(prompt, model, key)
         mark_key_ok(key)
@@ -1110,9 +1361,14 @@ def generate_image_with_retry(prompt, image_model=None, api_keys=None):
           mark_key_invalid(key, error)
           break
         # 400/404 -> this model can't serve images; 5xx/timeout -> next model then next key
-  if not attempted:
-    raise QuotaBreakerError(QUOTA_STATE["last_error"] or DAILY_QUOTA_MESSAGE)
-  raise last_error
+
+  if last_error is not None:
+    logger.warning("Primary image provider failed, falling back: %s", last_error)
+  try:
+    return generate_image_with_pollinations(prompt)
+  except Exception as backup_error:
+    logger.warning("Backup image provider failed: %s (primary: %s)", backup_error, last_error)
+  raise ImageUnavailableError(IMAGE_UNAVAILABLE_MESSAGE)
 
 
 def transcribe_audio(encoded, mime_type, api_keys=None):
@@ -1397,6 +1653,21 @@ def _retry_after(error):
   return value if 0 < value <= 120 else None
 
 
+# Uzun düşünme bütçesi boşa harcanmasın diye sunucunun kendi başına denediği açılar.
+RESEARCH_FACETS = (
+    "nasıl çalışır",
+    "örnekleri",
+    "tarihçesi",
+    "güncel gelişmeler",
+    "istatistikler",
+    "avantajları dezavantajları",
+    "uzman yorumları",
+    "bilimsel açıklama",
+    "kullanım alanları",
+    "riskleri ve eleştiriler",
+)
+
+
 def depth_instruction(seconds):
     if seconds <= 60:
         return (
@@ -1462,7 +1733,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   }
 
   rounds = 0
-  max_rounds = max(1, min(16, int(seconds) // 45))
+  max_rounds = max(3, min(24, int(seconds) // 20))
   yield ("reason", f"Derin düşünme başladı · bütçe {int(seconds)} sn")
 
   findings = []
@@ -1479,14 +1750,57 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       if line not in findings:
         findings.append(line)
 
+  seen_lines = set()
+
+  def report_sources(result, per_engine_limit=5):
+    """Show only brand-safe, not-yet-seen sources; returns how many were new."""
+    fresh = 0
+    for line in format_source_lines(result, per_engine_limit * 2):
+      if line in seen_lines:
+        continue
+      seen_lines.add(line)
+      fresh += 1
+      if fresh <= per_engine_limit:
+        yield ("reason", f"SRC:🌐 Kaynak: {line}")
+
+  def facet_search(index):
+    """Server-driven research step so the whole budget is used, never idled."""
+    facet = RESEARCH_FACETS[index % len(RESEARCH_FACETS)]
+    facet_query = f"{search_topic(question)} {facet}".strip()
+    yield ("reason", f"SRC:🔎 Ek araştırma ({index + 1}. tur): {facet_query[:90]}")
+    result = web_search(facet_query, 5)
+    left = max(0, int(deadline - time.monotonic()))
+    if result.get("engine") == "weak-match" or not result.get("results"):
+      yield ("reason", f"Bu açıdan güvenilir kaynak çıkmadı; {left} sn kaldı, farklı bir açı deneniyor.")
+      return
+    add_findings(result)
+    new_sources = 0
+    for event in report_sources(result):
+      new_sources += 1
+      yield event
+    if not new_sources:
+      yield ("reason", f"Bu açının kaynakları zaten doğrulanmıştı; {left} sn kaldı, yeni açı deneniyor.")
+    else:
+      yield ("reason", f"{new_sources} yeni kaynak doğrulandı, bulgular karşılaştırılıyor... ({left} sn kaldı)")
+    research.append({
+        "role": "system",
+        "content": (
+            f"'{facet}' açısından toplanan ek web bulguları:\n"
+            + "\n".join(f"- {item.get('title')}" for item in (result.get("results") or [])[:5])
+        ),
+    })
+
   if question:
     yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
     seeded = web_search(build_search_query(question), 6)
-    add_findings(seeded)
-    for line in format_source_lines(seeded, 6):
-      yield ("reason", f"SRC:🌐 Kaynak: {line}")
-    if seeded.get("error") and not seeded.get("results"):
-      yield ("reason", "İlk arama sonuç vermedi; araç çağrılarıyla yeniden denenecek.")
+    if seeded.get("engine") == "weak-match":
+      yield ("reason", "İlk arama konuyla ilgili güçlü kaynak vermedi; ek turlarda yeniden denenecek.")
+    else:
+      add_findings(seeded)
+      for event in report_sources(seeded, 6):
+        yield event
+      if seeded.get("error") and not seeded.get("results"):
+        yield ("reason", "İlk arama sonuç vermedi; ek araştırma turlarıyla yeniden denenecek.")
   if findings:
     research.append({
         "role": "system",
@@ -1498,6 +1812,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     yield ("reason", f"{len(findings)} kaynak toplandı, karşılaştırılıyor...")
 
   tools = TOOLS
+  facet_index = 0
   while rounds < max_rounds:
     remaining = deadline - time.monotonic()
     if remaining <= reserve:
@@ -1511,7 +1826,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           max_tokens=1024,
           stream=False,
           tools=tools,
-          timeout=max(5, min(60, int(remaining - reserve))),
+          timeout=max(5, min(45, int(remaining - reserve))),
           deadline=deadline - reserve,
       )
     except (
@@ -1546,12 +1861,14 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     if not tool_calls:
       gap_note = (
           f"Kalan süre {max(0, int(deadline - time.monotonic()))} sn. Eksik kalan "
-          "noktaları belirle; gerekirse araç çağır, değilse bulgularını maddele."
+          "noktaları belirle; web_search aracıyla YENİ bir açı ara, bulduklarını "
+          "karşılaştır ve bulgularını maddele."
       )
       research.append({"role": "user", "content": gap_note})
-      yield ("reason", "Bulgular gözden geçiriliyor, eksikler aranıyor...")
+      yield ("reason", "Model araç çağırmadı; sunucu yeni bir açıdan araştırıyor...")
+      yield from facet_search(facet_index)
+      facet_index += 1
       rounds += 1
-      time.sleep(min(6, max(0, deadline - time.monotonic() - reserve)))
       continue
 
     research.append({
@@ -1585,9 +1902,12 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           "content": json.dumps(result, ensure_ascii=False),
       })
       if call.function.name == "web_search":
-        add_findings(result)
-        for line in format_source_lines(result, 5):
-          yield ("reason", f"SRC:🌐 Kaynak: {line}")
+        if result.get("engine") != "weak-match":
+          add_findings(result)
+          for event in report_sources(result):
+            yield event
+        else:
+          yield ("reason", "Modelin aradığı sorgu konuyla ilgili güçlü kaynak vermedi; atlandı.")
       elif call.function.name == "get_weather":
         if result.get("temperature") is not None:
           findings.append(
@@ -1600,9 +1920,14 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         yield ("reason", f"SRC:🕒 Saat verisi: {result.get('time')} {result.get('date')}")
     rounds += 1
 
-  while time.monotonic() < deadline - reserve:
-    yield ("reason", "Derin analiz sürüyor, bulgular olgunlaştırılıyor...")
-    time.sleep(min(5, max(1, deadline - reserve - time.monotonic())))
+  # Bütçe bitene kadar boş durma: her turda yeni bir açıdan gerçekten araştır.
+  while time.monotonic() < deadline - reserve and question:
+    yield from facet_search(facet_index)
+    facet_index += 1
+    pause = min(8, max(1, deadline - reserve - time.monotonic()))
+    if pause > 0:
+      yield ("reason", f"Toplam {len(findings)} bulgu birikti; {int(deadline - time.monotonic())} sn kaldı, yeni tur hazırlanıyor...")
+      time.sleep(pause)
 
   target_words = min(2500, 400 + int(seconds) * 2)
   final_messages = [
@@ -1834,11 +2159,6 @@ def api_image_generate(request):
       return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
 
     api_keys = get_api_keys()
-    if not api_keys:
-      return JsonResponse(
-          {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
-          status=503,
-      )
 
     now = time.monotonic()
     with _image_request_lock:
@@ -1863,7 +2183,10 @@ def api_image_generate(request):
       image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_keys)
       record_image_usage(request.user.pk)
       return JsonResponse({"status": "success", "image_url": image_url})
+    except ImageUnavailableError as img_error:
+      return JsonResponse({"error": str(img_error)}, status=503)
     except Exception as img_error:
+      logger.warning("Image generation failed: %s", img_error)
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
 
   except json.JSONDecodeError:
@@ -1903,7 +2226,8 @@ def api_chat(request):
     user_message = (data.get("message") or "").strip()
     mode = data.get("mode", "normal")
     history = (data.get("history") or [])[-40:]
-    deep_think = data.get("deep_think", False)
+    # Hızlı Analiz "anında yanıt" sözü verir; uzun düşünme o modda anlamsız.
+    deep_think = bool(data.get("deep_think", False)) and mode != "fast"
     try:
       deep_think_seconds = max(30, min(1800, int(data.get("deep_think_seconds") or 300)))
     except (TypeError, ValueError):
@@ -2051,6 +2375,19 @@ def api_chat(request):
         max_tokens = 2048
         history_limit = 16
 
+    chat_user_name = (request.user.get_full_name() or "").strip() or request.user.username
+    system_instruction += (
+        " ÖRNEK VERİ KURALI (kod, tablo, form, JSON, makale, dilekçe ve her türlü örnek için geçerli): "
+        "Kurucunun adı olan 'Ayaz Kaplan' ifadesini örneklerde, değişkenlerde, yorumlarda veya örnek "
+        "çıktılarda ASLA kullanma; bu adı yalnızca kullanıcı açıkça kurucunu sorarsa söylersin. "
+        f"Örneklerde bir kişi adı gerektiğinde birinci kişi olarak sohbeti kullanan kişiyi yaz: '{chat_user_name}'. "
+        "Birden fazla kişi adı gerekiyorsa kalanları kullanıcının diline ve ülkesine uygun sıradan, "
+        "gerçekçi isimler olsun (Türkçe isteklerde örneğin Zeynep Yılmaz, Mert Demir, Elif Kaya). "
+        "Kendi adını (Aslan Parçası / Aslan Parçası AI) başlıkta, uygulama adında, dosya adında veya "
+        "yorum satırında kullanabilirsin. "
+        "Placeholder gerektiğinde 'Kullanıcı Adı', 'ornek@site.com', 'Ad Soyad' gibi nötr değerler yaz."
+    )
+
     tier = "fast" if model == GEMINI_FAST_MODEL else "normal"
     # Fotoğraf gönderildiğinde isteği YALNIZCA görseli gerçekten görebilen
     # modellere yolla; metin modelleri 400 dönüp kullanıcıya hata gösteriyor.
@@ -2105,12 +2442,24 @@ def api_chat(request):
             ),
         })
       else:
+        if weather_data.get("not_found"):
+          missing_city = weather_city
+
+          def city_not_found_stream():
+            yield (
+                f"«{missing_city}» adında bir yer bulamadım. 🌤 İl veya ilçe adını tek "
+                "başına yazar mısın? Örneğin sadece \"Erdek\" ya da \"Balıkesir\" gibi."
+            )
+
+          return StreamingHttpResponse(city_not_found_stream(), content_type="text/plain")
         messages.insert(1, {
             "role": "system",
             "content": (
                 "Hava durumu servisi hata verdi: "
                 + json.dumps(weather_data, ensure_ascii=False)
-                + ". Veri uydurma; servise şu an ulaşılamadığını söyle."
+                + ". Veri uydurma; servise şu an ulaşılamadığını söyle ve kullanıcıdan"
+                " şehir adını bir kez daha yazmasını iste. Başka bir site veya arama"
+                " motoru önerme."
             ),
         })
     elif asked_weather:
@@ -2216,6 +2565,9 @@ def api_chat(request):
     def generate():
       answered = False
       errored = False
+      scrubber = NameScrubber(
+          chat_user_name, enabled=not FOUNDER_ASK_RE.search(question_text or "")
+      )
 
       if deep_think:
         try:
@@ -2227,10 +2579,12 @@ def api_chat(request):
               max_tokens=max_tokens,
           ):
             if kind == "reason":
-              yield REASONING_MARKER + text + "\n"
+              reason_text = scrubber.feed(text)
+              if reason_text:
+                yield REASONING_MARKER + reason_text + "\n"
             elif text:
               answered = True
-              yield text
+              yield scrubber.feed(text)
         except Exception as error:
           if not answered:
             errored = True
@@ -2261,7 +2615,7 @@ def api_chat(request):
               piece = getattr(delta, "content", None) if delta else None
               if piece:
                 answered = True
-                yield piece
+                yield scrubber.feed(piece)
           except Exception as error:
             if answered:
               break
@@ -2285,6 +2639,10 @@ def api_chat(request):
           yield deterministic_fallback + "\n\n" + fallback_note()
         else:
           yield EMPTY_ANSWER_MESSAGE
+
+      tail = scrubber.flush()
+      if tail:
+        yield tail
 
     return StreamingHttpResponse(generate(), content_type='text/plain')
 
