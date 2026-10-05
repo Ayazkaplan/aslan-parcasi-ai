@@ -2023,7 +2023,17 @@
         };
 
         updateThinkButtonAvailability();
-        createNewChat(modeTitles[mode], false);
+
+        // Mevcut sohbetin modunu güncelle - yeni sohbet açma
+        const activeChat = chats.find(c => c.id === currentChatId);
+        if (activeChat) {
+            activeChat.mode = mode;
+            if (!activeChat.isCustomTitle) {
+                activeChat.title = modeTitles[mode];
+                renderChatList();
+            }
+            saveChats();
+        }
     }
 
     // Hızlı Analiz "anında cevap" sözü verir; uzun düşünme oraya ait değil.
