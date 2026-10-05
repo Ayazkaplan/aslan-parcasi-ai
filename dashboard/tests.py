@@ -1,9 +1,14 @@
 import base64
 import datetime as dt
 import json
+import os
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
+
+from core import settings as app_settings
 
 from django.contrib.auth.models import User
 from django.test import Client, SimpleTestCase, TestCase
@@ -12,6 +17,18 @@ from django.utils import timezone
 
 from . import views
 from .models import AppClock
+
+
+class EnvLoadingTests(SimpleTestCase):
+    def test_dotenv_file_is_loaded_into_environment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text("GEMINI_API_KEY=test-key\n", encoding="utf-8")
+
+            with patch.object(app_settings, "BASE_DIR", Path(tmpdir)), \
+                 patch.dict(os.environ, {}, clear=True):
+                app_settings.load_environment()
+                self.assertEqual(os.environ.get("GEMINI_API_KEY"), "test-key")
 
 
 class UploadedFileTests(TestCase):
@@ -220,6 +237,26 @@ class SearchTests(SimpleTestCase):
         post.assert_called_once()
         get.assert_not_called()
 
+    def test_sports_live_search_retries_on_ddg_block_or_weak_result(self):
+        self.assertTrue(
+            views.should_retry_live_search_with_general_results(
+                "Fenerbahçe Eyüpspor maçı ne oldu?",
+                {"blocked": True, "engine": "ddg-html", "results": []},
+            )
+        )
+        self.assertTrue(
+            views.should_retry_live_search_with_general_results(
+                "Fenerbahçe Eyüpspor maçı ne oldu?",
+                {"engine": "weak-match", "results": []},
+            )
+        )
+        self.assertFalse(
+            views.should_retry_live_search_with_general_results(
+                "Merhaba nasıl gidiyor?",
+                {"blocked": True, "engine": "ddg-html", "results": []},
+            )
+        )
+
 
 class AppClockTests(TestCase):
     def test_clock_persists_the_current_istanbul_date(self):
@@ -409,6 +446,13 @@ class ImageGenerationTests(TestCase):
         self.assertIn("çizim", prompt)
         self.assertNotIn("photorealistic", prompt)
 
+    def test_branded_drink_prompt_preserves_specific_packaging(self):
+        prompt = views.enhance_image_prompt("Gerçekçi Aslan markalı kırmızı içecek kutusu")
+
+        self.assertIn("branded product packaging", prompt)
+        self.assertIn("readable label", prompt)
+        self.assertIn("not a generic cup", prompt)
+
     def test_repeated_image_requests_are_throttled(self):
         with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
             "dashboard.views.time.monotonic",
@@ -590,7 +634,99 @@ class ChatFeatureTests(TestCase):
 
         model_call.assert_not_called()
         answer = "".join(text for kind, text in events if kind == "answer")
-        self.assertIn("DuckDuckGo kaynaklarına erişemedim", answer)
+        self.assertIn("doğrulanabilir web kaynaklarına erişemedim", answer)
+
+    def test_deep_research_falls_back_to_general_search_when_ddg_is_blocked(self):
+        tool_call = SimpleNamespace(
+            id="search-1",
+            function=SimpleNamespace(
+                name="web_search",
+                arguments='{"query":"Fenerbahçe Eyüpspor maç sonucu"}',
+            ),
+        )
+        first_response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=None, tool_calls=[tool_call]),
+        )])
+        final_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Sonuç net: Fenerbahçe 2-1 kazandı."),
+        )])
+        model_call_count = 0
+
+        def model_call(*args, **kwargs):
+            nonlocal model_call_count
+            if kwargs.get("stream"):
+                return iter([final_chunk])
+            model_call_count += 1
+            return first_response if model_call_count == 1 else SimpleNamespace(choices=[])
+
+        search_results = iter([
+            {"engine": "ddg-html", "results": [{"title": "Maç öncesi", "url": "https://sports.example/preview"}]},
+            {"blocked": True, "results": [], "engine": "ddg-html"},
+            {"engine": "bing", "results": [{"title": "Fenerbahçe Eyüpspor 2-1", "snippet": "Maç sonucu 2-1."}]},
+        ])
+
+        def fake_web_search(*args, **kwargs):
+            return next(search_results, {
+                "engine": "ddg-html",
+                "results": [{"title": "Fenerbahçe Eyüpspor kaynak", "url": "https://sports.example/match"}],
+            })
+
+        clock = {"now": 0.0}
+
+        def fake_monotonic():
+            return clock["now"]
+
+        def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        with (
+            patch("dashboard.views.safe_model_call", side_effect=model_call),
+            patch("dashboard.views.web_search", side_effect=fake_web_search) as search,
+            patch("dashboard.views.time.monotonic", side_effect=fake_monotonic),
+            patch("dashboard.views.time.sleep", side_effect=fake_sleep),
+        ):
+            events = list(views.deep_think_events(
+                object(),
+                [
+                    {"role": "system", "content": "araştır"},
+                    {"role": "user", "content": "Fenerbahçe Eyüpspor maç sonucu"},
+                ],
+                30,
+                0.3,
+                1024,
+            ))
+
+        self.assertGreaterEqual(search.call_count, 3)
+        self.assertTrue(search.call_args_list[1].kwargs["duckduckgo_only"])
+        self.assertFalse(search.call_args_list[2].kwargs["duckduckgo_only"])
+        self.assertIn("Fenerbahçe 2-1 kazandı", "".join(text for kind, text in events if kind == "answer"))
+
+    def test_sanitize_output_strips_reasoning_leaks(self):
+        raw = "Here's a thinking process:\n1. Analyze user input\n2. Search\nFinal answer: Fenerbahçe 2-1 kazandı."
+        self.assertEqual(
+            views.sanitize_model_output(raw),
+            "Fenerbahçe 2-1 kazandı.",
+        )
+
+    def test_long_think_guidance_prioritizes_evidence_without_chain_of_thought(self):
+        prompt = views.depth_instruction(1200).lower()
+
+        self.assertIn("güncel kanıtları değerlendir", prompt)
+        self.assertIn("bilinmeyeni ayır", prompt)
+        self.assertNotIn("adım adım akıl yürüt", prompt)
+
+    def test_stream_sanitizer_hides_reasoning_split_across_chunks(self):
+        sanitizer = views.ModelOutputStreamSanitizer()
+        output = "".join(
+            sanitizer.feed(chunk)
+            for chunk in (
+                "Here's a thinking ",
+                "process:\\n1. Analyze user input\\n2. Search\\nFinal answer: Verified response.",
+            )
+        )
+        output += sanitizer.feed("", final=True)
+
+        self.assertEqual(output, "Verified response.")
 
     def test_deep_research_releases_a_prepared_answer_at_the_budget_end(self):
         clock = {"now": 0.0}
