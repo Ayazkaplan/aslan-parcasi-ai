@@ -1228,7 +1228,7 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
     limit = max(1, min(int(num_results), 10))
     clean_query = (query or "").strip()
     if not clean_query:
-        return {"error": "Web search failed: empty query", "results": [], "query": query}
+        return {"error": "Web araması başarısız: boş sorgu", "results": [], "query": query}
     allow_chatter = bool(
         NEWS_HINT_RE.search(clean_query) or ENTERTAINMENT_ASK_RE.search(clean_query)
     )
@@ -1264,7 +1264,7 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
                     or "anomalyDetectionBlock" in response.text
                 ):
                     return {
-                        "error": "DuckDuckGo requested a security check for this server.",
+                        "error": "DuckDuckGo bu sunucu için güvenlik kontrolü istedi. Lütfen daha sonra tekrar deneyin.",
                         "results": [],
                         "query": variant,
                         "engine": engine,
@@ -1275,12 +1275,12 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
                     continue
                 results = parser(response.text, limit * 2)
                 if not results:
-                    last_error = f"{engine}: no results parsed"
+                    last_error = f"{engine}: sonuç bulunamadı"
                     continue
                 relevant = [item for item in results if _is_relevant(item, tokens, allow_chatter)]
                 relevant.sort(key=lambda item: -_relevance(item, tokens))
-                # Tek sonuç tesadüf olabilir; yalın hâl varyantı genelde çok daha isabetli.
-                if len(relevant) >= 2:
+                # En az 1 ilgili sonuç yeterli - çok katı filtreleme kaldırıldı
+                if len(relevant) >= 1:
                     return {"query": variant, "results": relevant[:limit], "engine": engine}
                 if relevant and partial is None:
                     partial = relevant[:limit]
@@ -1288,8 +1288,8 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
             except Exception as error:
                 last_error = f"{engine}: {error}"
     if partial:
-        return {"query": clean_query, "results": partial, "engine": "weak-match"}
-    return {"error": f"Web search failed: {last_error}", "results": [], "query": clean_query}
+        return {"query": clean_query, "results": partial, "engine": "partial-match"}
+    return {"error": f"Web araması başarısız: {last_error}", "results": [], "query": clean_query}
 
 
 SEARCH_FILLER_RE = re.compile(
@@ -2429,12 +2429,15 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         if result.get("blocked"):
           ddg_blocked = True
           yield ("reason", "DuckDuckGo bu sunucudan gelen arama için güvenlik doğrulaması istedi.")
-        elif result.get("engine") != "weak-match":
+        elif result.get("engine") != "weak-match" and result.get("engine") != "partial-match":
           add_findings(result)
           for event in report_sources(result):
             yield event
         else:
-          yield ("reason", "Modelin aradığı sorgu konuyla ilgili güçlü kaynak vermedi; atlandı.")
+          # weak-match ve partial-match sonuçları da artık kabul ediliyor
+          add_findings(result)
+          for event in report_sources(result):
+            yield event
       elif call.function.name == "get_weather":
         if result.get("temperature") is not None:
           findings.append(
