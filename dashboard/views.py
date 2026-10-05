@@ -1104,11 +1104,7 @@ def _parse_bing_results(html_text, limit):
 
 
 def _parse_google_news_rss(xml_text, limit):
-    """Haber/spor sorularında skor başlığın içinde gelir; tarih de kaynağa eklenir.
-
-    Bağlantılar arama motorunun kendi yönlendirmesi olduğu için bilinçli olarak
-    boş bırakılır: başlık + kaynak adı + tarih kullanıcıya ve modele yeter.
-    """
+    """Keep article links so search findings can be opened and verified."""
     results = []
     for item in re.findall(r"<item>(.*?)</item>", xml_text or "", re.S):
         title_match = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", item, re.S)
@@ -1124,7 +1120,11 @@ def _parse_google_news_rss(xml_text, limit):
             _strip_tags(date_match.group(1)) if date_match else "",
             _strip_tags(source_match.group(1)) if source_match else "",
         ) if part)
-        results.append({"title": title, "url": "", "snippet": meta})
+        results.append({
+            "title": title,
+            "url": _clean_result_url(link_match.group(1)),
+            "snippet": meta,
+        })
         if len(results) >= limit:
             break
     return results
@@ -1420,7 +1420,7 @@ def should_fetch_live_context(text):
 
 
 SPORTS_FACTS_RE = re.compile(
-    r"\b(maç|mac|futbol|gol|skor|puan|derbi|lig|transfer|kadrosu|golcü|golcu)\b|"
+  r"\b(maç|mac|futbol|gol\w*|skor|puan|derbi|lig|transfer|kadrosu|golcü\w*|golcu\w*)\b|"
     r"(fenerbahçe|fenerbahce|eyüpspor|eyupspor|galatasaray|beşiktaş|besiktas|"
     r"trabzonspor|başakşehir|basaksehir|süper lig|super lig)",
     re.I,
@@ -1431,24 +1431,107 @@ SPORTS_FOLLOWUP_RE = re.compile(
     r"detay|ayrıntı|ayrinti)\b",
     re.I,
 )
+SPORTS_SCORER_RE = re.compile(
+    r"\b(gol\w*|golcü\w*|golcu\w*|kim\s+attı|kim\s+atti|"
+    r"asist\w*|dakika\w*|oyuncu\w*)\b",
+    re.I,
+)
+SPORTS_SCORE_RE = re.compile(r"\b\d{1,2}\s*[-–:]\s*\d{1,2}\b")
+SPORTS_DATE_RE = re.compile(
+    r"\b\d{1,2}\s+(?:ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|"
+    r"temmuz|ağustos|agustos|eylül|eylul|ekim|kasım|kasim|aralık|aralik)\s+20\d{2}\b",
+    re.I,
+)
+SPORTS_QUERY_NOISE = SEARCH_STOPWORDS | {
+    "mac", "maci", "macta", "sonuc", "sonucu", "skor", "kac", "bitti",
+    "gol", "goller", "golcu", "golculer", "kim", "atti", "ne", "oldu",
+  }
 
 
 def is_sports_question(text):
     return bool(SPORTS_FACTS_RE.search(text or ""))
 
 
+def _previous_sports_user_question(history):
+  for message in reversed(history or []):
+    if not isinstance(message, dict) or message.get("sender") != "user":
+      continue
+    previous_question = str(message.get("text") or "").strip()
+    return previous_question if is_sports_question(previous_question) else ""
+  return ""
+
+
+def is_sports_followup(text, history=None):
+  """A short scorer/detail question inherits only the immediately prior user match."""
+  return bool(
+    SPORTS_FOLLOWUP_RE.search(text or "")
+    and _previous_sports_user_question(history)
+  )
+
+
+def _compact_sports_match_terms(text):
+  words = re.findall(r"[A-Za-zÇĞİÖŞÜçğıöşü0-9-]+", text or "")
+  return " ".join(
+      word for word in words
+      if len(_ascii_fold(word)) >= 3
+      and _ascii_fold(word).lower() not in SPORTS_QUERY_NOISE
+  )
+
+
+def _previous_assistant_match_hints(history):
+  for message in reversed(history or []):
+    if not isinstance(message, dict):
+      continue
+    if message.get("sender") == "user":
+      if is_sports_question(message.get("text")):
+        return []
+      continue
+    if message.get("sender") != "ai":
+      continue
+    answer = str(message.get("text") or "")
+    hints = []
+    score = SPORTS_SCORE_RE.search(answer)
+    date = SPORTS_DATE_RE.search(answer)
+    if score:
+      hints.append(score.group(0).replace("–", "-").replace(":", "-"))
+    if date:
+      hints.append(date.group(0))
+    return hints
+  return []
+
+
+def build_live_search_queries(text, history=None):
+  """Return the contextual sports query and a focused detail query when needed."""
+  current = (text or "").strip()
+  previous_question = _previous_sports_user_question(history)
+  if previous_question and SPORTS_FOLLOWUP_RE.search(current):
+    if SPORTS_SCORER_RE.search(current):
+      match_terms = _compact_sports_match_terms(previous_question)
+      queries = []
+      if match_terms:
+        hints = _previous_assistant_match_hints(history)
+        score_hint = next((hint for hint in hints if SPORTS_SCORE_RE.fullmatch(hint)), "")
+        date_hint = next((hint for hint in hints if SPORTS_DATE_RE.fullmatch(hint)), "")
+        match_key = " ".join(part for part in (match_terms, score_hint) if part)
+        queries.extend((
+          " ".join(part for part in (match_key, "golleri kim attı", date_hint) if part),
+          " ".join(part for part in (
+            match_key,
+            "gol atan oyuncular",
+            date_hint,
+            "golleri" if date_hint else "",
+          ) if part),
+        ))
+      queries.append(build_search_query(f"{previous_question} {current}"))
+    else:
+      queries = [build_search_query(f"{previous_question} {current}")]
+    return tuple(dict.fromkeys(queries))
+  return (build_search_query(current),)
+
+
 def build_live_search_query(text, history=None):
-    """Resolve a sports follow-up from prior user questions, never prior AI claims."""
-    current = (text or "").strip()
-    if not is_sports_question(current) or not SPORTS_FOLLOWUP_RE.search(current):
-        return build_search_query(current)
-    for message in reversed(history or []):
-        if not isinstance(message, dict) or message.get("sender") != "user":
-            continue
-        previous_question = str(message.get("text") or "").strip()
-        if is_sports_question(previous_question):
-            return build_search_query(f"{previous_question} {current}")
-    return build_search_query(current)
+  """Compatibility helper returning the primary contextual live-search query."""
+  return build_live_search_queries(text, history)[0]
 
 
 def should_retry_live_search_with_general_results(question, live_context):
@@ -2387,12 +2470,22 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     result = web_search(
       query, num_results, duckduckgo_only=True, deadline=deadline - reserve
     )
-    if result.get("blocked"):
-      yield ("reason", "DuckDuckGo güvenlik doğrulaması istedi; genel arama ile yeniden deneniyor.")
-      result = web_search(
-        query, num_results, duckduckgo_only=False, deadline=deadline - reserve
+    if result.get("results") and result.get("engine") != "weak-match":
+      return result
+    yield ("reason", "İlk arama engellendi veya yeterli kaynak vermedi; genel arama ve sade sorgu deneniyor.")
+    best_fallback = None
+    variants = dict.fromkeys((query, search_topic(query)))
+    for variant in variants:
+      if not variant:
+        continue
+      fallback = web_search(
+        variant, num_results, duckduckgo_only=False, deadline=deadline - reserve
       )
-    return result
+      if fallback.get("results") and fallback.get("engine") != "weak-match":
+        return fallback
+      if fallback.get("results") and best_fallback is None:
+        best_fallback = fallback
+    return best_fallback or result
 
   def facet_search(index):
     nonlocal ddg_blocked
@@ -3169,22 +3262,43 @@ def api_chat(request):
       )
 
     live_context = None
-    live_search_query = build_live_search_query(question_text, history)
-    sports_question = is_sports_question(question_text)
+    live_search_queries = build_live_search_queries(question_text, history)
+    live_search_query = live_search_queries[0]
+    sports_question = (
+        is_sports_question(question_text)
+        or is_sports_followup(question_text, history)
+    )
     if should_fetch_live_context(question_text) or (
       sports_question and live_search_query != build_search_query(question_text)
     ):
-      live_context = web_search(
-        live_search_query,
-        3 if mode == "fast" else 5,
-        duckduckgo_only=sports_question,
-      )
-      if should_retry_live_search_with_general_results(question_text, live_context):
-        live_context = web_search(
-            live_search_query,
-            3 if mode == "fast" else 5,
-            duckduckgo_only=False,
+      live_contexts = []
+      combined_results = []
+      seen_result_keys = set()
+      for search_query in live_search_queries:
+        search_context = web_search(
+          search_query,
+          3 if mode == "fast" else 5,
+          duckduckgo_only=sports_question,
         )
+        if should_retry_live_search_with_general_results(search_query, search_context):
+          general_context = web_search(
+              search_query,
+              3 if mode == "fast" else 5,
+              duckduckgo_only=False,
+          )
+          if general_context.get("results") or not search_context.get("results"):
+            search_context = general_context
+        live_contexts.append(search_context)
+        for item in search_context.get("results") or []:
+          key = str(item.get("url") or item.get("title") or "").strip().casefold()
+          if key and key not in seen_result_keys:
+            seen_result_keys.add(key)
+            combined_results.append(item)
+      live_context = {
+          **(live_contexts[0] if live_contexts else {}),
+          "query": " | ".join(live_search_queries),
+          "results": combined_results,
+      }
       if sports_question and not live_context.get("results"):
         def unverifiable_sports_stream():
           yield (
