@@ -8,8 +8,25 @@ import os
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dev dependency
+    load_dotenv = None
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def load_environment():
+    """Load local secrets from a .env file if present."""
+    if load_dotenv is None:
+        return
+    env_path = BASE_DIR / '.env'
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+
+
+load_environment()
 
 
 # Quick-start development settings - unsuitable for production
