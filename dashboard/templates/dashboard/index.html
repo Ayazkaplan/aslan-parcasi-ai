@@ -2605,6 +2605,59 @@
         });
     }
 
+    async function addGeneratedImageBranding(imageUrl) {
+        if (!imageUrl || !imageUrl.startsWith('data:image/')) return imageUrl;
+
+        const generatedImage = new Image();
+        generatedImage.src = imageUrl;
+        await generatedImage.decode();
+
+        const avatarImage = new Image();
+        avatarImage.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(LION_SVG_HTML)}`;
+        await avatarImage.decode();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = generatedImage.naturalWidth;
+        canvas.height = generatedImage.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Görsel işlenemedi.');
+        context.drawImage(generatedImage, 0, 0);
+
+        const footerHeight = Math.max(48, Math.min(112, Math.round(Math.min(canvas.width, canvas.height) * 0.035)));
+        const footerTop = canvas.height - footerHeight;
+        context.fillStyle = 'rgba(5, 10, 18, 0.76)';
+        context.fillRect(0, footerTop, canvas.width, footerHeight);
+
+        const avatarSize = Math.round(footerHeight * 0.72);
+        const inset = Math.round(footerHeight * 0.18);
+        context.save();
+        context.beginPath();
+        context.arc(inset + avatarSize / 2, footerTop + footerHeight / 2, avatarSize / 2, 0, Math.PI * 2);
+        context.clip();
+        context.drawImage(avatarImage, inset, footerTop + (footerHeight - avatarSize) / 2, avatarSize, avatarSize);
+        context.restore();
+        context.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        context.lineWidth = Math.max(2, footerHeight * 0.025);
+        context.beginPath();
+        context.arc(inset + avatarSize / 2, footerTop + footerHeight / 2, avatarSize / 2, 0, Math.PI * 2);
+        context.stroke();
+
+        const lionSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><path fill="#d6b56d" d="M64 5 77 17 95 12 99 31 117 39 108 56 121 72 104 84 105 104 85 105 72 122 56 110 38 119 30 101 10 96 16 77 4 63 17 48 13 29 33 27 45 10 62 18z"/><path fill="#101620" d="M41 49a7 7 0 1 0 0 14 7 7 0 0 0 0-14m46 0a7 7 0 1 0 0 14 7 7 0 0 0 0-14M64 65l-15 14 15 15 15-15z"/><path fill="none" stroke="#101620" stroke-linecap="round" stroke-linejoin="round" stroke-width="5" d="M49 82q15 12 30 0"/></svg>`;
+        const lionImage = new Image();
+        lionImage.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(lionSvg)}`;
+        await lionImage.decode();
+        const lionSize = Math.round(footerHeight * 0.76);
+        context.drawImage(
+            lionImage,
+            canvas.width - lionSize - inset,
+            footerTop + (footerHeight - lionSize) / 2,
+            lionSize,
+            lionSize
+        );
+
+        return canvas.toDataURL('image/jpeg', 0.94);
+    }
+
     async function generateImage() {
         const inputEl = document.getElementById('userInput');
         const prompt = inputEl.value.trim();
@@ -2678,10 +2731,11 @@
             const data = await response.json();
 
             if (data.status === 'success' && data.image_url) {
+                const brandedImage = await addGeneratedImageBranding(data.image_url);
                 finishPlaceholder({
                     sender: 'ai',
                     text: 'İşte istediğin görsel:',
-                    images: [{ url: data.image_url, name: prompt }],
+                    images: [{ url: brandedImage, name: prompt }],
                     timestamp: Date.now()
                 });
             } else {
@@ -2913,8 +2967,14 @@
                     for (;;) {
                         const markerAt = pending.indexOf(REASON);
                         if (markerAt === -1) {
-                            applyAnswer(pending);
-                            pending = '';
+                            let markerPrefixLength = Math.min(pending.length, REASON.length - 1);
+                            while (markerPrefixLength > 0
+                                && !REASON.startsWith(pending.slice(-markerPrefixLength))) {
+                                markerPrefixLength -= 1;
+                            }
+                            const answerEnd = pending.length - markerPrefixLength;
+                            applyAnswer(pending.slice(0, answerEnd));
+                            pending = pending.slice(answerEnd);
                             break;
                         }
                         const lineEnd = pending.indexOf(String.fromCharCode(10), markerAt);

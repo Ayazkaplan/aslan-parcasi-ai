@@ -42,7 +42,11 @@ MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
-GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+GEMINI_IMAGE_MODEL = "gemini-3-pro-image"
+GEMINI_IMAGE_FALLBACK_MODELS = (
+  "gemini-3.1-flash-image",
+  "gemini-2.5-flash-image",
+)
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 REASONING_MARKER = "\x00R\x00"
 
@@ -142,7 +146,7 @@ EMPTY_ANSWER_MESSAGE = (
     "kısaltıp denemek genelde çözer."
 )
 IMAGE_UNAVAILABLE_MESSAGE = (
-    "Görsel oluşturma servislerim şu an bu isteği tamamlayamadı; ikisini de denedim. "
+  "Görsel oluşturma servislerim şu an bu isteği tamamlayamadı. "
     "Birkaç dakika sonra tekrar dene, büyük ihtimalle düzelir. Bu arada sohbet, hava "
     "durumu ve internet araştırması özelliklerim çalışmaya devam ediyor."
 )
@@ -221,6 +225,13 @@ def enhance_image_prompt(prompt):
   topic = english.strip("., ")
   if not topic:
     return ""
+  if re.search(
+      r"\b(anime|manga|cartoon|illustration|drawing|sketch|logo|icon|sticker|pixel art|watercolor|oil painting)\b|"
+      r"(çizim|karikatür|illüstrasyon|suluboya|yağlı boya|çıkartma)",
+      raw,
+      re.IGNORECASE,
+  ):
+    return topic
 
   descriptors = [
       "photorealistic",
@@ -1076,14 +1087,16 @@ def _relevance(result, tokens):
 
 def _is_relevant(result, tokens, allow_chatter):
     """On-topic and, unless the user asked for it, not entertainment noise."""
-    if tokens and _relevance(result, tokens) <= 0:
-        return False
+    if tokens:
+        minimum_matches = 1 if len(tokens) <= 2 else (len(tokens) + 1) // 2
+        if _relevance(result, tokens) < minimum_matches:
+            return False
     if allow_chatter:
         return True
     return not CHATTER_TITLE_RE.search(str(result.get("title") or ""))
 
 
-def _search_attempts(query):
+def _search_attempts(query, duckduckgo_only=False):
     """News engine first only for news-like queries; it is junk for general topics."""
     general = (
         ("ddg-html", "post", "https://html.duckduckgo.com/html/", {"kl": "tr-tr"}, _parse_ddg_results),
@@ -1095,10 +1108,12 @@ def _search_attempts(query):
         ("haber-rss", "get", "https://news.google.com/rss/search",
          {"hl": "tr", "gl": "TR", "ceid": "TR:tr"}, _parse_google_news_rss),
     )
+    if duckduckgo_only:
+        return tuple(attempt for attempt in general if attempt[0].startswith("ddg-"))
     return news + general if NEWS_HINT_RE.search(query or "") else general + news
 
 
-def web_search(query, num_results=5):
+def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
     """Current web results with no API key, filtered for relevance to the query."""
     limit = max(1, min(int(num_results), 10))
     clean_query = (query or "").strip()
@@ -1110,17 +1125,41 @@ def web_search(query, num_results=5):
     last_error = None
     partial = None
     for variant in _query_variants(clean_query):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         tokens = _query_tokens(variant)
-        for engine, method, url, extra, parser in _search_attempts(variant):
+        for engine, method, url, extra, parser in _search_attempts(variant, duckduckgo_only):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             try:
+                timeout = 4 if duckduckgo_only else 10
+                if deadline is not None:
+                    timeout = min(timeout, max(0.5, deadline - time.monotonic()))
                 if method == "post":
                     response = requests.post(
-                        url, data={"q": variant, **extra}, headers=SEARCH_HEADERS, timeout=10
+                        url,
+                        data={"q": variant, **extra},
+                        headers=SEARCH_HEADERS,
+                        timeout=timeout,
                     )
                 else:
                     response = requests.get(
-                        url, params={"q": variant, **extra}, headers=SEARCH_HEADERS, timeout=10
+                        url,
+                        params={"q": variant, **extra},
+                        headers=SEARCH_HEADERS,
+                        timeout=timeout,
                     )
+                if duckduckgo_only and (
+                    response.status_code == 202
+                    or "anomalyDetectionBlock" in response.text
+                ):
+                    return {
+                        "error": "DuckDuckGo requested a security check for this server.",
+                        "results": [],
+                        "query": variant,
+                        "engine": engine,
+                        "blocked": True,
+                    }
                 if response.status_code >= 400:
                     last_error = f"{engine} HTTP {response.status_code}"
                     continue
@@ -1389,6 +1428,22 @@ def record_image_usage(user_id):
 
 def generate_image_with_gemini(prompt, image_model, api_key):
   """Generate an image through the generateContent endpoint."""
+  image_prompt = (
+      "Create exactly one exceptionally detailed image that follows the user's brief. "
+      "Unless the brief explicitly requests an illustration, cartoon, logo, or another "
+      "non-photographic style, render it as an ultra-photorealistic photograph captured "
+      "with a professional full-frame camera. Use physically plausible light, natural "
+      "skin and material textures, accurate anatomy and perspective, realistic depth of "
+      "field, crisp focus on the subject, nuanced shadows, and restrained true-to-life "
+      "color grading. Preserve the requested subject, count, action, and composition; "
+      "do not invent unrelated objects. Do not add any text, watermark, signature, logo, "
+      "border, or provider branding unless the user explicitly asks for it. Follow any "
+        "style explicitly requested by the user instead of forcing photorealism. Exact user "
+        "brief: "
+        + prompt
+        + "\nPhotographic translation and detail cues: "
+        + enhance_image_prompt(prompt)
+  )
   response = requests.post(
       f"https://generativelanguage.googleapis.com/v1beta/models/{image_model}:generateContent",
       headers={
@@ -1397,22 +1452,12 @@ def generate_image_with_gemini(prompt, image_model, api_key):
       params={"key": api_key},
       json={
           "contents": [{
-              "parts": [{
-                  "text": (
-                      "Create exactly one image that follows the user's request literally. "
-                      "The named subject, object, place, count, action and composition are "
-                      "mandatory. If the user asks for a realistic image, make it "
-                      "photorealistic. Do not add unrelated objects. "
-                      "Quality bar: ultra-high fidelity, coherent lighting and shadows, "
-                      "accurate anatomy and perspective, fine surface detail, no warped "
-                      "hands or faces, no text unless the user asks for text. If the request "
-                      "is stylistic (cartoon, logo, anime, illustration), follow that style "
-                      "with the same quality bar. User request: "
-                      + prompt
-                  ),
-              }],
+            "parts": [{"text": image_prompt}],
           }],
-          "generationConfig": {"responseModalities": ["IMAGE"]},
+          "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {"imageSize": "4K"},
+          },
       },
       timeout=180,
   )
@@ -1497,16 +1542,10 @@ def generate_image_with_pollinations(prompt, seed=None):
 
 
 def generate_image_with_retry(prompt, image_model=None, api_keys=None):
-  """Try every healthy key, then the Flux-compatible providers before giving up."""
-  if os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN"):
-    try:
-      return generate_image_with_flux_hf(prompt)
-    except Exception as image_error:
-      logger.warning("HF Flux image generation failed; falling back to providers: %s", image_error)
-
+  """Try premium Gemini image models first, then configured Flux without public branding."""
   keys = ordered_keys(api_keys)
   models = []
-  for candidate in (image_model, GEMINI_IMAGE_MODEL):
+  for candidate in (image_model, GEMINI_IMAGE_MODEL, *GEMINI_IMAGE_FALLBACK_MODELS):
     if candidate and candidate not in models:
       models.append(candidate)
 
@@ -1534,10 +1573,11 @@ def generate_image_with_retry(prompt, image_model=None, api_keys=None):
 
   if last_error is not None:
     logger.warning("Primary image provider failed, falling back: %s", last_error)
-  try:
-    return generate_image_with_pollinations(prompt)
-  except Exception as backup_error:
-    logger.warning("Backup image provider failed: %s (primary: %s)", backup_error, last_error)
+  if os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN"):
+    try:
+      return generate_image_with_flux_hf(prompt)
+    except Exception as image_error:
+      logger.warning("Flux image generation failed after Gemini fallbacks: %s", image_error)
   raise ImageUnavailableError(IMAGE_UNAVAILABLE_MESSAGE)
 
 
@@ -1985,7 +2025,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   """
   total_budget = max(30, min(1800, int(seconds)))
   deadline = compute_deep_think_deadline(total_budget)
-  reserve = max(5, min(15, int(total_budget * 0.05)))
+  reserve = max(10, min(60, int(total_budget * 0.1)))
   question = _last_user_text(messages)
   research = [*messages]
   research[0] = {
@@ -2004,6 +2044,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   yield ("reason", f"Derin düşünme başladı · bütçe {int(seconds)} sn")
 
   findings = []
+  ddg_blocked = False
 
   def add_findings(result):
     for item in (result.get("results") or []):
@@ -2031,12 +2072,19 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         yield ("reason", f"SRC:🌐 Kaynak: {line}")
 
   def facet_search(index):
+    nonlocal ddg_blocked
     """Server-driven research step so the whole budget is used, never idled."""
     facet = RESEARCH_FACETS[index % len(RESEARCH_FACETS)]
     facet_query = f"{search_topic(question)} {facet}".strip()
     yield ("reason", f"SRC:🔎 Ek araştırma ({index + 1}. tur): {facet_query[:90]}")
-    result = web_search(facet_query, 5)
+    result = web_search(
+      facet_query, 5, duckduckgo_only=True, deadline=deadline - reserve
+    )
     left = max(0, int(deadline - time.monotonic()))
+    if result.get("blocked"):
+      ddg_blocked = True
+      yield ("reason", "DuckDuckGo bu sunucudan gelen arama için güvenlik doğrulaması istedi.")
+      return
     if result.get("engine") == "weak-match" or not result.get("results"):
       yield ("reason", f"Bu açıdan güvenilir kaynak çıkmadı; {left} sn kaldı, farklı bir açı deneniyor.")
       return
@@ -2059,7 +2107,16 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
 
   if question:
     yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
-    seeded = web_search(build_search_query(question), 6)
+    seeded = web_search(
+      build_search_query(question), 6, duckduckgo_only=True, deadline=deadline - reserve
+    )
+    if seeded.get("blocked"):
+      yield ("reason", "DuckDuckGo güvenlik doğrulaması istedi; başka arama motoruna geçilmiyor.")
+      yield ("answer", (
+        "Bu oturumda DuckDuckGo kaynaklarına erişemedim; bu yüzden araştırma yaptığımı "
+        "iddia etmeyeceğim. Güvenlik doğrulaması kalktığında aynı soruyu yeniden deneyebilirsin."
+      ))
+      return
     if seeded.get("engine") == "weak-match":
       yield ("reason", "İlk arama konuyla ilgili güçlü kaynak vermedi; ek turlarda yeniden denenecek.")
     else:
@@ -2162,14 +2219,25 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         arguments = {}
       short_args = json.dumps(arguments, ensure_ascii=False)[:120]
       yield ("reason", f"SRC:🔎 {call.function.name} çağrıldı: {short_args}")
-      result = execute_function(call.function.name, arguments)
+      if call.function.name == "web_search":
+        result = web_search(
+            arguments.get("query"),
+            arguments.get("num_results", 5),
+            duckduckgo_only=True,
+            deadline=deadline - reserve,
+        )
+      else:
+        result = execute_function(call.function.name, arguments)
       research.append({
           "role": "tool",
           "tool_call_id": call.id,
           "content": json.dumps(result, ensure_ascii=False),
       })
       if call.function.name == "web_search":
-        if result.get("engine") != "weak-match":
+        if result.get("blocked"):
+          ddg_blocked = True
+          yield ("reason", "DuckDuckGo bu sunucudan gelen arama için güvenlik doğrulaması istedi.")
+        elif result.get("engine") != "weak-match":
           add_findings(result)
           for event in report_sources(result):
             yield event
@@ -2186,9 +2254,11 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         findings.append(f"- Sunucu saati: {result.get('time')} {result.get('date')} {result.get('day')}")
         yield ("reason", f"SRC:🕒 Saat verisi: {result.get('time')} {result.get('date')}")
     rounds += 1
+    if ddg_blocked:
+      break
 
   # Bütçe bitene kadar boş durma: her turda yeni bir açıdan gerçekten araştır.
-  while time.monotonic() < deadline and question:
+  while time.monotonic() < deadline - reserve and question and not ddg_blocked:
     yield from facet_search(facet_index)
     facet_index += 1
     remaining = max(0.0, deadline - time.monotonic())
@@ -2197,7 +2267,14 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       yield ("reason", f"Toplam {len(findings)} bulgu birikti; {int(remaining)} sn kaldı, yeni tur hazırlanıyor...")
       time.sleep(min(pause, 5))
 
-  target_words = min(2500, 400 + int(seconds) * 2)
+  if ddg_blocked and not findings:
+    yield ("answer", (
+        "Bu oturumda DuckDuckGo kaynaklarına erişemedim; araştırma yaptığımı iddia "
+        "etmeyeceğim. Güvenlik doğrulaması kalktığında aynı soruyu yeniden deneyebilirsin."
+    ))
+    return
+
+  target_words = min(1800, 250 + int(seconds * 0.6))
   final_messages = [
       *research,
       {
@@ -2215,8 +2292,12 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   ]
   yield ("reason", "Yanıt yazılıyor...")
   answer_parts = []
+  has_answer = False
+  answer_released = False
   silent_providers = set()
   for _attempt in range(2):
+    if time.monotonic() >= deadline:
+      break
     trace = {}
     try:
       final_completion = safe_model_call(
@@ -2226,7 +2307,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           temperature=temperature,
           max_tokens=max_tokens,
           stream=True,
-          timeout=max(60, min(300, int(seconds * 0.5) + 60)),
+          timeout=max(15, min(120, int(seconds * 0.1) + 15)),
           skip_providers=silent_providers,
           trace=trace,
       )
@@ -2240,19 +2321,41 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       delta = getattr(choices[0], "delta", None)
       piece = getattr(delta, "content", None) if delta else None
       if piece:
+        has_answer = True
         answer_parts.append(piece)
-        yield ("answer", piece)
-    if answer_parts:
+        if time.monotonic() >= deadline:
+          if not answer_released:
+            for buffered_piece in answer_parts[:-1]:
+              yield ("answer", buffered_piece)
+            answer_released = True
+          yield ("answer", piece)
+    if has_answer:
+      if not answer_released:
+        while time.monotonic() < deadline:
+          time.sleep(min(0.25, deadline - time.monotonic()))
+        for piece in answer_parts:
+          yield ("answer", piece)
+        answer_released = True
       break
     if trace.get("provider"):
       silent_providers.add(trace["provider"])
 
-  if not answer_parts and findings:
-    visible_findings = [line for line in findings if is_brand_safe(line)]
-    yield ("answer", (
-        "Araştırmayı tamamladım ama yanıt modeli bu kez boş döndü; topladığım gerçek "
-        "kaynakları olduğu gibi aktarıyorum:\n\n" + "\n".join(visible_findings[:15])
-    ))
+  if not has_answer:
+    if findings:
+      visible_findings = [line for line in findings if is_brand_safe(line)]
+      answer_parts = [
+          "Araştırmayı tamamladım ama yanıt modeli bu kez boş döndü; topladığım gerçek "
+          "kaynakları olduğu gibi aktarıyorum:\n\n" + "\n".join(visible_findings[:15])
+      ]
+    else:
+      answer_parts = [
+          "DuckDuckGo bu süre içinde konuya uygun doğrulanabilir kaynak bulamadı; "
+          "kaynaksız bir araştırma raporu yazmayacağım."
+      ]
+    while time.monotonic() < deadline:
+      time.sleep(min(0.25, deadline - time.monotonic()))
+    for piece in answer_parts:
+      yield ("answer", piece)
 
 
 @login_required(login_url="login")

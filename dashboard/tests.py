@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.contrib.auth.models import User
-from django.test import Client, TestCase
+from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -85,6 +85,54 @@ class WeatherTests(TestCase):
         )
 
 
+class SearchTests(SimpleTestCase):
+    def test_duckduckgo_search_returns_only_relevant_results(self):
+        response = Mock()
+        response.status_code = 200
+        response.text = """
+            <a class="result__a" href="https://sports.example/match-1">Fenerbahçe Galatasaray maç sonucu</a>
+            <a class="result__snippet" href="#">Fenerbahçe Galatasaray karşılaşma sonucu</a>
+            <a class="result__a" href="https://sports.example/match-2">Fenerbahçe Galatasaray puan durumu</a>
+            <a class="result__snippet" href="#">Fenerbahçe ve Galatasaray puanları</a>
+            <a class="result__a" href="https://sports.example/unrelated">Beşiktaş transfer haberleri</a>
+            <a class="result__snippet" href="#">Beşiktaş yeni oyuncu transfer etti</a>
+        """
+
+        with patch("dashboard.views.requests.post", return_value=response) as post, patch(
+            "dashboard.views.requests.get"
+        ) as get:
+            result = views.web_search(
+                "Fenerbahçe Galatasaray maç sonucu",
+                5,
+                duckduckgo_only=True,
+            )
+
+        self.assertEqual(result["engine"], "ddg-html")
+        self.assertEqual(len(result["results"]), 2)
+        self.assertTrue(all("Beşiktaş" not in item["title"] for item in result["results"]))
+        post.assert_called_once()
+        self.assertIn("duckduckgo.com", post.call_args.args[0])
+        get.assert_not_called()
+
+    def test_duckduckgo_challenge_is_not_replaced_by_another_engine(self):
+        response = Mock()
+        response.status_code = 202
+        response.text = "DDG.deep.anomalyDetectionBlock({})"
+
+        with patch("dashboard.views.requests.post", return_value=response) as post, patch(
+            "dashboard.views.requests.get"
+        ) as get:
+            result = views.web_search(
+                "Python Django StreamingHttpResponse",
+                duckduckgo_only=True,
+            )
+
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["engine"], "ddg-html")
+        post.assert_called_once()
+        get.assert_not_called()
+
+
 class AppClockTests(TestCase):
     def test_clock_persists_the_current_istanbul_date(self):
         clock = views.sync_app_clock()
@@ -141,11 +189,43 @@ class ImageGenerationTests(TestCase):
         )
         self.assertEqual(
             post.call_args.args[0],
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image:generateContent",
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"]["generationConfig"]["imageConfig"]["imageSize"],
+            "4K",
         )
         image_prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("uçak", image_prompt)
-        self.assertIn("photorealistic", image_prompt)
+        self.assertIn("ultra-photorealistic", image_prompt)
+
+    def test_image_generation_never_falls_back_to_a_branded_provider(self):
+        with (
+            patch("dashboard.views.ordered_keys", return_value=["test-key"]),
+            patch(
+                "dashboard.views.generate_image_with_gemini",
+                side_effect=RuntimeError("unavailable"),
+            ) as gemini,
+            patch("dashboard.views.generate_image_with_pollinations") as pollinations,
+        ):
+            with self.assertRaises(views.ImageUnavailableError):
+                views.generate_image_with_retry("Bir dağ manzarası")
+
+        self.assertEqual(
+            [call.args[1] for call in gemini.call_args_list],
+            [
+                "gemini-3-pro-image",
+                "gemini-3.1-flash-image",
+                "gemini-2.5-flash-image",
+            ],
+        )
+        pollinations.assert_not_called()
+
+    def test_explicit_illustration_style_is_not_forced_into_photorealism(self):
+        prompt = views.enhance_image_prompt("Bir çizim: kedi")
+
+        self.assertIn("çizim", prompt)
+        self.assertNotIn("photorealistic", prompt)
 
     def test_repeated_image_requests_are_throttled(self):
         with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
@@ -252,6 +332,130 @@ class ChatFeatureTests(TestCase):
         self.assertEqual(answer, "Araştırılmış yanıt.")
         final_messages = model_call.call_args_list[1].args[1]
         self.assertTrue(any(message.get("role") == "tool" for message in final_messages))
+
+    def test_deep_research_tool_calls_are_duckduckgo_only(self):
+        tool_call = SimpleNamespace(
+            id="search-ddg",
+            function=SimpleNamespace(
+                name="web_search",
+                arguments='{"query":"Fenerbahçe Galatasaray maç sonucu"}',
+            ),
+        )
+        tool_response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=None, tool_calls=[tool_call]),
+        )])
+        empty_response = SimpleNamespace(choices=[])
+        response_count = 0
+
+        def model_call(*args, **kwargs):
+            nonlocal response_count
+            if kwargs.get("stream"):
+                return iter([])
+            response_count += 1
+            return tool_response if response_count == 1 else empty_response
+
+        search_result = {
+            "engine": "ddg-html",
+            "results": [
+                {"title": "Fenerbahçe Galatasaray maç sonucu", "url": "https://sports.example/match"},
+                {"title": "Fenerbahçe Galatasaray puan durumu", "url": "https://sports.example/table"},
+            ],
+        }
+        clock = [0]
+
+        def advance_clock():
+            clock[0] += 1
+            return float(clock[0])
+
+        with (
+            patch("dashboard.views.safe_model_call", side_effect=model_call),
+            patch("dashboard.views.web_search", return_value=search_result) as search,
+            patch("dashboard.views.execute_function") as execute,
+            patch("dashboard.views.time.monotonic", side_effect=advance_clock),
+            patch("dashboard.views.time.sleep"),
+        ):
+            events = list(views.deep_think_events(
+                object(),
+                [
+                    {"role": "system", "content": "araştır"},
+                    {"role": "user", "content": "Fenerbahçe Galatasaray maç sonucu"},
+                ],
+                30,
+                0.3,
+                1024,
+            ))
+
+        self.assertTrue(search.call_args_list)
+        self.assertTrue(all(call.kwargs["duckduckgo_only"] for call in search.call_args_list))
+        execute.assert_not_called()
+        self.assertTrue(any(kind == "reason" and "Kaynak:" in text for kind, text in events))
+
+    def test_deep_research_stops_honestly_when_duckduckgo_blocks_access(self):
+        with (
+            patch("dashboard.views.web_search", return_value={"blocked": True, "results": []}),
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            events = list(views.deep_think_events(
+                object(),
+                [
+                    {"role": "system", "content": "araştır"},
+                    {"role": "user", "content": "Fenerbahçe Galatasaray maç sonucu"},
+                ],
+                300,
+                0.3,
+                1024,
+            ))
+
+        model_call.assert_not_called()
+        answer = "".join(text for kind, text in events if kind == "answer")
+        self.assertIn("DuckDuckGo kaynaklarına erişemedim", answer)
+
+    def test_deep_research_releases_a_prepared_answer_at_the_budget_end(self):
+        clock = {"now": 0.0}
+        final_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Rapor hazır."),
+        )])
+        empty_response = SimpleNamespace(choices=[])
+
+        def model_call(*args, **kwargs):
+            if kwargs.get("stream"):
+                return iter([final_chunk])
+            return empty_response
+
+        def monotonic():
+            return clock["now"]
+
+        def advance(seconds):
+            clock["now"] += seconds
+
+        with (
+            patch("dashboard.views.safe_model_call", side_effect=model_call),
+            patch("dashboard.views.web_search", return_value={
+                "engine": "ddg-html",
+                "results": [
+                    {"title": "Fenerbahçe Galatasaray maç sonucu", "url": "https://sports.example/match"},
+                    {"title": "Fenerbahçe Galatasaray puan durumu", "url": "https://sports.example/table"},
+                ],
+            }),
+            patch("dashboard.views.time.monotonic", side_effect=monotonic),
+            patch("dashboard.views.time.sleep", side_effect=advance),
+        ):
+            answer_times = []
+            for kind, _text in views.deep_think_events(
+                object(),
+                [
+                    {"role": "system", "content": "araştır"},
+                    {"role": "user", "content": "Fenerbahçe Galatasaray maç sonucu"},
+                ],
+                30,
+                0.3,
+                1024,
+            ):
+                if kind == "answer":
+                    answer_times.append(clock["now"])
+
+        self.assertTrue(answer_times)
+        self.assertGreaterEqual(answer_times[0], 30)
 
     def test_current_questions_receive_live_search_context(self):
         chunk = SimpleNamespace(choices=[SimpleNamespace(
