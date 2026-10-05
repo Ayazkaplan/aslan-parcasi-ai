@@ -2047,6 +2047,7 @@
     }
 
     function createNewChat(customTitle = 'Yeni Sohbet', saveImmediate = false) {
+        if (streamBusy || imageGenerating) return;
         const chatId = Date.now();
         const newChat = {
             id: chatId,
@@ -2152,6 +2153,7 @@
     const expandedAiMessages = new Set();
 
     function selectChat(chatId) {
+        if (streamBusy || imageGenerating) return;
         activeChatId = chatId;
         expandedAiMessages.clear();
         const chat = chats.find(c => c.id === chatId);
