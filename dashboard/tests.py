@@ -191,6 +191,35 @@ class SearchTests(SimpleTestCase):
         self.assertIn("eyupspor", normalized)
         self.assertNotIn("valencia", normalized)
 
+    def test_scorer_followup_uses_short_match_context_queries(self):
+        history = [
+            {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
+            {"sender": "ai", "text": "8-0; doğrulanmamış golcü adı."},
+        ]
+
+        queries = views.build_live_search_queries("Golleri kim attı?", history)
+        normalized = [views._ascii_fold(query).lower() for query in queries]
+
+        self.assertTrue(views.is_sports_followup("Golleri kim attı?", history))
+        self.assertGreaterEqual(len(queries), 2)
+        self.assertIn("fenerbahce eyupspor", normalized[0])
+        self.assertIn("8-0", normalized[0])
+        self.assertIn("golleri kim atti", normalized[0])
+        self.assertIn("fenerbahce", normalized[1])
+        self.assertNotIn("dogrulanmamis", " ".join(normalized))
+
+    def test_google_news_rss_keeps_the_article_link(self):
+        article_url = "https://news.google.com/rss/articles/example?oc=5"
+        feed = (
+            "<rss><channel><item><title>Fenerbahçe maç raporu</title>"
+            f"<link>{article_url}</link><source url=\"https://gzt.com\">GZT</source>"
+            "<pubDate>Sun, 20 Sep 2026 07:00:00 GMT</pubDate></item></channel></rss>"
+        )
+
+        results = views._parse_google_news_rss(feed, 5)
+
+        self.assertEqual(results[0]["url"], article_url)
+
     def test_duckduckgo_search_returns_only_relevant_results(self):
         response = Mock()
         response.status_code = 200
@@ -700,6 +729,97 @@ class ChatFeatureTests(TestCase):
         self.assertTrue(search.call_args_list[1].kwargs["duckduckgo_only"])
         self.assertFalse(search.call_args_list[2].kwargs["duckduckgo_only"])
         self.assertIn("Fenerbahçe 2-1 kazandı", "".join(text for kind, text in events if kind == "answer"))
+
+    def test_deep_research_falls_back_when_ddg_returns_no_results(self):
+        clock = {"now": 0.0}
+        final_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Kaynaklarla desteklenen yanıt."),
+        )])
+        empty_response = SimpleNamespace(choices=[])
+
+        def model_call(*args, **kwargs):
+            return iter([final_chunk]) if kwargs.get("stream") else empty_response
+
+        def fake_search(query, num_results, *, duckduckgo_only=False, deadline=None):
+            if duckduckgo_only:
+                return {"engine": "ddg-html", "results": []}
+            return {"engine": "bing", "results": [{
+                "title": "Güncel kaynak",
+                "url": "https://sports.example/source",
+                "snippet": "Doğrulanabilir bilgi.",
+            }]}
+
+        def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        with (
+            patch("dashboard.views.safe_model_call", side_effect=model_call),
+            patch("dashboard.views.web_search", side_effect=fake_search) as search,
+            patch("dashboard.views.time.monotonic", side_effect=lambda: clock["now"]),
+            patch("dashboard.views.time.sleep", side_effect=fake_sleep),
+        ):
+            events = list(views.deep_think_events(
+                object(),
+                [
+                    {"role": "system", "content": "araştır"},
+                    {"role": "user", "content": "Güncel araştırma konusu"},
+                ],
+                30,
+                0.3,
+                1024,
+            ))
+
+        self.assertGreaterEqual(search.call_count, 2)
+        self.assertTrue(search.call_args_list[0].kwargs["duckduckgo_only"])
+        self.assertFalse(search.call_args_list[1].kwargs["duckduckgo_only"])
+        self.assertIn("Kaynaklarla desteklenen yanıt", "".join(
+            text for kind, text in events if kind == "answer"
+        ))
+
+    def test_scorer_followup_searches_context_and_specific_queries(self):
+        chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Kaynakta belirtilen golcü bilgisi.", tool_calls=None),
+        )])
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        history = [
+            {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
+            {"sender": "ai", "text": "8-0; golcüler kaynakta doğrulanmadı."},
+        ]
+        search_result = {"engine": "ddg-html", "results": [
+            {
+                "title": "Fenerbahçe Eyüpspor maç sonucu 8-0",
+                "url": "https://sports.example/result",
+                "snippet": "Karşılaşma 8-0 sona erdi.",
+            },
+            {
+                "title": "Fenerbahçe Eyüpspor maç raporu ve golleri",
+                "url": "https://sports.example/report",
+                "snippet": "Golleri atan oyuncular maç raporunda.",
+            },
+        ]}
+
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.web_search", return_value=search_result) as search,
+            patch("dashboard.views.safe_model_call", return_value=iter([chunk])) as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({
+                    "message": "Golleri kim attı?",
+                    "history": history,
+                }),
+                content_type="application/json",
+            )
+            b"".join(response.streaming_content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(search.call_count, 3)
+        self.assertIn("golleri kim attı", search.call_args_list[0].args[0].lower())
+        self.assertIn("gol atan oyuncular", search.call_args_list[1].args[0].lower())
+        self.assertTrue(all(call.kwargs["duckduckgo_only"] for call in search.call_args_list))
+        sent_context = model_call.call_args.args[1][1]["content"]
+        self.assertIn("Fenerbahçe Eyüpspor maç raporu ve golleri", sent_context)
 
     def test_sanitize_output_strips_reasoning_leaks(self):
         raw = "Here's a thinking process:\n1. Analyze user input\n2. Search\nFinal answer: Fenerbahçe 2-1 kazandı."
