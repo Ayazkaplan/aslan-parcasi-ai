@@ -234,6 +234,14 @@ def enhance_image_prompt(prompt):
   ):
     return topic
 
+  if re.search(
+      r"\b(brand(?:ed)?|bottle|can|soda|cola|şişe\w*|kutu\w*|ambalaj\w*|"
+      r"markalı|markali|packaging|label)\b",
+      raw,
+      re.IGNORECASE,
+  ):
+    topic = f"{topic}, clearly visible branded product packaging, readable label, actual bottle/can design, not a generic cup, centered in frame"
+
   descriptors = [
       "photorealistic",
       "highly detailed",
@@ -1564,6 +1572,98 @@ def friendly_api_error(error):
   return "Aslan Parçası yanıtı alınamadı. Lütfen biraz sonra tekrar deneyin."
 
 
+def sanitize_model_output(text):
+  """Strip hidden reasoning traces and keep only the user's answer."""
+  raw = (text or "").strip()
+  if not raw:
+    return ""
+  cleaned = raw
+
+  lower = cleaned.lower()
+  answer_markers = [
+      "final answer:", "answer:", "son cevap:", "cevap:", "özet:", "sonuç:", "result:",
+      "live answer:", "kısa cevap:", "yanıt:", "net cevap:",
+  ]
+  for marker in answer_markers:
+    idx = lower.rfind(marker)
+    if idx >= 0:
+      remainder = cleaned[idx + len(marker):].strip("\n \t-:;")
+      if remainder:
+        return re.sub(r"\n\s*\n+", "\n\n", remainder).strip()
+
+  if re.search(
+      r"(?im)^\s*(?:here's\s+a\s+thinking\s+process|thinking\s+process|"
+      r"analysis|reasoning|chain\s+of\s+thought|internal\s+reasoning|"
+      r"1\s*[.)]\s*(?:\*\*)?analyze\s+user\s+input)\s*[:\-]",
+      cleaned,
+  ):
+    return ""
+
+  cleaned = re.sub(r"(?is)^\s*(?:here's\s+a\s+thinking\s+process|thinking\s+process|analyze\s+user\s+input|check\s+knowledge|step\s*\d+\s*:|1\.\s*\*\*analyze\s+user\s+input\*\*)\b.*?(?:\n|$)", "", cleaned)
+  cleaned = re.sub(r"(?is)\n\s*(?:here's\s+a\s+thinking\s+process|thinking\s+process|analyze\s+user\s+input|check\s+knowledge|step\s*\d+\s*:).*", "", cleaned)
+  cleaned = re.sub(r"(?is)^\s*(?:[-*•]\s*)?(?:analysis|reasoning|thinking|plan|research)\s*[:\-].*?(?:\n|$)", "", cleaned)
+  cleaned = re.sub(r"(?is)\n\s*(?:[-*•]\s*)?(?:analysis|reasoning|thinking|plan|research)\s*[:\-].*", "", cleaned)
+  cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+  return cleaned
+
+
+class ModelOutputStreamSanitizer:
+  ANSWER_MARKERS = (
+      "final answer:", "answer:", "son cevap:", "cevap:", "özet:", "sonuç:", "result:",
+      "live answer:", "kısa cevap:", "yanıt:", "net cevap:",
+  )
+  REASONING_HEADER = re.compile(
+      r"^\s*(?:here's\s+a\s+thinking\s+process|thinking\s+process|analysis|"
+      r"reasoning|chain\s+of\s+thought|internal\s+reasoning|plan|research)\s*[:\-]",
+      re.I,
+  )
+
+  def __init__(self):
+    self.pending = ""
+    self.suppressing_reasoning = False
+
+  def feed(self, text, final=False):
+    self.pending += text or ""
+    output = []
+    while "\n" in self.pending:
+      line, self.pending = self.pending.split("\n", 1)
+      cleaned = self._clean_line(line)
+      if cleaned:
+        output.append(cleaned + "\n")
+      elif not self.suppressing_reasoning:
+        output.append("\n")
+    if final and self.pending:
+      cleaned = self._clean_line(self.pending)
+      if cleaned:
+        output.append(cleaned)
+      self.pending = ""
+    return "".join(output)
+
+  def _clean_line(self, line):
+    lowered = line.lower()
+    answer_matches = [
+        (lowered.rfind(marker), marker)
+        for marker in self.ANSWER_MARKERS
+        if marker in lowered
+    ]
+    answer_position, answer_marker = max(answer_matches, default=(-1, ""))
+
+    if self.suppressing_reasoning:
+      if answer_position < 0:
+        return ""
+      line = line[answer_position + len(answer_marker):].strip(" \t-:;")
+      self.suppressing_reasoning = False
+    else:
+      reasoning_match = self.REASONING_HEADER.search(line)
+      if reasoning_match:
+        if answer_position <= reasoning_match.start():
+          self.suppressing_reasoning = True
+          return ""
+        line = line[answer_position + len(answer_marker):].strip(" \t-:;")
+
+    return sanitize_model_output(line)
+
+
 def image_usage_today(user_id):
   """How many images this user generated today (resets at midnight, in memory)."""
   today = timezone.localdate().isoformat()
@@ -2092,27 +2192,35 @@ RESEARCH_FACETS = (
 
 
 def depth_instruction(seconds):
-    if seconds <= 60:
-        return (
-            "Kısa düşünme bütçesi kullanıldı: net, öz ama gerekçeli bir yanıt ver; "
-            "en fazla 3 madde."
-        )
-    if seconds <= 300:
-        return (
-            "Orta düzey düşünme bütçesi kullanıldı: başlıklarla yapılandırılmış, örnekli "
-            "ve adım adım açıklanan bir yanıt ver."
-        )
-    if seconds <= 900:
-        return (
-            "Derin düşünme bütçesi kullanıldı: bölümler halinde ayrıntılı analiz yap, "
-            "karşıt görüşleri ve riskleri değerlendir, adım adım akıl yürüt, sonunda net "
-            "bir sonuç bölümü ver."
-        )
+  evidence_guidance = (
+    "Önce güçlü ve güncel kanıtları değerlendir; kaynaklar uyuşmuyorsa bunu belirt. "
+    "Doğrulanmış bilgiyi, çıkarımı ve bilinmeyeni ayır. Gizli düşünce zincirini yazma; "
+    "sonuçları ve kullanıcıya yararlı kısa gerekçeleri sun. "
+  )
+  if seconds <= 60:
     return (
-        "Uzman düzey düşünme bütçesi kullanıldı: kapsamlı bir rapor yaz: yönetici özeti, "
-        "yöntem, ayrıntılı bölümler, karşıt görüşler, riskler, kaynak değerlendirmesi ve "
-        "sonuç önerileri. Bulabildiğin her ayrıntıyı işle."
+        evidence_guidance
+        + "Kısa düşünme bütçesi kullanıldı: net, öz ama gerekçeli bir yanıt ver; "
+        "en fazla 3 madde."
     )
+  if seconds <= 300:
+    return (
+        evidence_guidance
+        + "Orta düzey düşünme bütçesi kullanıldı: başlıklarla yapılandırılmış, örnekli "
+        "ve karşılaştırmalı bir yanıt ver."
+    )
+  if seconds <= 900:
+    return (
+        evidence_guidance
+        + "Derin düşünme bütçesi kullanıldı: bölümler halinde ayrıntılı analiz yap, "
+        "karşıt görüşleri ve riskleri değerlendir, sonunda net bir sonuç bölümü ver."
+    )
+  return (
+      evidence_guidance
+      + "Uzman düzey düşünme bütçesi kullanıldı: kapsamlı bir rapor yaz: yönetici özeti, "
+      "yöntem, ayrıntılı bölümler, karşıt görüşler, riskler, kaynak değerlendirmesi ve "
+      "sonuç önerileri. İlgili ve kanıtlanabilir ayrıntıları işle."
+  )
 
 
 def _last_user_text(messages):
@@ -2275,19 +2383,28 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       if fresh <= per_engine_limit:
         yield ("reason", f"SRC:🌐 Kaynak: {line}")
 
+  def search_with_fallback(query, num_results):
+    result = web_search(
+      query, num_results, duckduckgo_only=True, deadline=deadline - reserve
+    )
+    if result.get("blocked"):
+      yield ("reason", "DuckDuckGo güvenlik doğrulaması istedi; genel arama ile yeniden deneniyor.")
+      result = web_search(
+        query, num_results, duckduckgo_only=False, deadline=deadline - reserve
+      )
+    return result
+
   def facet_search(index):
     nonlocal ddg_blocked
     """Server-driven research step so the whole budget is used, never idled."""
     facet = RESEARCH_FACETS[index % len(RESEARCH_FACETS)]
     facet_query = f"{search_topic(question)} {facet}".strip()
     yield ("reason", f"SRC:🔎 Ek araştırma ({index + 1}. tur): {facet_query[:90]}")
-    result = web_search(
-      facet_query, 5, duckduckgo_only=True, deadline=deadline - reserve
-    )
+    result = yield from search_with_fallback(facet_query, 5)
     left = max(0, int(deadline - time.monotonic()))
     if result.get("blocked"):
       ddg_blocked = True
-      yield ("reason", "DuckDuckGo bu sunucudan gelen arama için güvenlik doğrulaması istedi.")
+      yield ("reason", "Genel arama da doğrulanabilir kaynak vermedi; araştırma dürüstçe durduruluyor.")
       return
     if result.get("engine") == "weak-match" or not result.get("results"):
       yield ("reason", f"Bu açıdan güvenilir kaynak çıkmadı; {left} sn kaldı, farklı bir açı deneniyor.")
@@ -2311,14 +2428,11 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
 
   if question:
     yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
-    seeded = web_search(
-      build_search_query(question), 6, duckduckgo_only=True, deadline=deadline - reserve
-    )
-    if seeded.get("blocked"):
-      yield ("reason", "DuckDuckGo güvenlik doğrulaması istedi; başka arama motoruna geçilmiyor.")
+    seeded = yield from search_with_fallback(build_search_query(question), 6)
+    if seeded.get("blocked") or not seeded.get("results"):
       yield ("answer", (
-        "Bu oturumda DuckDuckGo kaynaklarına erişemedim; bu yüzden araştırma yaptığımı "
-        "iddia etmeyeceğim. Güvenlik doğrulaması kalktığında aynı soruyu yeniden deneyebilirsin."
+        "Bu oturumda doğrulanabilir web kaynaklarına erişemedim; bu yüzden araştırma yaptığımı "
+        "iddia etmeyeceğim. Daha sonra yeniden deneyebilirsin."
       ))
       return
     if seeded.get("engine") == "weak-match":
@@ -2424,11 +2538,8 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       short_args = json.dumps(arguments, ensure_ascii=False)[:120]
       yield ("reason", f"SRC:🔎 {call.function.name} çağrıldı: {short_args}")
       if call.function.name == "web_search":
-        result = web_search(
-            arguments.get("query"),
-            arguments.get("num_results", 5),
-            duckduckgo_only=True,
-            deadline=deadline - reserve,
+        result = yield from search_with_fallback(
+            arguments.get("query"), arguments.get("num_results", 5)
         )
       else:
         result = execute_function(call.function.name, arguments)
@@ -2440,7 +2551,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       if call.function.name == "web_search":
         if result.get("blocked"):
           ddg_blocked = True
-          yield ("reason", "DuckDuckGo bu sunucudan gelen arama için güvenlik doğrulaması istedi.")
+          yield ("reason", "Genel arama da doğrulanabilir kaynak vermedi; araştırma dürüstçe durduruluyor.")
         elif result.get("engine") != "weak-match":
           add_findings(result)
           for event in report_sources(result):
@@ -2486,7 +2597,10 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           "content": (
               "Yanıtını araştırma bulgularına dayandır ve kaynakları (başlık + bağlantı) "
               "yanıtın sonundaki 'Kaynaklar' bölümünde listele. Araç hata verdiyse veri "
-              "uydurma. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
+              "uydurma. Kaynakların tarihini ve iddialarını karşılaştır; çelişkileri belirt. "
+              "Doğrulanmış bilgileri, çıkarımları ve bilinmeyenleri birbirinden ayır. İç "
+              "düşünce zincirini veya gizli analiz notlarını gösterme; kısa gerekçeler ve "
+              "kanıtları sun. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
               "ANMA; sen Aslan Parçası'sın. Yarım paragraf bırakma: giriş, başlıklı bölümler, "
               "maddeler, karşıt görüşler, riskler ve sonuç bölümü olan UZUN bir rapor yaz. "
               f"Hedef uzunluk en az {target_words} kelime. "
@@ -3181,6 +3295,7 @@ def api_chat(request):
       )
 
       if deep_think:
+        output_sanitizer = ModelOutputStreamSanitizer()
         try:
           for kind, text in deep_think_events(
               clients,
@@ -3194,8 +3309,14 @@ def api_chat(request):
               if reason_text:
                 yield REASONING_MARKER + reason_text + "\n"
             elif text:
-              answered = True
-              yield scrubber.feed(text)
+              clean_text = output_sanitizer.feed(text)
+              if clean_text:
+                answered = True
+                yield scrubber.feed(clean_text)
+          clean_text = output_sanitizer.feed("", final=True)
+          if clean_text:
+            answered = True
+            yield scrubber.feed(clean_text)
         except Exception as error:
           if not answered:
             errored = True
@@ -3206,6 +3327,7 @@ def api_chat(request):
           if answered or errored:
             break
           trace = {}
+          output_sanitizer = ModelOutputStreamSanitizer()
           try:
             completion = safe_model_call(
                 clients,
@@ -3225,8 +3347,10 @@ def api_chat(request):
               delta = getattr(choices[0], "delta", None)
               piece = getattr(delta, "content", None) if delta else None
               if piece:
-                answered = True
-                yield scrubber.feed(piece)
+                clean_piece = output_sanitizer.feed(piece)
+                if clean_piece:
+                  answered = True
+                  yield scrubber.feed(clean_piece)
           except Exception as error:
             if answered:
               break
@@ -3237,6 +3361,10 @@ def api_chat(request):
               errored = True
               yield friendly_api_error(error)
             break
+          clean_tail = output_sanitizer.feed("", final=True)
+          if clean_tail:
+            answered = True
+            yield scrubber.feed(clean_tail)
           if answered:
             break
           # Boş akış dönen sağlayıcıyı bir daha deneme; sıra diğer beyinde.
