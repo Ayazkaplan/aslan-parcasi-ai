@@ -479,6 +479,97 @@ class SearchTests(SimpleTestCase):
         self.assertIn("etkileri", queries[2])
         self.assertIn("uzman", queries[3])
 
+    def test_current_fact_search_uses_news_feeds_and_a_recency_window(self):
+        requested = []
+
+        def fake_search(query, num_results=5, **kwargs):
+            requested.append(kwargs)
+            engine = kwargs["only_engines"][0]
+            return {
+                "engine": engine,
+                "results": [{
+                    "title": f"Yenilenebilir enerji gelişmeleri {engine}",
+                    "url": f"https://{engine}.example/report",
+                    "published": "2026-10-06",
+                }],
+            }
+
+        with patch("dashboard.views.web_search", side_effect=fake_search):
+            result = views.web_search_multi(
+                "güncel yenilenebilir enerji gelişmeleri", 3, enrich=0
+            )
+
+        engines = [call["only_engines"][0] for call in requested]
+        self.assertIn("bing-haber-rss", engines)
+        self.assertIn("haber-rss", engines)
+        self.assertTrue(all(call["recency_days"] == 365 for call in requested))
+        self.assertEqual(result["results"][0]["published"], "2026-10-06")
+
+    def test_search_drops_dated_articles_outside_the_requested_window(self):
+        feed = (
+            "<rss><channel>"
+            "<item><title>Yenilenebilir enerji gelişmeleri</title>"
+            "<link>https://news.example/old</link>"
+            "<pubDate>Mon, 01 Jan 2024 07:00:00 GMT</pubDate></item>"
+            "<item><title>Yenilenebilir enerji gelişmeleri</title>"
+            "<link>https://news.example/current</link>"
+            "<pubDate>Tue, 06 Oct 2026 07:00:00 GMT</pubDate></item>"
+            "</channel></rss>"
+        )
+        response = Mock(status_code=200, text=feed)
+
+        with patch("dashboard.views.timezone.localdate", return_value=dt.date(2026, 10, 7)), \
+             patch("dashboard.views.requests.get", return_value=response) as get:
+            result = views.web_search(
+                "yenilenebilir enerji",
+                5,
+                only_engines=("haber-rss",),
+                recency_days=30,
+                enrich=0,
+            )
+
+        self.assertEqual([item["url"] for item in result["results"]], [
+            "https://news.example/current",
+        ])
+        self.assertIn("when:30d", get.call_args.kwargs["params"]["q"])
+
+    def test_research_instruction_words_do_not_outvote_the_topic_in_relevance(self):
+        tokens = views._query_tokens(
+            "Üç boyutlu yazıcılar hakkında detaylı araştır"
+        )
+
+        self.assertIn("yazicilar", tokens)
+        self.assertNotIn("detayli", tokens)
+        self.assertNotIn("arastir", tokens)
+        self.assertNotIn("hakkinda", tokens)
+        self.assertIn("boyutlu", views.search_topic("Üç boyutlu yazıcılar"))
+        self.assertEqual(views.search_topic("evreni"), "evren")
+
+    def test_fact_search_requires_the_main_topic_term_not_only_question_words(self):
+        tokens = views._query_tokens("Dünyanın en büyük okyanusu hangisi?")
+
+        self.assertNotIn("hangis", tokens)
+        self.assertIn(
+            "dünyan büyük okyanus",
+            views._query_variants("Dünyanın en büyük okyanusu hangisi?"),
+        )
+        self.assertFalse(views._is_relevant(
+            {
+                "title": "Dünya üzerindeki sürü davranışı",
+                "snippet": "Dünyanın en büyük canlı sürüleri hakkında bilgi.",
+            },
+            tokens,
+            allow_chatter=False,
+        ))
+        self.assertTrue(views._is_relevant(
+            {
+                "title": "Dünyanın en büyük okyanusu: Pasifik",
+                "snippet": "Okyanusların boyutları ve alanları.",
+            },
+            tokens,
+            allow_chatter=False,
+        ))
+
     def test_sports_live_search_retries_on_ddg_block_or_weak_result(self):
         self.assertTrue(
             views.should_retry_live_search_with_general_results(

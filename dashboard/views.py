@@ -1518,11 +1518,19 @@ NEWS_HINT_RE = re.compile(
     r"bilet|yeni\s+bölüm|yeni\s+bolum|son\s+bölüm|son\s+bolum|\b20\d\d\b)",
     re.I,
 )
+CURRENT_INFO_RE = re.compile(
+    r"\b(güncel|günümüzde|bugün|şu\s+an|şuan|en\s+son|son\s+gelişme\w*|"
+    r"latest|current|today|recent)\b",
+    re.I,
+)
 SEARCH_STOPWORDS = {
     "ve", "ile", "için", "icin", "bir", "bu", "şu", "onu", "değil", "degil", "nasıl",
     "nasil", "nedir", "hakkında", "hakkinda", "son", "güncel", "guncel", "araştır",
-    "arastir", "mısın", "misin", "bana", "söyle", "soyle", "kaç", "kac", "derece",
-    "the", "and", "for", "with", "what", "how",
+    "arastir", "detaylı", "detayli", "kapsamlı", "kapsamli", "derinlemesine",
+    "incele", "inceleyin", "mısın", "misin", "bana", "söyle", "soyle", "kaç", "kac",
+    "kim", "kimdir", "hangi", "hangisi", "hangileri", "nerede", "neresi",
+    "who", "which", "where", "when", "why", "derece", "the", "and", "for", "with",
+    "what", "how", "about", "research",
 }
 # Kullanıcı dizi/film/haber sormadıysa bu başlıklar bulgu diye gösterilmez.
 CHATTER_TITLE_RE = re.compile(
@@ -1544,6 +1552,8 @@ TURKISH_CASE_ENDING_RE = re.compile(
 
 def _strip_case(word):
     """Drop a Turkish case ending: 'evreni' only finds entertainment news."""
+    if re.search(r"(?:l[ıiuü]|s[ıiuü]z)$", word, re.I):
+        return word
     match = TURKISH_CASE_ENDING_RE.search(word)
     if not match:
         return word
@@ -1554,16 +1564,26 @@ def _strip_case(word):
 def _query_variants(query):
     """The question as asked, then the same keywords in their plain form."""
     cleaned = (query or "").strip()
-    variants = [cleaned]
-    stripped = " ".join(_strip_case(word) for word in cleaned.split()).strip()
-    if stripped and stripped != cleaned:
-        variants.append(stripped)
+    variants = []
+    for candidate in (cleaned, build_search_query(cleaned), search_topic(cleaned)):
+        stripped = " ".join(_strip_case(word) for word in candidate.split()).strip()
+        for variant in (candidate, stripped):
+            if variant and variant not in variants:
+                variants.append(variant)
     return variants
 
 
 def _query_tokens(text):
-    words = re.findall(r"[a-z0-9]{3,}", _ascii_fold(text or "").lower())
-    return [word for word in dict.fromkeys(words) if word not in SEARCH_STOPWORDS]
+    searchable = search_topic(text)
+    words = re.findall(r"[a-z0-9]{3,}", _ascii_fold(searchable).lower())
+    normalized = (
+        word if word in SEARCH_STOPWORDS else _strip_case(word)
+        for word in words
+    )
+    return [
+        word for word in dict.fromkeys(normalized)
+        if word not in SEARCH_STOPWORDS and len(word) >= 3
+    ]
 
 
 def _relevance(result, tokens):
@@ -1580,7 +1600,12 @@ def _is_relevant(result, tokens, allow_chatter, strict=False):
         haystack = _ascii_fold(
             f"{result.get('title', '')} {result.get('snippet', '')}"
         ).lower()
-        minimum_matches = 1 if len(tokens) <= 2 else (len(tokens) + 1) // 2
+        minimum_matches = 1 if len(tokens) == 1 else (len(tokens) + 1) // 2
+        if len(tokens) >= 3:
+            rarest = max(tokens, key=len)
+            title = _ascii_fold(str(result.get("title") or "")).lower()
+            if rarest[: min(6, len(rarest))] not in title:
+                return False
         if strict:
             # Ansiklopedi her konuda bir madde bulur; nadir terim yoksa konu başkadır.
             rarest = max(tokens, key=len)
@@ -1700,6 +1725,19 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None,
                 if not results:
                     last_error = f"{engine}: no results parsed"
                     continue
+                if recency_days:
+                    cutoff = (
+                        timezone.localdate() - dt.timedelta(days=int(recency_days))
+                    ).isoformat()
+                    results = [
+                        item for item in results
+                        if not re.fullmatch(
+                            r"\d{4}-\d{2}-\d{2}", str(item.get("published") or "")
+                        ) or item["published"] >= cutoff
+                    ]
+                    if not results:
+                        last_error = f"{engine}: no results within {recency_days} days"
+                        continue
                 relevant = [
                     item for item in results
                     if _is_relevant(item, tokens, allow_chatter, strict)
@@ -1727,9 +1765,16 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None,
 
 def web_search_multi(query, num_results=5, *, deadline=None, recency_days=None, enrich=2):
     """Combine independent news and web indexes under one bounded time budget."""
-    news_query = bool(NEWS_HINT_RE.search(query or "") or _sports_club_names(query))
+    current_info = bool(CURRENT_INFO_RE.search(query or ""))
+    recency_days = recency_days or (365 if current_info else None)
+    news_query = bool(
+        NEWS_HINT_RE.search(query or "")
+        or current_info
+        or recency_days
+        or _sports_club_names(query)
+    )
     engines = (
-        ("haber-rss", "bing-haber-rss", "ddg-html", "bing")
+        ("bing-haber-rss", "haber-rss", "ddg-html", "bing")
         if news_query
         else ("ddg-html", "bing", "vikipedi-tr", "vikipedi-en")
     )
@@ -1776,8 +1821,11 @@ def web_search_multi(query, num_results=5, *, deadline=None, recency_days=None, 
 
 SEARCH_FILLER_RE = re.compile(
     r"\b(bana|bir|acaba|lütfen|söyle|söyler\s+misin|bilir\s+misin|yapar\s+mısın|"
-    r"araştır|araştırır\s+mısın|bul|bulabilir\s+misin|öğrenmek\s+istiyorum|"
-    r"hakkında\s+bilgi\s+ver|nedir|ne\s+demek|mi|mı|mu|mü|ya|şey)\b",
+    r"araştır\w*|incele\w*|derinlemesine|detaylı|detayli|kapsamlı|kapsamli|"
+    r"research|comprehensive|bul|bulabilir\s+misin|öğrenmek\s+istiyorum|"
+    r"hakkında\s+bilgi\s+ver|hakkında|hakkinda|about|nedir|ne\s+demek|"
+    r"hangisi|hangileri|hangi|kimdir|kim|nerede|neresi|nasıl|nasil|ne|en|kaç|kac|"
+    r"who|which|where|when|why|what|how|mi|mı|mu|mü|ya|şey)\b",
     re.I,
 )
 
