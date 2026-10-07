@@ -2741,6 +2741,65 @@
         });
     }
 
+    async function addGeneratedImageBranding(imageUrl) {
+        if (!imageUrl || !imageUrl.startsWith('data:image/')) return imageUrl;
+
+        const generatedImage = new Image();
+        generatedImage.src = imageUrl;
+        await generatedImage.decode();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = generatedImage.naturalWidth;
+        canvas.height = generatedImage.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Görsel işlenemedi.');
+        context.drawImage(generatedImage, 0, 0);
+
+        const footerHeight = Math.max(
+            36,
+            Math.min(160, Math.round(Math.min(canvas.width, canvas.height) * 0.045))
+        );
+        const footerTop = canvas.height - footerHeight;
+        context.fillStyle = 'rgba(5, 10, 18, 0.98)';
+        context.fillRect(0, footerTop, canvas.width, footerHeight);
+        context.fillStyle = '#d6b56d';
+        context.fillRect(0, footerTop, canvas.width, Math.max(2, Math.round(footerHeight * 0.025)));
+
+        const inset = Math.round(footerHeight * 0.18);
+        const avatarSize = Math.round(footerHeight * 0.68);
+        const avatarImage = new Image();
+        avatarImage.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(LION_SVG_HTML)}`;
+        await avatarImage.decode();
+        context.save();
+        context.beginPath();
+        context.arc(
+            inset + avatarSize / 2,
+            footerTop + footerHeight / 2,
+            avatarSize / 2,
+            0,
+            Math.PI * 2
+        );
+        context.clip();
+        context.drawImage(
+            avatarImage,
+            inset,
+            footerTop + (footerHeight - avatarSize) / 2,
+            avatarSize,
+            avatarSize
+        );
+        context.restore();
+        context.fillStyle = '#f3e5bf';
+        context.font = `700 ${Math.max(13, Math.round(footerHeight * 0.3))}px Arial, sans-serif`;
+        context.textBaseline = 'middle';
+        context.fillText(
+            'ASLAN PARÇASI AI',
+            inset + avatarSize + Math.round(footerHeight * 0.16),
+            footerTop + footerHeight / 2
+        );
+
+        return canvas.toDataURL('image/jpeg', 0.96);
+    }
+
     async function generateImage() {
         const inputEl = document.getElementById('userInput');
         const prompt = inputEl.value.trim();
@@ -2814,10 +2873,11 @@
             const data = await response.json();
 
             if (data.status === 'success' && data.image_url) {
+                const brandedImage = await addGeneratedImageBranding(data.image_url);
                 finishPlaceholder({
                     sender: 'ai',
                     text: 'İşte istediğin görsel:',
-                    images: [{ url: data.image_url, name: prompt }],
+                    images: [{ url: brandedImage, name: prompt }],
                     timestamp: Date.now()
                 });
             } else {

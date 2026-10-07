@@ -189,6 +189,11 @@ _TURKISH_PROMPT_MAP = {
     "ev": "house",
     "oda": "room",
     "masa": "table",
+    "mousepad": "mouse pad",
+    "mouse pad": "mouse pad",
+    "mouse mat": "mouse pad",
+    "fare altlığı": "mouse pad",
+    "fare altligi": "mouse pad",
     "kız": "girl",
     "erkek çocuk": "boy",
     "otobüs": "bus",
@@ -256,6 +261,40 @@ IMAGE_COLOR_RE = re.compile(
     r"\b(" + "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) + r")\b",
     re.I,
 )
+IMAGE_BACKGROUND_PATTERNS = (
+    re.compile(
+        r"(?:arka\s+plan(?:ı|i|u|ü)?|zemin)(?:\s+rengi)?\s*"
+        r"(?:(?:olan|rengi)\s*)?(?P<color>" +
+        "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) +
+        r")",
+        re.I,
+    ),
+    re.compile(
+        r"(?:arka\s+plan(?:ı|i|u|ü)?|zemin)(?:\s+rengi)?\s*"
+        r"(?P<color>" +
+        "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) +
+        r")\s*(?:olan|renkli)?",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<color>" +
+        "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) +
+        r")\s+(?:renkli\s+)?(?:arka\s+plan(?:ı|i|u|ü)?|zemin)",
+        re.I,
+    ),
+    re.compile(
+        r"background(?:\s+color)?\s*(?:is|:|=)?\s*(?P<color>" +
+        "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) +
+        r")",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<color>" +
+        "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) +
+        r")\s+background",
+        re.I,
+    ),
+)
 
 
 def is_simple_geometric_prompt(prompt):
@@ -275,7 +314,7 @@ def is_simple_geometric_prompt(prompt):
 
 def generate_simple_geometric_image(prompt):
   """Render a single, plain geometric shape exactly instead of sampling an image model."""
-  text = translate_prompt_to_english(prompt)
+  text = (prompt or "").strip()
   shape_matches = list(re.finditer(
       r"\b(circle|square|rectangle|triangle|ellipse|oval|daire|çember|kare|"
       r"dikdörtgen|üçgen)\b",
@@ -291,32 +330,50 @@ def generate_simple_geometric_image(prompt):
 
   shape = SIMPLE_GEOMETRIC_SHAPES.get(shape_matches[0].group(0).casefold())
   colors = list(IMAGE_COLOR_RE.finditer(text))
-  fill_color = IMAGE_COLOR_HEX[colors[0].group(0).casefold()] if colors else "#000000"
+  background_match = next(
+      (match for pattern in IMAGE_BACKGROUND_PATTERNS
+       if (match := pattern.search(text))),
+      None,
+  )
+  background_color_name = (
+      background_match.group("color") if background_match else None
+  )
+  if background_color_name:
+    colors = [
+        match for match in colors
+        if match.group(0).casefold() != background_color_name.casefold()
+        or not (
+            background_match.start() <= match.start() < background_match.end()
+        )
+    ]
+  shape_color = min(colors, key=lambda match: abs(match.start() - shape_matches[0].start())) if colors else None
+  fill_color = (
+      IMAGE_COLOR_HEX[shape_color.group(0).casefold()]
+      if shape_color
+      else "#000000"
+  )
   background_color = "#ffffff"
-  background_match = re.search(r"(?:background|arka\s+plan|zemin)\b(.{0,30})", text, re.I)
   if background_match:
-    background_color_match = IMAGE_COLOR_RE.search(background_match.group(1))
-    if background_color_match:
-      background_color = IMAGE_COLOR_HEX[background_color_match.group(0).casefold()]
+    background_color = IMAGE_COLOR_HEX[background_color_name.casefold()]
 
   elements = []
   if not re.search(r"\btransparent\b|şeffaf", text, re.I):
-    elements.append(f'<rect width="1024" height="1024" fill="{background_color}"/>')
+    elements.append(f'<rect width="4096" height="4096" fill="{background_color}"/>')
   if shape == "circle":
-    elements.append(f'<circle cx="512" cy="512" r="300" fill="{fill_color}"/>')
+    elements.append(f'<circle cx="2048" cy="2048" r="1200" fill="{fill_color}"/>')
   elif shape == "square":
-    elements.append(f'<rect x="212" y="212" width="600" height="600" fill="{fill_color}"/>')
+    elements.append(f'<rect x="848" y="848" width="2400" height="2400" fill="{fill_color}"/>')
   elif shape == "rectangle":
-    elements.append(f'<rect x="132" y="312" width="760" height="400" fill="{fill_color}"/>')
+    elements.append(f'<rect x="528" y="1248" width="3040" height="1600" fill="{fill_color}"/>')
   elif shape == "triangle":
-    elements.append(f'<path d="M512 170 880 820H144Z" fill="{fill_color}"/>')
+    elements.append(f'<path d="M2048 680 3520 3280H576Z" fill="{fill_color}"/>')
   elif shape == "oval":
-    elements.append(f'<ellipse cx="512" cy="512" rx="360" ry="240" fill="{fill_color}"/>')
+    elements.append(f'<ellipse cx="2048" cy="2048" rx="1440" ry="960" fill="{fill_color}"/>')
   else:
     return None
   svg = (
-      '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" '
-      'viewBox="0 0 1024 1024">' + "".join(elements) + "</svg>"
+      '<svg xmlns="http://www.w3.org/2000/svg" width="4096" height="4096" '
+      'viewBox="0 0 4096 4096">' + "".join(elements) + "</svg>"
   )
   encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
   return f"data:image/svg+xml;base64,{encoded}"
@@ -369,6 +426,22 @@ def enhance_image_prompt(prompt):
         f"Exact user brief: {topic}"
     )
 
+  if re.search(r"\b(mouse\s*pad|mouse\s*mat|mousepad|fare\s+altl[ıi]ğ[ıi])\b", raw, re.I):
+    return (
+        "Ultra-photorealistic native 4K UHD studio product photo. Main subject: exactly "
+        "one empty, flat rectangular mousepad (the desk pad only, not a computer mouse). "
+        "Show its complete horizontal shape, straight parallel edges, softly rounded "
+        "corners, realistic proportions, fine woven-cloth surface, precise stitched "
+        "perimeter, and thin rubber base visible only along the edge. The pad lies flat "
+        "and level, centered on a bright light-gray tabletop; use clean, even softbox "
+        "lighting, balanced exposure, crisp fabric detail, and a natural contact shadow. "
+        "Keep the pad geometrically straight and undistorted. Exclude the computer mouse "
+        "device, hands, keyboard, other electronics, text, logos, packaging, extra objects, "
+        "and watermarks. Do not make the image dark or underexposed. Match the requested "
+        "color and design exactly. "
+        f"Exact user brief: {topic}"
+    )
+
   if re.search(
       r"\b(brand(?:ed)?|bottle|can|soda|cola|şişe\w*|kutu\w*|ambalaj\w*|"
       r"markalı|markali|packaging|label)\b",
@@ -378,16 +451,14 @@ def enhance_image_prompt(prompt):
     topic = f"{topic}, clearly visible branded product packaging, readable label, actual bottle/can design, not a generic cup, centered in frame"
 
   descriptors = [
-      "photorealistic",
-      "highly detailed",
+      "ultra-photorealistic 4K UHD photograph",
+      "crisp lifelike detail",
       "sharp focus",
-      "cinematic lighting",
-      "ultra realistic texture",
-      "professional composition",
-      "8k",
-      "natural anatomy",
-      "realistic shadows",
-      "studio quality",
+      "physically accurate shape and proportions",
+      "natural studio lighting",
+      "realistic texture and contact shadows",
+      "professional product-photography composition",
+      "no warping, distortion, or unrelated objects",
   ]
   # The user may already have a rich prompt; avoid repeating the same style tokens.
   detail_prefix = ""
@@ -408,7 +479,7 @@ def build_flux_image_params(prompt, seed=None, width=1024, height=1024):
       "model": "flux",
       "nologo": "true",
       "safe": "true",
-      "enhance": "true",
+      "enhance": "false",
       "aspect_ratio": "1:1",
   }
 
@@ -1254,6 +1325,11 @@ def _parse_google_news_rss(xml_text, limit):
         if not title:
             continue
         source_match = re.search(r"<source[^>]*>(.*?)</source>", item, re.S)
+        source_url_match = (
+            re.search(r"<source[^>]*\burl=[\"']([^\"']+)[\"']", item, re.S)
+            if source_match
+            else None
+        )
         date_match = re.search(r"<pubDate>(.*?)</pubDate>", item, re.S)
         published = _rss_date(_strip_tags(date_match.group(1)) if date_match else "")
         meta = " · ".join(part for part in (
@@ -1265,6 +1341,8 @@ def _parse_google_news_rss(xml_text, limit):
             "url": _clean_result_url(link_match.group(1)),
             "snippet": meta,
         }
+        if source_url_match:
+            entry["publisher_url"] = source_url_match.group(1)
         if published:
             entry["published"] = published
         results.append(entry)
@@ -1794,8 +1872,15 @@ class NameScrubber:
 
 
 def should_fetch_live_context(text):
-  """Identify requests where a stale model answer would be misleading."""
+  """Use live research for explicit updates and substantive factual questions."""
   normalized = (text or "").lower()
+  if re.fullmatch(
+      r"\s*(?:merhaba|selam|sa(?:ğ|g)ol|teşekkür(?:ler)?|nasılsın|naber|"
+      r"hi|hello|thanks|thank you)\s*[!.?]*\s*",
+      normalized,
+      re.I,
+  ):
+    return False
   hints = (
       "internetten", "güncel", "bugün", "şu an", "şuan", "son dakika",
       "haber", "maç", "mac ", "skor", "sonuç", "spor", "fiyat", "kur", "döviz",
@@ -1803,7 +1888,16 @@ def should_fetch_live_context(text):
       "kazandı", "puan durumu", "transfer", "deprem", "seçim", "altın",
       "dolar", "euro", "bitcoin", "hisse", "sürüm", "versiyon", "yeni çıkan",
   )
-  return any(hint in normalized for hint in hints)
+  if any(hint in normalized for hint in hints):
+    return True
+  factual_question = re.search(
+      r"\b(ne|nedir|kim|kimdir|hangi|kaç|kac|nerede|neresi|nasıl|nasil|neden|"
+      r"niçin|nicin|how|what|who|which|where|when|why)\b",
+      normalized,
+      re.I,
+  )
+  meaningful_words = re.findall(r"[a-z0-9çğıöşü]{3,}", normalized)
+  return bool(factual_question and len(meaningful_words) >= 3)
 
 
 SPORTS_FACTS_RE = re.compile(
@@ -1828,6 +1922,30 @@ SPORTS_SCORE_ASK_RE = re.compile(
     re.I,
 )
 SPORTS_SCORE_RE = re.compile(r"\b\d{1,2}\s*[-–:]\s*\d{1,2}\b")
+SPORTS_RESULT_CONTEXT_RE = re.compile(
+    r"\b(maç|mac|skor|sonuç|sonuc|bitti|kazandı|kazandi|yendi|yenildi|"
+    r"mağlup|maglup|berabere|score|result|final|won|beat|draw)\b",
+    re.I,
+)
+SPORTS_CONFIRMED_SCORE_CONTEXT_RE = re.compile(
+    r"\b(skor|sonuç|sonuc|bitti|kazandı|kazandi|yendi|yenildi|mağlup|"
+    r"maglup|berabere|score|result|final|won|beat|draw|sona\s+erdi)\b",
+    re.I,
+)
+SPORTS_LIVE_SCORE_CONTEXT_RE = re.compile(
+    r"(canlı\s+skor|canli\s+skor|live\s+score|ikinci\s+y[ıi]r[ıi]|"
+    r"maç\s+devam\s+ediyor|mac\s+devam\s+ediyor|in\s+progress)",
+    re.I,
+)
+SPORTS_DATE_CONTEXT_RE = re.compile(
+    r"\b(tarih\w*|takvim\w*|fikstür\w*|fikstur\w*|date|calendar|scheduled|schedule)\b",
+    re.I,
+)
+SPORTS_BASKETBALL_CONTEXT_RE = re.compile(
+    r"\b(basketbol|basketball|euroleague|nba|voleybol|volleyball|"
+    r"hentbol|handball|set(?:i|te|ler)?)\b",
+    re.I,
+)
 SPORTS_DATE_RE = re.compile(
     r"\b\d{1,2}\s+(?:ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|"
     r"temmuz|ağustos|agustos|eylül|eylul|ekim|kasım|kasim|aralık|aralik)\s+20\d{2}\b",
@@ -2002,9 +2120,27 @@ def search_live_sports(queries, num_results, *, followup=False, deadline=None, e
   if not combined:
     return {"results": [], "engine": engine, "query": " | ".join(queries)}
   tokens = _query_tokens(queries[0])
-  combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
+  if len(clubs) == 1 and not followup:
+    combined.sort(
+        key=lambda item: (
+            str(item.get("published") or ""),
+            *_sports_result_rank(item, clubs, tokens)[:2],
+        ),
+        reverse=True,
+    )
+  else:
+    combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
   _enrich_results(combined, tokens, enrich, deadline)
-  combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
+  if len(clubs) == 1 and not followup:
+    combined.sort(
+        key=lambda item: (
+            str(item.get("published") or ""),
+            *_sports_result_rank(item, clubs, tokens)[:2],
+        ),
+        reverse=True,
+    )
+  else:
+    combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
   return {"results": combined, "engine": engine,
           "query": used_query or queries[0]}
 
@@ -2021,8 +2157,20 @@ def should_retry_live_search_with_general_results(question, live_context):
     return not results
 
 
-def summarize_sourced_match_score(results):
-    """Report only scorelines found in independent source excerpts."""
+def summarize_sourced_match_score(results, *, latest_fixture=False):
+    """Report a sourced score, ignoring dates and unanchored score-like numbers."""
+    results = [result for result in results or [] if isinstance(result, dict)]
+    dated_results = [
+        result for result in results
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(result.get("published") or ""))
+    ]
+    if latest_fixture and dated_results:
+        latest_date = max(dt.date.fromisoformat(result["published"]) for result in dated_results)
+        oldest_relevant_date = latest_date - dt.timedelta(days=1)
+        results = [
+            result for result in dated_results
+            if dt.date.fromisoformat(result["published"]) >= oldest_relevant_date
+        ]
     score_sources = {}
     for result in results or []:
         if not isinstance(result, dict):
@@ -2033,22 +2181,58 @@ def summarize_sourced_match_score(results):
         if not is_brand_safe(f"{title} {snippet} {url}"):
             continue
         excerpt = str(result.get("excerpt") or "").strip()
-        source_text = f"{title} {snippet} {excerpt}"
-        source_text = re.sub(r"\b\d{1,2}[./-]\d{1,2}[./-](?:20)?\d{2}\b", " ", source_text)
-        scores = {
-            re.sub(r"\s+", "", match.group(0)).replace("–", "-").replace(":", "-")
-            for match in SPORTS_SCORE_RE.finditer(source_text)
-        }
-        if not scores:
-            continue
-        host = (urlparse(url).hostname or "").lower()
+        host = (
+            urlparse(str(result.get("publisher_url") or "")).hostname
+            or urlparse(url).hostname
+            or ""
+        ).lower()
         if not host:
             continue
-        for score in scores:
-            score_sources.setdefault(score, {})[host] = {
-                "title": title,
-                "url": url,
-            }
+        for source_text in (title, snippet, excerpt):
+            cleaned_text = re.sub(
+                r"\b(?:20\d{2}[-./]\d{1,2}[-./]\d{1,2}|"
+                r"\d{1,2}[-./]\d{1,2}[-./](?:20)?\d{2})\b",
+                " ",
+                source_text,
+            )
+            for match in SPORTS_SCORE_RE.finditer(cleaned_text):
+                left, right = (
+                    int(value)
+                    for value in re.split(r"\s*[-–:]\s*", match.group(0))
+                )
+                context = cleaned_text[
+                    max(0, match.start() - 70):min(len(cleaned_text), match.end() + 70)
+                ]
+                if SPORTS_LIVE_SCORE_CONTEXT_RE.search(context):
+                    continue
+                looks_like_calendar_date = (
+                    (1 <= left <= 12 and 13 <= right <= 31)
+                    or (13 <= left <= 31 and 1 <= right <= 12)
+                )
+                if looks_like_calendar_date:
+                    continue
+                if (
+                    left <= 12
+                    and right <= 12
+                    and SPORTS_DATE_CONTEXT_RE.search(context)
+                    and not SPORTS_CONFIRMED_SCORE_CONTEXT_RE.search(context)
+                ):
+                    continue
+                if (
+                    max(left, right) > 20
+                    and not SPORTS_BASKETBALL_CONTEXT_RE.search(context)
+                ):
+                    continue
+                if (
+                    not SPORTS_RESULT_CONTEXT_RE.search(context)
+                    and len(_sports_club_names(context)) < 2
+                ):
+                    continue
+                score = f"{left}-{right}"
+                score_sources.setdefault(score, {})[host] = {
+                    "title": title,
+                    "url": url,
+                }
 
     if not score_sources:
         return (
@@ -2059,15 +2243,15 @@ def summarize_sourced_match_score(results):
         score: sources for score, sources in score_sources.items()
         if len(sources) >= 2
     }
-    if len(corroborated) == 1 and len(score_sources) == 1:
+    if len(corroborated) == 1:
         score, _sources = next(iter(corroborated.items()))
         return f"İki bağımsız kaynak maç skorunu {score} olarak doğruluyor."
-    if len(score_sources) > 1:
-        lines = [
-            "Canlı arama sonuçlarında farklı skorlar bulundu; doğrulanmış tek bir sonuç gibi sunmuyorum:"
-        ]
-        lines.extend(f"- {score}" for score in score_sources)
-        return "\n".join(lines)
+    if len(corroborated) > 1 or len(score_sources) > 1:
+        return (
+            "Canlı kaynaklarda bu soruya uyan birden fazla maç veya çelişkili skor var. "
+            "Kesin sonuç uydurmamak için skor vermiyorum; rakip takımı ve futbol/basketbol "
+            "branşını belirtirsen yalnızca o maçı doğrulayabilirim."
+        )
     score, sources = next(iter(score_sources.items()))
     return (
         f"Bir canlı arama sonucu skoru {score} olarak bildiriyor; bunu bağımsız bir "
@@ -2442,16 +2626,17 @@ def generate_image_with_gemini(prompt, image_model, api_key):
     image_prompt = refined_prompt
   else:
     image_prompt = (
-      "Create exactly one exceptionally detailed image that follows the user's brief. "
+        "Create exactly one exceptionally detailed 4K UHD image that follows the user's brief. "
       "Unless the brief explicitly requests an illustration, cartoon, logo, or another "
       "non-photographic style, render it as an ultra-photorealistic photograph captured "
       "with a professional full-frame camera. Use physically plausible light, natural "
       "skin and material textures, accurate anatomy and perspective, realistic depth of "
       "field, crisp focus on the subject, nuanced shadows, and restrained true-to-life "
       "color grading. Preserve the requested subject, count, action, and composition; "
-      "do not invent unrelated objects. Do not add any text, watermark, signature, logo, "
-      "border, or provider branding unless the user explicitly asks for it. Follow any "
-        "style explicitly requested by the user instead of forcing photorealism. Exact user "
+        "render all colors, backgrounds, shapes, and products exactly as requested; do not "
+        "invent unrelated objects. Do not add text, signatures, logos, borders, or provider "
+        "branding in the image itself unless explicitly requested. Follow any "
+          "style explicitly requested by the user instead of forcing photorealism. Exact user "
         "brief: "
         + prompt
         + "\nPhotographic translation and detail cues: "
@@ -2533,14 +2718,15 @@ def generate_image_with_pollinations(prompt, seed=None):
   """Stable Pollinations fallback with explicit prompt refinement and URL-safe encoding."""
   params = build_flux_image_params(prompt, seed=seed, width=1024, height=1024)
   response = requests.get(
-      f"https://image.pollinations.ai/prompt/{quote(params['prompt'][:500], safe='')}",
+      f"https://image.pollinations.ai/prompt/{quote(params['prompt'], safe='')}",
       params={
           "width": params["width"],
           "height": params["height"],
-          "nologo": params["nologo"],
+          "nologo": "true",
           "safe": params["safe"],
           "model": params["model"],
           "seed": params["seed"],
+          "enhance": "false",
       },
       headers={"User-Agent": "Mozilla/5.0 (compatible; AslanParcasi/1.0)"},
       timeout=150,
@@ -3981,7 +4167,8 @@ def api_chat(request):
             3 if mode == "fast" else 5,
             followup=sports_followup,
             enrich=(
-                3 if SPORTS_SCORER_RE.search(question_text or "")
+                4 if SPORTS_SCORE_ASK_RE.search(question_text or "")
+                else 3 if SPORTS_SCORER_RE.search(question_text or "")
                 else 0 if mode == "fast"
                 else 2
             ),
@@ -4031,7 +4218,10 @@ def api_chat(request):
         )
       elif sports_question and SPORTS_SCORE_ASK_RE.search(question_text or ""):
         def sourced_score_stream():
-          yield summarize_sourced_match_score(live_context["results"])
+          yield summarize_sourced_match_score(
+              live_context["results"],
+              latest_fixture=len(_sports_club_names(question_text)) == 1,
+          )
 
         return StreamingHttpResponse(
             sourced_score_stream(),

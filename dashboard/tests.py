@@ -5,6 +5,7 @@ import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import unquote
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
@@ -229,10 +230,82 @@ class SearchTests(SimpleTestCase):
             },
         ])
 
-        self.assertIn("farklı skorlar", answer)
+        self.assertIn("birden fazla maç veya çelişkili skor", answer)
+        self.assertNotIn("2-0", answer)
+        self.assertNotIn("1-0", answer)
+
+    def test_sourced_score_summary_ignores_calendar_dates_and_unrelated_numbers(self):
+        answer = views.summarize_sourced_match_score([
+            {
+                "title": "Fenerbahçe 2026-10-03 tarihinde oynayacak",
+                "url": "https://one.example/match",
+                "snippet": "Fenerbahçe haberi · 09-25 · 78-68 · 22-55 · 23-33 · 08-15",
+            },
+            {
+                "title": "Fenerbahçe maç tarihi 09-10 olarak açıklandı",
+                "url": "https://two.example/match",
+                "snippet": "Takvimde 2026-09-10 tarihi yer alıyor.",
+            },
+        ])
+
+        self.assertIn("skoru açıkça yer almıyor", answer)
+        for date_or_unrelated_number in ("09-25", "78-68", "22-55", "23-33", "08-15", "09-10"):
+            self.assertNotIn(date_or_unrelated_number, answer)
+
+    def test_sourced_score_summary_accepts_a_fixtures_contextual_basketball_score(self):
+        answer = views.summarize_sourced_match_score([
+            {
+                "title": "Fenerbahçe basketbol maçı 78-68 kazandı",
+                "url": "https://one.example/match",
+                "snippet": "EuroLeague karşılaşması 78-68 sona erdi.",
+            },
+        ])
+
+        self.assertIn("78-68", answer)
+
+    def test_latest_team_score_ignores_an_older_basketball_result(self):
+        answer = views.summarize_sourced_match_score([
+            {
+                "title": "Fenerbahçe basketball game 78-68",
+                "url": "https://old.example/match",
+                "snippet": "EuroLeague score 78-68",
+                "published": "2026-09-25",
+            },
+            {
+                "title": "Fenerbahçe Turan Tovuz maç sonucu",
+                "url": "https://new.example/match",
+                "snippet": "Yeni karşılaşma 2026-10-03 tarihinde oynandı.",
+                "published": "2026-10-03",
+            },
+        ], latest_fixture=True)
+
+        self.assertIn("skoru açıkça yer almıyor", answer)
+        self.assertNotIn("78-68", answer)
+
+    def test_final_match_score_is_not_overridden_by_an_earlier_live_score(self):
+        answer = views.summarize_sourced_match_score([
+            {
+                "title": "Fenerbahçe Turan Tovuz maçı",
+                "url": "https://live.example/match",
+                "snippet": "Canlı skor: 1-0. İkinci yarı oynanıyor.",
+                "published": "2026-10-03",
+            },
+            {
+                "title": "Fenerbahçe Turan Tovuz maçı 2-0 bitti",
+                "url": "https://one.example/report",
+                "snippet": "Maç sonucu 2-0.",
+                "published": "2026-10-03",
+            },
+            {
+                "title": "Fenerbahçe Turan Tovuz karşılaşması 2-0 sona erdi",
+                "url": "https://two.example/report",
+                "snippet": "Skor 2-0 olarak tamamlandı.",
+                "published": "2026-10-03",
+            },
+        ], latest_fixture=True)
+
         self.assertIn("2-0", answer)
-        self.assertIn("1-0", answer)
-        self.assertIn("doğrulanmış tek bir sonuç gibi sunmuyorum", answer)
+        self.assertNotIn("1-0", answer)
 
     def test_sports_followup_search_uses_the_previous_user_question_only(self):
         history = [
@@ -381,6 +454,18 @@ class SearchTests(SimpleTestCase):
         post.assert_called_once()
         get.assert_not_called()
 
+    def test_substantive_factual_questions_use_live_research(self):
+        for question in (
+            "Türkiye'de asgari ücret ne kadar?",
+            "Marie Curie kimdir?",
+            "What is the James Webb telescope?",
+        ):
+            with self.subTest(question=question):
+                self.assertTrue(views.should_fetch_live_context(question))
+
+        self.assertFalse(views.should_fetch_live_context("Selam"))
+        self.assertFalse(views.should_fetch_live_context("Nasılsın?"))
+
     def test_sports_live_search_retries_on_ddg_block_or_weak_result(self):
         self.assertTrue(
             views.should_retry_live_search_with_general_results(
@@ -514,6 +599,35 @@ class SearchTests(SimpleTestCase):
         self.assertEqual(len(result["results"]), 1)
         self.assertIn("Fenerbahçe", result["results"][0]["title"])
 
+    def test_team_only_sports_search_prioritizes_the_newest_fixture(self):
+        def fake_search(query, num_results=5, **kwargs):
+            return {
+                "engine": "haber-rss",
+                "results": [
+                    {
+                        "title": "Fenerbahçe basketball 78-68",
+                        "url": "https://old.example/match",
+                        "snippet": "EuroLeague",
+                        "published": "2026-09-25",
+                    },
+                    {
+                        "title": "Fenerbahçe Turan Tovuz maç sonucu",
+                        "url": "https://new.example/match",
+                        "snippet": "Hazırlık maçı",
+                        "published": "2026-10-03",
+                    },
+                ],
+            }
+
+        with patch("dashboard.views.web_search_multi", side_effect=fake_search):
+            result = views.search_live_sports(
+                ("Fenerbahçe maçı kaç kaç",),
+                5,
+                enrich=0,
+            )
+
+        self.assertEqual(result["results"][0]["published"], "2026-10-03")
+
     def test_specific_fixture_search_requires_both_named_clubs(self):
         def fake_search(query, num_results=5, **kwargs):
             return {
@@ -642,6 +756,7 @@ class ImageGenerationTests(TestCase):
         image_prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("uçak", image_prompt)
         self.assertIn("ultra-photorealistic", image_prompt)
+        self.assertIn("4K UHD", image_prompt)
 
     def test_simple_red_circle_is_rendered_exactly_without_an_image_provider(self):
         with patch("dashboard.views.get_api_keys", return_value=[]), patch(
@@ -657,16 +772,54 @@ class ImageGenerationTests(TestCase):
         image_url = response.json()["image_url"]
         self.assertTrue(image_url.startswith("data:image/svg+xml;base64,"))
         svg = base64.b64decode(image_url.split(",", 1)[1]).decode("utf-8")
-        self.assertIn('<circle cx="512" cy="512" r="300" fill="#ff0000"/>', svg)
+        self.assertIn('<circle cx="2048" cy="2048" r="1200" fill="#ff0000"/>', svg)
+        self.assertIn('width="4096" height="4096"', svg)
         self.assertNotIn("linearGradient", svg)
         image_provider.assert_not_called()
 
-    def test_generated_image_is_displayed_without_automatic_branding(self):
+    def test_shape_colors_and_background_are_parsed_independently(self):
+        prompts = (
+            ("Arka planı siyah olan yeşil bir daire oluştur", "#008000", "#000000"),
+            ("Siyah arka plan üzerinde yeşil bir daire oluştur", "#008000", "#000000"),
+            ("Draw a green circle on a black background", "#008000", "#000000"),
+            ("Kırmızı bir daire", "#ff0000", "#ffffff"),
+        )
+        for prompt, expected_shape_color, expected_background in prompts:
+            with self.subTest(prompt=prompt):
+                image_url = views.generate_simple_geometric_image(prompt)
+                svg = base64.b64decode(image_url.split(",", 1)[1]).decode("utf-8")
+                self.assertIn(
+                    f'<rect width="4096" height="4096" fill="{expected_background}"/>',
+                    svg,
+                )
+                self.assertIn(
+                    f'<circle cx="2048" cy="2048" r="1200" fill="{expected_shape_color}"/>',
+                    svg,
+                )
+
+    def test_mousepad_prompt_requires_a_realistic_undistorted_4k_product_photo(self):
+        for user_prompt in (
+            "Gerçekçi bir mousepad oluştur",
+            "Masamda duran siyah mouse pad fotoğrafı",
+            "Create an ultra realistic mouse mat product photo",
+        ):
+            with self.subTest(user_prompt=user_prompt):
+                image_prompt = views.enhance_image_prompt(user_prompt)
+
+                self.assertIn("4K UHD", image_prompt)
+                self.assertIn("rectangular", image_prompt)
+                self.assertIn("stitched perimeter", image_prompt)
+                self.assertIn("geometrically straight and undistorted", image_prompt)
+                self.assertIn("bright light-gray tabletop", image_prompt)
+                self.assertIn("Exclude the computer mouse device", image_prompt)
+
+    def test_generated_image_displays_with_aslan_parcasi_branding(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
         template = template_path.read_text(encoding="utf-8")
 
-        self.assertNotIn("addGeneratedImageBranding", template)
-        self.assertIn("images: [{ url: data.image_url, name: prompt }]", template)
+        self.assertIn("addGeneratedImageBranding", template)
+        self.assertIn("const brandedImage = await addGeneratedImageBranding(data.image_url)", template)
+        self.assertIn("ASLAN PARÇASI AI", template)
 
     def test_legacy_image_fallback_uses_supported_one_k_resolution(self):
         image_response = Mock()
@@ -782,6 +935,23 @@ class ImageGenerationTests(TestCase):
 
         self.assertEqual(result, "data:image/jpeg;base64,backup")
         fallback.assert_called_once_with("Bir dağ manzarası")
+
+    def test_pollinations_fallback_disables_unrequested_prompt_enhancement(self):
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "image/png"}
+        response.content = b"png"
+
+        with patch("dashboard.views.requests.get", return_value=response) as get:
+            image_url = views.generate_image_with_pollinations("Gerçekçi bir mousepad oluştur")
+
+        self.assertTrue(image_url.startswith("data:image/png;base64,"))
+        self.assertEqual(get.call_args.kwargs["params"]["nologo"], "true")
+        self.assertEqual(get.call_args.kwargs["params"]["enhance"], "false")
+        self.assertIn(
+            "exclude the computer mouse device",
+            unquote(get.call_args.args[0]).lower(),
+        )
 
     def test_explicit_illustration_style_is_not_forced_into_photorealism(self):
         prompt = views.enhance_image_prompt("Bir çizim: kedi")
