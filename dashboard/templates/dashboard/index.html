@@ -1319,6 +1319,11 @@
             }
             .mobile-menu-close {
                 display: flex;
+                left: 12px;
+                right: auto;
+            }
+            .brand-header {
+                padding-left: 44px;
             }
             .sidebar {
                 position: fixed;
@@ -1671,9 +1676,10 @@
 <script>
     const DEFAULT_AI_MSG = "Selam! Ben Aslan Parçası. Bugün sana nasıl yardımcı olabilirim?";
     const DJANGO_USERNAME = "{{ request.user.username|escapejs }}";
+    const DJANGO_USER_EMAIL = "{{ request.user.email|escapejs }}";
     const DJANGO_USER_ID = "{{ request.user.id }}";
     const DEFAULT_AVATAR = 'https://api.dicebear.com/7.x/bottts/svg?seed=Ayaz';
-    const USER_STORAGE_KEY = `aslan_parcasi_${DJANGO_USER_ID}`;
+    const USER_STORAGE_KEY = `aslan_parcasi_${DJANGO_USER_ID}_${DJANGO_USERNAME.toLowerCase()}_${DJANGO_USER_EMAIL.toLowerCase()}`;
     const SERVER_SETTINGS = JSON.parse(document.getElementById('user-settings-data').textContent || '{}');
 
     function getCsrfToken() {
@@ -1972,11 +1978,7 @@
             const data = await response.json();
             const remoteChats = Array.isArray(data.chats) ? data.chats : [];
             lastServerUpdateAt = Date.parse(data.updated_at || '') || 0;
-            if (remoteChats.length || !chats.length) {
-                chats = remoteChats;
-            } else {
-                syncChatsToServer();
-            }
+            chats = remoteChats;
         } catch (err) {
             // The existing local cache still lets the app open without a connection.
         }

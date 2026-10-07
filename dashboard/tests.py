@@ -1283,3 +1283,14 @@ class AuthenticationTests(TestCase):
         self.assertContains(page, "closeDeepThinkSettings()")
         self.assertContains(page, "retryMessage")
         self.assertContains(page, "Araştırma durduruldu.")
+
+    def test_dashboard_scopes_local_cache_to_account_and_trusts_server_chat_list(self):
+        self.client.force_login(self.user)
+        page = self.client.get(reverse("index"))
+
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "DJANGO_USER_EMAIL")
+        self.assertContains(page, "DJANGO_USERNAME.toLowerCase()")
+        self.assertContains(page, "chats = remoteChats;")
+        self.assertNotContains(page, "if (remoteChats.length || !chats.length)")
+        self.assertContains(page, "left: 12px;")
