@@ -175,6 +175,9 @@ class WeatherTests(TestCase):
 
 
 class SearchTests(SimpleTestCase):
+    def setUp(self):
+        views.SEARCH_ENGINE_STATE.clear()
+
     def test_weather_city_is_detected_when_question_puts_city_after_weather(self):
         for question in (
             "Hava kaç derece Erdek için?",
@@ -340,6 +343,102 @@ class SearchTests(SimpleTestCase):
                 {"blocked": True, "engine": "ddg-html", "results": []},
             )
         )
+
+    def test_team_only_match_query_adds_a_latest_fixture_search(self):
+        queries = views.build_live_search_queries("fenerbahçe maçı kaç kaç bitti")
+
+        self.assertGreaterEqual(len(queries), 2)
+        self.assertIn("son maç", queries[-1])
+        self.assertIn("fenerbahce", views._ascii_fold(queries[-1]).lower())
+
+    def test_reliable_feeds_are_tried_before_the_blocked_scrapers(self):
+        order = [engine for engine, *_ in views._search_attempts("evren nasıl oluştu")]
+
+        self.assertLess(order.index("vikipedi-tr"), order.index("ddg-html"))
+        self.assertIn("bing-haber-rss", order)
+        news_order = [engine for engine, *_ in views._search_attempts("fenerbahçe maçı sonucu")]
+        self.assertEqual(news_order[0], "haber-rss")
+
+    def test_bing_news_link_is_unwrapped_to_the_publisher(self):
+        link = (
+            "http://www.bing.com/news/apiclick.aspx?ref=FexRss&aid=&tid=1"
+            "&url=https%3a%2f%2fwww.sporx.com%2fmac-ozeti"
+        )
+
+        self.assertEqual(
+            views._clean_result_url(link), "https://www.sporx.com/mac-ozeti"
+        )
+
+    def test_feed_date_is_stored_as_iso_for_newest_first_sorting(self):
+        feed = (
+            "<rss><channel><item><title>Turan Tovuz 0-2 Fenerbahçe</title>"
+            "<link>https://example.org/match</link>"
+            "<pubDate>Sat, 03 Oct 2026 18:25:28 GMT</pubDate></item></channel></rss>"
+        )
+
+        results = views._parse_google_news_rss(feed, 5)
+
+        self.assertEqual(results[0]["published"], "2026-10-03")
+
+    def test_wikipedia_is_accepted_for_an_encyclopedic_question_only(self):
+        payload = json.dumps({
+            "query": {"search": [
+                {"title": "Evren", "snippet": "Evren nasıl oluştu sorusunun yanıtı."},
+                {"title": "Kenan Evren", "snippet": "Türk asker ve devlet adamı."},
+            ]},
+        })
+
+        with patch("dashboard.views.requests.get") as get:
+            get.return_value = SimpleNamespace(status_code=200, text=payload)
+            result = views.web_search("evren nasıl oluştu", 5)
+
+        self.assertEqual(result["engine"], "vikipedi-tr")
+        self.assertEqual(result["results"][0]["title"], "Evren (Vikipedi)")
+
+        with patch("dashboard.views.requests.get") as get:
+            get.return_value = SimpleNamespace(status_code=200, text=payload)
+            off_topic = views.web_search("python django StreamingHttpResponse", 5)
+
+        self.assertNotEqual(off_topic.get("engine"), "vikipedi-tr")
+
+    def test_article_excerpt_keeps_real_sentences_and_drops_navigation(self):
+        page = (
+            "<html><body><nav>Uygulamayı Aç Web'de Devam Et Kaynak Ekle</nav>"
+            "<p>Fenerbahçe, Eyüpspor'u 8-0 yendi ve tarihe geçti.</p>"
+            "<p>Vedat Muriqi dört gol atarak maça damga vurdu.</p>"
+            "<script>var x = 1;</script></body></html>"
+        )
+
+        with patch("dashboard.views.requests.get") as get:
+            get.return_value = SimpleNamespace(
+                status_code=200, content=page.encode("utf-8"), encoding="utf-8"
+            )
+            excerpt = views._article_excerpt(
+                "https://www.sporx.com/mac", ["fenerbahce", "muriqi"]
+            )
+
+        self.assertIn("Muriqi", excerpt)
+        self.assertNotIn("Uygulamayı Aç", excerpt)
+
+    def test_sports_results_without_the_asked_club_are_dropped(self):
+        def fake_search(query, num_results=5, **kwargs):
+            if kwargs.get("only_engines"):
+                return {"results": [], "engine": "bing-haber-rss"}
+            return {
+                "engine": "haber-rss",
+                "results": [
+                    {"title": "İtalya Türkiye maçı kaç kaç bitti", "url": "https://example.org/a",
+                     "snippet": "2026-10-05 · Haberler", "published": "2026-10-05"},
+                    {"title": "Turan Tovuz 0-2 Fenerbahçe maç sonucu", "url": "https://example.org/b",
+                     "snippet": "2026-10-03 · GZT", "published": "2026-10-03"},
+                ],
+            }
+
+        with patch("dashboard.views.web_search", side_effect=fake_search):
+            result = views.search_live_sports(["fenerbahçe maçı kaç kaç bitti"], 5, enrich=0)
+
+        self.assertEqual(len(result["results"]), 1)
+        self.assertIn("Fenerbahçe", result["results"][0]["title"])
 
 
 class AppClockTests(TestCase):
@@ -815,25 +914,43 @@ class ChatFeatureTests(TestCase):
         execute.assert_not_called()
         self.assertTrue(any(kind == "reason" and "Kaynak:" in text for kind, text in events))
 
-    def test_deep_research_stops_honestly_when_duckduckgo_blocks_access(self):
+    def test_deep_research_never_refuses_when_search_engines_are_blocked(self):
+        final_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Genel bilgiyle özet: evren genişliyor."),
+        )])
+
+        def model_call(*args, **kwargs):
+            if kwargs.get("stream"):
+                return iter([final_chunk])
+            return SimpleNamespace(choices=[])
+
         with (
             patch("dashboard.views.web_search", return_value={"blocked": True, "results": []}),
-            patch("dashboard.views.safe_model_call") as model_call,
+            patch("dashboard.views.safe_model_call", side_effect=model_call) as model_call_mock,
+            patch("dashboard.views.time.sleep"),
         ):
             events = list(views.deep_think_events(
                 object(),
                 [
                     {"role": "system", "content": "araştır"},
-                    {"role": "user", "content": "Fenerbahçe Galatasaray maç sonucu"},
+                    {"role": "user", "content": "evren nasıl oluştu"},
                 ],
-                300,
+                30,
                 0.3,
                 1024,
             ))
 
-        model_call.assert_not_called()
         answer = "".join(text for kind, text in events if kind == "answer")
-        self.assertIn("doğrulanabilir web kaynaklarına erişemedim", answer)
+        self.assertTrue(model_call_mock.called)
+        self.assertIn("evren genişliyor", answer)
+        self.assertNotIn("erişemedim", answer)
+        self.assertNotIn("iddia etmeyeceğim", answer)
+        system_text = "\n".join(
+            str(message.get("content") or "")
+            for message in model_call_mock.call_args_list[-1].args[1]
+            if message.get("role") == "system"
+        )
+        self.assertIn("doğrulanabilir web kaynağı toplanamadı", system_text)
 
     def test_deep_research_falls_back_to_general_search_when_ddg_is_blocked(self):
         tool_call = SimpleNamespace(
@@ -910,7 +1027,7 @@ class ChatFeatureTests(TestCase):
         def model_call(*args, **kwargs):
             return iter([final_chunk]) if kwargs.get("stream") else empty_response
 
-        def fake_search(query, num_results, *, duckduckgo_only=False, deadline=None):
+        def fake_search(query, num_results, *, duckduckgo_only=False, deadline=None, **kwargs):
             if duckduckgo_only:
                 return {"engine": "ddg-html", "results": []}
             return {"engine": "bing", "results": [{
@@ -981,10 +1098,12 @@ class ChatFeatureTests(TestCase):
             answer = b"".join(response.streaming_content).decode("utf-8")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(search.call_count, 3)
+        self.assertEqual(search.call_count, 4)
         self.assertIn("golleri kim attı", search.call_args_list[0].args[0].lower())
         self.assertIn("gol atan oyuncular", search.call_args_list[1].args[0].lower())
-        self.assertTrue(all(call.kwargs["duckduckgo_only"] for call in search.call_args_list))
+        self.assertFalse(
+            any(call.kwargs.get("duckduckgo_only") for call in search.call_args_list)
+        )
         self.assertIn("arama kaynağı özetleri", answer)
         self.assertIn("Golleri atan oyuncular maç raporunda.", answer)
         model_call.assert_not_called()
@@ -1083,7 +1202,8 @@ class ChatFeatureTests(TestCase):
             )
             b"".join(response.streaming_content)
 
-        search.assert_called_once()
+        search.assert_called()
+        self.assertEqual(search.call_args_list[0].kwargs.get("recency_days"), 7)
         sent_messages = model_call.call_args.args[1]
         self.assertIn("Canlı sonuç", sent_messages[1]["content"])
 
@@ -1140,19 +1260,23 @@ class ChatFeatureTests(TestCase):
         self.assertNotIn("Hangi şehir", answer)
         model_call.assert_not_called()
 
-    def test_sports_followup_fails_closed_when_ddg_cannot_verify_match_details(self):
+    def test_sports_followup_without_sources_still_answers_without_inventing(self):
         history = [
             {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
             {"sender": "ai", "text": "8-0; Valencia 2 gol attı."},
         ]
+        chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Canlı kaynağa şu an ulaşamadım.", tool_calls=None),
+        )])
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
         with (
-            patch("dashboard.views.get_chat_endpoints", return_value=[object()]),
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
             patch("dashboard.views.web_search", return_value={
                 "blocked": True,
                 "engine": "ddg-html",
                 "results": [],
             }) as search,
-            patch("dashboard.views.safe_model_call") as model_call,
+            patch("dashboard.views.safe_model_call", Mock(return_value=iter([chunk]))) as model_call,
         ):
             response = self.client.post(
                 reverse("api_chat"),
@@ -1165,10 +1289,15 @@ class ChatFeatureTests(TestCase):
             answer = b"".join(response.streaming_content).decode("utf-8")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("doğrulayamadım", answer)
+        self.assertIn("ulaşamadım", answer)
         self.assertNotIn("Valencia", answer)
         self.assertIn("eyupspor", views._ascii_fold(search.call_args.args[0]).lower())
-        model_call.assert_not_called()
+        system_text = "\n".join(
+            str(message.get("content") or "")
+            for message in model_call.call_args.args[1]
+            if message.get("role") == "system"
+        )
+        self.assertIn("UYDURMA", system_text)
 
     def test_sports_answer_prompt_rejects_unverified_prior_assistant_details(self):
         chunk = SimpleNamespace(choices=[SimpleNamespace(
@@ -1209,7 +1338,7 @@ class ChatFeatureTests(TestCase):
 
         normalized_query = views._ascii_fold(search.call_args.args[0]).lower()
         self.assertIn("eyupspor", normalized_query)
-        self.assertTrue(search.call_args.kwargs["duckduckgo_only"])
+        self.assertFalse(search.call_args.kwargs.get("duckduckgo_only"))
         model_messages = model_call.call_args.args[1]
         system_text = "\n".join(
             str(message.get("content") or "")

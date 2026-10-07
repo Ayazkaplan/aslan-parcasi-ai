@@ -748,7 +748,7 @@ def get_current_time():
     }
 
 
-TURKISH_ASCII_MAP = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+TURKISH_ASCII_MAP = str.maketrans("çğıöşüÇĞİÖŞÜâîûÂÎÛ", "cgiosuCGIOSUaiuAIU")
 
 
 def _ascii_fold(text):
@@ -1043,6 +1043,10 @@ def _clean_result_url(href):
     if "bing.com/ck/" in url:
         decoded = _decode_bing_redirect(url)
         return decoded if decoded.startswith("http") else ""
+    if "bing.com/news/apiclick" in url:
+        target = (parse_qs(urlparse(url).query).get("url") or [""])[0]
+        if target.startswith("http"):
+            return unquote(target)
     return url
 
 
@@ -1117,17 +1121,162 @@ def _parse_google_news_rss(xml_text, limit):
             continue
         source_match = re.search(r"<source[^>]*>(.*?)</source>", item, re.S)
         date_match = re.search(r"<pubDate>(.*?)</pubDate>", item, re.S)
+        published = _rss_date(_strip_tags(date_match.group(1)) if date_match else "")
         meta = " · ".join(part for part in (
-            _strip_tags(date_match.group(1)) if date_match else "",
+            published,
             _strip_tags(source_match.group(1)) if source_match else "",
         ) if part)
-        results.append({
+        entry = {
             "title": title,
             "url": _clean_result_url(link_match.group(1)),
             "snippet": meta,
+        }
+        if published:
+            entry["published"] = published
+        results.append(entry)
+        if len(results) >= limit:
+            break
+    return results
+
+
+RSS_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7,
+    "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+RSS_DATE_RE = re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\s+(\d{4})")
+
+
+def _rss_date(raw):
+    """Feed dates as ISO, so the newest match sorts first without a locale."""
+    match = RSS_DATE_RE.search(raw or "")
+    if not match:
+        return ""
+    day, month, year = match.group(1), match.group(2).lower(), match.group(3)
+    if month not in RSS_MONTHS:
+        return ""
+    return f"{year}-{RSS_MONTHS[month]:02d}-{int(day):02d}"
+
+
+WIKI_SEARCH_PARAMS = {
+    "action": "query",
+    "list": "search",
+    "srlimit": 6,
+    "srprop": "snippet",
+    "format": "json",
+    "utf8": 1,
+}
+
+
+def _parse_wikipedia_results(json_text, limit, lang):
+    """Keyless encyclopedia search: reachable from the IPs DuckDuckGo blocks."""
+    try:
+        payload = json.loads(json_text or "{}")
+    except (TypeError, ValueError):
+        return []
+    results = []
+    for entry in ((payload.get("query") or {}).get("search")) or []:
+        title = str(entry.get("title") or "").strip()
+        snippet = _strip_tags(str(entry.get("snippet") or ""))
+        if not title or not snippet:
+            continue
+        results.append({
+            "title": f"{title} ({'Vikipedi' if lang == 'tr' else 'Wikipedia'})",
+            "url": f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
+            "snippet": snippet,
         })
         if len(results) >= limit:
             break
+    return results
+
+
+def _wikipedia_parser(lang):
+    def parse(json_text, limit):
+        return _parse_wikipedia_results(json_text, limit, lang)
+
+    return parse
+
+
+ARTICLE_BLOCK_RE = re.compile(
+    r"<(script|style|noscript|svg|header|footer|nav|aside|form|iframe|figure)"
+    r"[^>]*>.*?</\1>",
+    re.S | re.I,
+)
+ARTICLE_SENTENCE_RE = re.compile(r"(?<=[.!?…])\s+")
+ARTICLE_NOISE_SENTENCE_RE = re.compile(
+    r"(uygulamayı\s+aç|uygulamayi\s+ac|web'de\s+devam|kaynak\s+ekle|abone\s+ol|"
+    r"bilgi\s+rehberi|reklam|çerez|cerez|gizlilik|kvkk|bizi\s+takip|"
+    r"haber\s+kaynağınız|youtube|instagram|twitter|facebook|telegram|"
+    r"son\s+dakika\s+haberleri|tüm\s+hakları\s+saklıdır)",
+    re.I,
+)
+TURKISH_MARK_RE = re.compile(r"[ıİğüşöç]")
+
+
+def _decode_html_body(response):
+    """Some Turkish news sites serve cp1254 without saying so; mojibake loses names."""
+    raw = response.content or b""
+    fallback = ""
+    for encoding in ("utf-8", response.encoding, "cp1254"):
+        if not encoding:
+            continue
+        try:
+            candidate = raw.decode(encoding, "strict")
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if not fallback:
+            fallback = candidate
+        if TURKISH_MARK_RE.search(candidate):
+            return candidate
+    return fallback
+
+
+def _article_excerpt(url, tokens, timeout=6, limit=900):
+    """Real article text: news feeds carry only a date, so scorers went missing."""
+    target = (url or "").strip()
+    if not target.startswith("http") or "news.google.com" in target:
+        return ""
+    try:
+        response = requests.get(
+            target, headers=SEARCH_HEADERS, timeout=timeout, allow_redirects=True
+        )
+    except Exception:
+        return ""
+    if response.status_code >= 400:
+        return ""
+    text = _strip_tags(ARTICLE_BLOCK_RE.sub(" ", _decode_html_body(response)))
+    if len(text) < 60:
+        return ""
+    picked = []
+    total = 0
+    for sentence in ARTICLE_SENTENCE_RE.split(text):
+        sentence = sentence.strip()
+        if len(sentence) < 40 or ARTICLE_NOISE_SENTENCE_RE.search(sentence):
+            continue
+        folded = _ascii_fold(sentence).lower()
+        if tokens and not any(token[:5] in folded for token in tokens):
+            continue
+        picked.append(sentence)
+        total += len(sentence)
+        if total >= limit:
+            break
+    return " ".join(picked)[:limit]
+
+
+def _enrich_results(results, tokens, count, deadline=None):
+    """Fill thin snippets with the article's own words, best matches first."""
+    if count <= 0:
+        return results
+    done = 0
+    for item in results:
+        if done >= count:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        budget = 6.0 if deadline is None else min(6.0, max(1.0, deadline - time.monotonic()))
+        excerpt = _article_excerpt(str(item.get("url") or ""), tokens, timeout=budget)
+        if excerpt:
+            item["excerpt"] = excerpt
+            done += 1
     return results
 
 
@@ -1204,19 +1353,45 @@ def _relevance(result, tokens):
     return sum(1 for token in tokens if token[:5] in haystack)
 
 
-def _is_relevant(result, tokens, allow_chatter):
+def _is_relevant(result, tokens, allow_chatter, strict=False):
     """On-topic and, unless the user asked for it, not entertainment noise."""
     if tokens:
+        haystack = _ascii_fold(
+            f"{result.get('title', '')} {result.get('snippet', '')}"
+        ).lower()
         minimum_matches = 1 if len(tokens) <= 2 else (len(tokens) + 1) // 2
-        if _relevance(result, tokens) < minimum_matches:
+        if strict:
+            # Ansiklopedi her konuda bir madde bulur; nadir terim yoksa konu başkadır.
+            rarest = max(tokens, key=len)
+            if rarest[:6] not in haystack:
+                return False
+        if sum(1 for token in tokens if token[:5] in haystack) < minimum_matches:
             return False
     if allow_chatter:
         return True
     return not CHATTER_TITLE_RE.search(str(result.get("title") or ""))
 
 
+SEARCH_ENGINE_COOLDOWN = 120.0
+SEARCH_ENGINE_STATE = {}
+SEARCH_ENGINE_LOCK = threading.Lock()
+REFERENCE_ENGINES = frozenset({"vikipedi-tr", "vikipedi-en"})
+ENGINE_QUERY_PARAM = {"vikipedi-tr": "srsearch", "vikipedi-en": "srsearch"}
+
+
+def _engine_ready(engine):
+    """A blocked engine is skipped for a while instead of eating the whole budget."""
+    with SEARCH_ENGINE_LOCK:
+        return time.monotonic() >= SEARCH_ENGINE_STATE.get(engine, 0.0)
+
+
+def _engine_failed(engine):
+    with SEARCH_ENGINE_LOCK:
+        SEARCH_ENGINE_STATE[engine] = time.monotonic() + SEARCH_ENGINE_COOLDOWN
+
+
 def _search_attempts(query, duckduckgo_only=False):
-    """News engine first only for news-like queries; it is junk for general topics."""
+    """Keyless feeds first: the HTML scrapers are the ones cloud IPs get blocked on."""
     general = (
         ("ddg-html", "post", "https://html.duckduckgo.com/html/", {"kl": "tr-tr"}, _parse_ddg_results),
         ("ddg-lite", "post", "https://lite.duckduckgo.com/lite/", {"kl": "tr-tr"}, _parse_ddg_results),
@@ -1226,13 +1401,24 @@ def _search_attempts(query, duckduckgo_only=False):
     news = (
         ("haber-rss", "get", "https://news.google.com/rss/search",
          {"hl": "tr", "gl": "TR", "ceid": "TR:tr"}, _parse_google_news_rss),
+        ("bing-haber-rss", "get", "https://www.bing.com/news/search",
+         {"format": "rss", "setmkt": "tr-TR"}, _parse_google_news_rss),
+    )
+    reference = (
+        ("vikipedi-tr", "get", "https://tr.wikipedia.org/w/api.php",
+         dict(WIKI_SEARCH_PARAMS), _wikipedia_parser("tr")),
+        ("vikipedi-en", "get", "https://en.wikipedia.org/w/api.php",
+         dict(WIKI_SEARCH_PARAMS), _wikipedia_parser("en")),
     )
     if duckduckgo_only:
         return tuple(attempt for attempt in general if attempt[0].startswith("ddg-"))
-    return news + general if NEWS_HINT_RE.search(query or "") else general + news
+    if NEWS_HINT_RE.search(query or ""):
+        return news + reference + general
+    return reference + news + general
 
 
-def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
+def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None,
+               recency_days=None, enrich=0, only_engines=None):
     """Current web results with no API key, filtered for relevance to the query."""
     limit = max(1, min(int(num_results), 10))
     clean_query = (query or "").strip()
@@ -1242,61 +1428,78 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None):
         NEWS_HINT_RE.search(clean_query) or ENTERTAINMENT_ASK_RE.search(clean_query)
     )
     last_error = None
+    last_tokens = _query_tokens(clean_query)
     partial = None
     for variant in _query_variants(clean_query):
         if deadline is not None and time.monotonic() >= deadline:
             break
-        tokens = _query_tokens(variant)
+        tokens = last_tokens = _query_tokens(variant)
         for engine, method, url, extra, parser in _search_attempts(variant, duckduckgo_only):
             if deadline is not None and time.monotonic() >= deadline:
                 break
+            if only_engines and engine not in only_engines:
+                continue
+            if not _engine_ready(engine):
+                last_error = f"{engine}: az önce başarısız oldu, bekleniyor"
+                continue
+            strict = engine in REFERENCE_ENGINES
             try:
-                timeout = 4 if duckduckgo_only else 10
+                timeout = 4 if duckduckgo_only else 8
                 if deadline is not None:
                     timeout = min(timeout, max(0.5, deadline - time.monotonic()))
+                engine_query = variant
+                if recency_days and engine == "haber-rss":
+                    engine_query = f"{variant} when:{int(recency_days)}d"
+                params = {ENGINE_QUERY_PARAM.get(engine, "q"): engine_query, **extra}
                 if method == "post":
                     response = requests.post(
-                        url,
-                        data={"q": variant, **extra},
-                        headers=SEARCH_HEADERS,
-                        timeout=timeout,
+                        url, data=params, headers=SEARCH_HEADERS, timeout=timeout
                     )
                 else:
                     response = requests.get(
-                        url,
-                        params={"q": variant, **extra},
-                        headers=SEARCH_HEADERS,
-                        timeout=timeout,
+                        url, params=params, headers=SEARCH_HEADERS, timeout=timeout
                     )
-                if duckduckgo_only and (
-                    response.status_code == 202
-                    or "anomalyDetectionBlock" in response.text
-                ):
-                    return {
-                        "error": "DuckDuckGo requested a security check for this server.",
-                        "results": [],
-                        "query": variant,
-                        "engine": engine,
-                        "blocked": True,
-                    }
+                if response.status_code == 202 or "anomalyDetectionBlock" in response.text:
+                    _engine_failed(engine)
+                    if duckduckgo_only:
+                        return {
+                            "error": "DuckDuckGo requested a security check for this server.",
+                            "results": [],
+                            "query": variant,
+                            "engine": engine,
+                            "blocked": True,
+                        }
+                    last_error = f"{engine}: güvenlik doğrulaması istedi"
+                    continue
                 if response.status_code >= 400:
+                    _engine_failed(engine)
                     last_error = f"{engine} HTTP {response.status_code}"
                     continue
                 results = parser(response.text, limit * 2)
                 if not results:
                     last_error = f"{engine}: no results parsed"
                     continue
-                relevant = [item for item in results if _is_relevant(item, tokens, allow_chatter)]
+                relevant = [
+                    item for item in results
+                    if _is_relevant(item, tokens, allow_chatter, strict)
+                ]
                 relevant.sort(key=lambda item: -_relevance(item, tokens))
+                if recency_days:
+                    # "Maçı kaç kaç bitti?" son maçı sorar; tarih sırası şart.
+                    relevant.sort(key=lambda item: str(item.get("published") or ""), reverse=True)
                 # Tek sonuç tesadüf olabilir; yalın hâl varyantı genelde çok daha isabetli.
-                if len(relevant) >= 2:
-                    return {"query": variant, "results": relevant[:limit], "engine": engine}
+                if len(relevant) >= 2 or (strict and relevant):
+                    chosen = relevant[:limit]
+                    _enrich_results(chosen, tokens, enrich, deadline)
+                    return {"query": variant, "results": chosen, "engine": engine}
                 if relevant and partial is None:
                     partial = relevant[:limit]
                 last_error = f"{engine}: sonuç soruyla ilgili değil"
             except Exception as error:
+                _engine_failed(engine)
                 last_error = f"{engine}: {error}"
     if partial:
+        _enrich_results(partial, last_tokens, enrich, deadline)
         return {"query": clean_query, "results": partial, "engine": "weak-match"}
     return {"error": f"Web search failed: {last_error}", "results": [], "query": clean_query}
 
@@ -1505,6 +1708,23 @@ def _previous_assistant_match_hints(history):
   return []
 
 
+SPORTS_CLUB_RE = re.compile(
+    r"\b(fenerbahçe|fenerbahce|galatasaray|beşiktaş|besiktas|trabzonspor|"
+    r"başakşehir|basaksehir|eyüpspor|eyupspor|samsunspor|rizespor|antalyaspor|"
+    r"konyaspor|kayserispor|gaziantep\s*fk|sivasspor|alanyaspor|kasımpaşa|kasimpasa|"
+    r"gençlerbirliği|genclerbirligi|göztepe|goztepe|karagümrük|karagumruk|kocaelispor|"
+    r"bursaspor|eskişehirspor|eskisehirspor|ankaragücü|ankaragucu|turan\s*tovuz)\b",
+    re.I,
+)
+
+
+def _sports_club_names(text):
+  """Club names in the order the user wrote them, deduplicated."""
+  return list(dict.fromkeys(
+      match.group(0).strip() for match in SPORTS_CLUB_RE.finditer(text or "")
+  ))
+
+
 def build_live_search_queries(text, history=None):
   """Return the contextual sports query and a focused detail query when needed."""
   current = (text or "").strip()
@@ -1531,12 +1751,81 @@ def build_live_search_queries(text, history=None):
     else:
       queries = [build_search_query(f"{previous_question} {current}")]
     return tuple(dict.fromkeys(queries))
-  return (build_search_query(current),)
+  queries = [build_search_query(current)]
+  clubs = _sports_club_names(current)
+  if clubs and not SPORTS_SCORE_RE.search(current):
+    # Rakip yazılmadıysa motor eski maçları getirir; "son maç" açıkça sorulur.
+    queries.append(f"{' '.join(clubs)} son maç sonucu kaç kaç bitti golleri kim attı")
+  return tuple(dict.fromkeys(queries))
 
 
 def build_live_search_query(text, history=None):
   """Compatibility helper returning the primary contextual live-search query."""
   return build_live_search_queries(text, history)[0]
+
+
+def _sports_result_rank(item, clubs, tokens):
+  """Newest match of the asked club first, unrelated fixtures dropped."""
+  text = _ascii_fold(
+      f"{item.get('title', '')} {item.get('snippet', '')} {item.get('excerpt', '')}"
+  ).lower()
+  club_hits = sum(1 for club in clubs if _ascii_fold(club).lower() in text)
+  return (club_hits, _relevance(item, tokens), str(item.get("published") or ""))
+
+
+def search_live_sports(queries, num_results, *, followup=False, deadline=None, enrich=2):
+  """Newest fixture first, with the article's own words so scorers are present."""
+  combined = []
+  seen = set()
+  engine = ""
+  used_query = ""
+  recency_plan = (None,) if followup else (7, 30, None)
+  for recency in recency_plan:
+    for query in queries:
+      if deadline is not None and time.monotonic() >= deadline:
+        break
+      found = web_search(query, num_results, recency_days=recency, deadline=deadline)
+      for item in found.get("results") or []:
+        key = str(item.get("url") or item.get("title") or "").strip().casefold()
+        if key and key not in seen:
+          seen.add(key)
+          combined.append(item)
+      if combined and not engine:
+        engine = found.get("engine") or ""
+        used_query = query
+    if len(combined) >= 2:
+      break
+  clubs = [_ascii_fold(club).lower() for club in _sports_club_names(" ".join(queries))]
+  if clubs:
+    # "Fenerbahçe maçı" sorusuna millî maç haberi gelmesin.
+    combined = [
+        item for item in combined
+        if any(club in _ascii_fold(
+            f"{item.get('title', '')} {item.get('snippet', '')}"
+        ).lower() for club in clubs)
+    ]
+  if not combined:
+    return {"results": [], "engine": engine, "query": " | ".join(queries)}
+  # Besleme bağlantıları açılamıyor; gerçek adresi veren motor ayrıca sorulur.
+  direct = web_search(
+      queries[0], num_results, recency_days=recency_plan[0], deadline=deadline,
+      only_engines=("bing-haber-rss", "ddg-html", "ddg-lite", "bing"),
+  )
+  for item in direct.get("results") or []:
+    key = str(item.get("url") or "").strip().casefold()
+    if not key or key in seen:
+      continue
+    text = _ascii_fold(f"{item.get('title', '')} {item.get('snippet', '')}").lower()
+    if clubs and not any(club in text for club in clubs):
+      continue
+    seen.add(key)
+    combined.append(item)
+  tokens = _query_tokens(queries[0])
+  combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
+  _enrich_results(combined, tokens, enrich, deadline)
+  combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
+  return {"results": combined, "engine": engine or direct.get("engine") or "",
+          "query": used_query or queries[0]}
 
 
 def should_retry_live_search_with_general_results(question, live_context):
@@ -2536,7 +2825,8 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   yield ("reason", f"Derin düşünme başladı · bütçe {int(seconds)} sn")
 
   findings = []
-  ddg_blocked = False
+  sports_topic = is_sports_question(question)
+  recency_days = 7 if sports_topic else None
 
   def add_findings(result):
     for item in (result.get("results") or []):
@@ -2545,8 +2835,9 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       line = f"- {item.get('title', '')}"
       if item.get("url"):
         line += f" ({item['url']})"
-      if item.get("snippet"):
-        line += f": {item['snippet']}"
+      detail = item.get("excerpt") or item.get("snippet")
+      if detail:
+        line += f": {detail}"
       if line not in findings:
         findings.append(line)
 
@@ -2563,7 +2854,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       if fresh <= per_engine_limit:
         yield ("reason", f"SRC:🌐 Kaynak: {line}")
 
-  def search_with_fallback(query, num_results):
+  def search_with_fallback(query, num_results, enrich=2):
     result = web_search(
       query, num_results, duckduckgo_only=True, deadline=deadline - reserve
     )
@@ -2576,7 +2867,8 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       if not variant:
         continue
       fallback = web_search(
-        variant, num_results, duckduckgo_only=False, deadline=deadline - reserve
+        variant, num_results, duckduckgo_only=False, deadline=deadline - reserve,
+        recency_days=recency_days, enrich=enrich,
       )
       if fallback.get("results") and fallback.get("engine") != "weak-match":
         return fallback
@@ -2585,19 +2877,18 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
     return best_fallback or result
 
   def facet_search(index):
-    nonlocal ddg_blocked
     """Server-driven research step so the whole budget is used, never idled."""
     facet = RESEARCH_FACETS[index % len(RESEARCH_FACETS)]
     facet_query = f"{search_topic(question)} {facet}".strip()
     yield ("reason", f"SRC:🔎 Ek araştırma ({index + 1}. tur): {facet_query[:90]}")
     result = yield from search_with_fallback(facet_query, 5)
     left = max(0, int(deadline - time.monotonic()))
-    if result.get("blocked"):
-      ddg_blocked = True
-      yield ("reason", "Genel arama da doğrulanabilir kaynak vermedi; araştırma dürüstçe durduruluyor.")
+    if result.get("blocked") or not result.get("results"):
+      yield ("reason", f"Bu açıdan kaynak çıkmadı; {left} sn kaldı, farklı bir açı deneniyor.")
       return
-    if result.get("engine") == "weak-match" or not result.get("results"):
-      yield ("reason", f"Bu açıdan güvenilir kaynak çıkmadı; {left} sn kaldı, farklı bir açı deneniyor.")
+    if result.get("engine") == "weak-match":
+      yield ("reason", f"Bu açıdan zayıf kaynak çıktı; {left} sn kaldı, farklı bir açı deneniyor.")
+      add_findings(result)
       return
     add_findings(result)
     new_sources = 0
@@ -2612,27 +2903,26 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         "role": "system",
         "content": (
             f"'{facet}' açısından toplanan ek web bulguları:\n"
-            + "\n".join(f"- {item.get('title')}" for item in (result.get("results") or [])[:5])
+            + "\n".join(
+                f"- {item.get('title')}: {item.get('excerpt') or item.get('snippet') or ''}"
+                for item in (result.get("results") or [])[:5]
+            )
         ),
     })
 
   if question:
     yield ("reason", f"SRC:🔎 Canlı arama: {build_search_query(question)[:90]}")
-    seeded = yield from search_with_fallback(build_search_query(question), 6)
-    if seeded.get("blocked") or not seeded.get("results"):
-      yield ("answer", (
-        "Bu oturumda doğrulanabilir web kaynaklarına erişemedim; bu yüzden araştırma yaptığımı "
-        "iddia etmeyeceğim. Daha sonra yeniden deneyebilirsin."
-      ))
-      return
-    if seeded.get("engine") == "weak-match":
+    seeded = yield from search_with_fallback(build_search_query(question), 6, enrich=3)
+    if not seeded.get("results"):
+      # Kaynak bulunamamak araştırmanın sonu değil: bütçe boyunca farklı açı denenir.
+      yield ("reason", "İlk arama kaynak vermedi; bütçe boyunca farklı motor ve açılar denenecek.")
+    elif seeded.get("engine") == "weak-match":
       yield ("reason", "İlk arama konuyla ilgili güçlü kaynak vermedi; ek turlarda yeniden denenecek.")
+      add_findings(seeded)
     else:
       add_findings(seeded)
       for event in report_sources(seeded, 6):
         yield event
-      if seeded.get("error") and not seeded.get("results"):
-        yield ("reason", "İlk arama sonuç vermedi; ek araştırma turlarıyla yeniden denenecek.")
   if findings:
     research.append({
         "role": "system",
@@ -2739,9 +3029,8 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
           "content": json.dumps(result, ensure_ascii=False),
       })
       if call.function.name == "web_search":
-        if result.get("blocked"):
-          ddg_blocked = True
-          yield ("reason", "Genel arama da doğrulanabilir kaynak vermedi; araştırma dürüstçe durduruluyor.")
+        if result.get("blocked") or not result.get("results"):
+          yield ("reason", "Modelin aradığı sorgu kaynak vermedi; sunucu farklı bir açı deniyor.")
         elif result.get("engine") != "weak-match":
           add_findings(result)
           for event in report_sources(result):
@@ -2759,11 +3048,9 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
         findings.append(f"- Sunucu saati: {result.get('time')} {result.get('date')} {result.get('day')}")
         yield ("reason", f"SRC:🕒 Saat verisi: {result.get('time')} {result.get('date')}")
     rounds += 1
-    if ddg_blocked:
-      break
 
   # Bütçe bitene kadar boş durma: her turda yeni bir açıdan gerçekten araştır.
-  while time.monotonic() < deadline - reserve and question and not ddg_blocked:
+  while time.monotonic() < deadline - reserve and question:
     yield from facet_search(facet_index)
     facet_index += 1
     remaining = max(0.0, deadline - time.monotonic())
@@ -2772,12 +3059,17 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       yield ("reason", f"Toplam {len(findings)} bulgu birikti; {int(remaining)} sn kaldı, yeni tur hazırlanıyor...")
       time.sleep(min(pause, 5))
 
-  if ddg_blocked and not findings:
-    yield ("answer", (
-        "Bu oturumda DuckDuckGo kaynaklarına erişemedim; araştırma yaptığımı iddia "
-        "etmeyeceğim. Güvenlik doğrulaması kalktığında aynı soruyu yeniden deneyebilirsin."
-    ))
-    return
+  if not findings:
+    # Kaynak yoksa susma: model kendi bilgisiyle yanıtlar, uydurması yasaklanır.
+    research.append({
+        "role": "system",
+        "content": (
+            "Bu turda doğrulanabilir web kaynağı toplanamadı. Yanıtı kendi bilgine "
+            "dayandır, güncel olabilecek veri (skor, fiyat, tarih, sürüm) UYDURMA ve "
+            "yanıtın başında tek cümleyle canlı kaynağa ulaşılamadığını belirt."
+        ),
+    })
+    yield ("reason", "Canlı kaynak bulunamadı; yanıt genel bilgiyle, dürüst bir uyarıyla yazılıyor.")
 
   target_words = min(1800, 250 + int(seconds * 0.6))
   final_messages = [
@@ -3376,64 +3668,62 @@ def api_chat(request):
     live_context = None
     live_search_queries = build_live_search_queries(question_text, history)
     live_search_query = live_search_queries[0]
-    sports_question = (
-        is_sports_question(question_text)
-        or is_sports_followup(question_text, history)
-    )
-    if should_fetch_live_context(question_text) or (
-      sports_question
-      and (
-        live_search_query != build_search_query(question_text)
-        or SPORTS_SCORE_ASK_RE.search(question_text or "")
-        or SPORTS_SCORER_RE.search(question_text or "")
-      )
-    ):
-      live_contexts = []
-      combined_results = []
-      seen_result_keys = set()
-      for search_query in live_search_queries:
-        search_context = web_search(
-          search_query,
-          3 if mode == "fast" else 5,
-          duckduckgo_only=sports_question,
+    sports_followup = is_sports_followup(question_text, history)
+    sports_question = is_sports_question(question_text) or sports_followup
+    if should_fetch_live_context(question_text) or sports_question:
+      if sports_question:
+        live_context = search_live_sports(
+            live_search_queries,
+            3 if mode == "fast" else 5,
+            followup=sports_followup,
+            enrich=0 if mode == "fast" else 2,
         )
-        if should_retry_live_search_with_general_results(search_query, search_context):
-          general_context = web_search(
-              search_query,
-              3 if mode == "fast" else 5,
-              duckduckgo_only=False,
-          )
-          if general_context.get("results") or not search_context.get("results"):
-            search_context = general_context
-        live_contexts.append(search_context)
-        for item in search_context.get("results") or []:
-          key = str(item.get("url") or item.get("title") or "").strip().casefold()
-          if key and key not in seen_result_keys:
-            seen_result_keys.add(key)
-            combined_results.append(item)
-      live_context = {
-          **(live_contexts[0] if live_contexts else {}),
-          "query": " | ".join(live_search_queries),
-          "results": combined_results,
-      }
-      if not live_context.get("results"):
+      else:
+        combined_results = []
+        seen_result_keys = set()
+        first_context = None
+        for search_query in live_search_queries:
+          search_context = web_search(search_query, 3 if mode == "fast" else 5, enrich=2)
+          first_context = first_context or search_context
+          for item in search_context.get("results") or []:
+            key = str(item.get("url") or item.get("title") or "").strip().casefold()
+            if key and key not in seen_result_keys:
+              seen_result_keys.add(key)
+              combined_results.append(item)
+        live_context = {
+            **(first_context or {}),
+            "results": combined_results,
+        }
+      live_context["query"] = " | ".join(live_search_queries)
+      if not live_context.get("results") and not sports_question:
         def unverifiable_live_stream():
           yield (
               "Bu güncel bilgiyi canlı kaynaklardan doğrulayamadım. Yanlış bilgi "
               "uydurmamak için kesin bir yanıt vermiyorum; lütfen biraz sonra tekrar dene."
           )
 
-        return StreamingHttpResponse(unverifiable_live_stream(), content_type="text/plain; charset=utf-8")
-      if sports_question and SPORTS_SCORE_ASK_RE.search(question_text or ""):
-        sourced_score = summarize_sourced_match_score(live_context["results"])
+        return StreamingHttpResponse(
+            unverifiable_live_stream(),
+            content_type="text/plain; charset=utf-8",
+        )
+      if sports_question and not live_context.get("results"):
+        messages.insert(1, {
+            "role": "system",
+            "content": (
+                "Bu maç için canlı arama sonucu döndürmedi. Skor, golcü, dakika veya kadro "
+                "UYDURMA; kaynağa şu an ulaşamadığını tek cümleyle söyle ve kullanıcıdan "
+                "maçın tarihini veya rakibini yazmasını iste."
+            ),
+        })
+      elif sports_question and SPORTS_SCORE_ASK_RE.search(question_text or ""):
         def sourced_score_stream():
-          yield sourced_score
+          yield summarize_sourced_match_score(live_context["results"])
 
         return StreamingHttpResponse(
             sourced_score_stream(),
             content_type="text/plain; charset=utf-8",
         )
-      if sports_question and SPORTS_SCORER_RE.search(question_text or ""):
+      elif sports_question and SPORTS_SCORER_RE.search(question_text or ""):
         def sourced_match_details_stream():
           yield summarize_sourced_match_details(live_context["results"])
 
@@ -3441,23 +3731,26 @@ def api_chat(request):
             sourced_match_details_stream(),
             content_type="text/plain; charset=utf-8",
         )
-      messages.insert(
-          1,
-          {
-              "role": "system",
-              "content": (
-                  "Canlı web araştırması sonucu aşağıdadır. Yalnızca başlık ve snippet içinde "
-                  "açıkça bulunan bilgileri aktar; bunlardan çıkarılamayan skor, isim, tarih, "
-                  "golcü veya olay ayrıntısı ekleme. En az bir ilgili kaynağı bağlantısıyla belirt. "
-                  "Kaynaklar çelişiyorsa çelişkiyi açıkça göster ve tek bir doğruymuş gibi seçme. "
-                  "Arama sorgusu şudur: " + live_search_query + ". Özellikle spor sorularında "
-                  "kaynakta açıkça yazmayan golcü, oyuncu, dakika, kadro veya maç akışı UYDURMA. "
-                  "Önceki asistan yanıtlarını doğrulanmış bilgi sayma. Sonuçlar soruyla ilgisizse veya boşsa güncel bilgi UYDURMA; bunu bir cümleyle "
-                  "söyle. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
-                  "ANMA; sen Aslan Parçası'sın:\n" + json.dumps(live_context, ensure_ascii=False)
-              ),
-          },
-      )
+      else:
+        messages.insert(
+            1,
+            {
+                "role": "system",
+                "content": (
+                    "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
+                    "Kullanıcının sorusunun cevabı büyük olasılıkla bu sonuçlardadır: önce bunları "
+                    "oku, somut bilgiyi (skor, isim, tarih, sayı) doğrudan aktar ve kaynağı belirt. "
+                    "Arama sorgusu şudur: " + live_search_query + ". 'excerpt' alanı haberin "
+                    "kendi metnidir; golcü, dakika ve oyuncu bilgisini önce orada ara. "
+                    "Sonuçlar tarih sıralıdır: 'son maç' sorusunda en yeni tarihli olanı kullan. "
+                    "Özellikle spor sorularında kaynakta açıkça yazmayan golcü, oyuncu, dakika, "
+                    "kadro veya maç akışı UYDURMA. "
+                    "Önceki asistan yanıtlarını doğrulanmış bilgi sayma. Sonuçlar soruyla ilgisizse veya boşsa güncel bilgi UYDURMA; bunu bir cümleyle "
+                    "söyle. Kaynaklarda başka yapay zeka markalarının adı geçerse bunları yanıtta "
+                    "ANMA; sen Aslan Parçası'sın:\n" + json.dumps(live_context, ensure_ascii=False)
+                ),
+            },
+        )
 
     fallback_parts = []
     if clock_data:
