@@ -881,6 +881,15 @@ class ImageGenerationTests(TestCase):
         self.assertIn("if (pendingImageEdit) {", template)
         self.assertIn("return continueEditingImage(text);", template)
 
+    def test_image_generation_placeholder_shows_an_accessible_animated_status(self):
+        template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertIn("loadingImage: true", template)
+        self.assertIn("image-generation-status", template)
+        self.assertIn("aria-live', 'polite'", template)
+        self.assertIn("@keyframes image-spinner", template)
+
     def test_image_edit_api_passes_the_selected_source_image_to_the_edit_provider(self):
         prompt = "Sadece arka planı açık mavi yap; nesneye dokunma."
         encoded = "cG5nLWJ5dGVz"

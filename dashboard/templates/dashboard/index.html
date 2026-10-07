@@ -804,6 +804,28 @@
         @keyframes image-pulse {
             50% { opacity: 0.55; }
         }
+        .image-generation-status {
+            position: relative;
+            display: flex;
+            align-items: center;
+            min-height: 44px;
+            padding-left: 44px;
+        }
+        .image-generation-status::before {
+            content: '';
+            position: absolute;
+            left: 16px;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.22);
+            border-top-color: #ff8ac4;
+            border-right-color: #ff8ac4;
+            border-radius: 50%;
+            animation: image-spinner 0.8s linear infinite;
+        }
+        @keyframes image-spinner {
+            to { transform: rotate(360deg); }
+        }
         .think-duration {
             display: flex;
             justify-content: space-between;
@@ -2934,6 +2956,7 @@
         currentChat.messages.push({
             sender: 'ai',
             text: 'Seçtiğin görsel, yazdığın isteğe göre düzenleniyor…',
+            loadingImage: true,
             timestamp: startStamp + 1
         });
         const placeholderIndex = currentChat.messages.length - 1;
@@ -3044,6 +3067,7 @@
         promptChat.messages.push({
             sender: 'ai',
             text: '🎨 Görsel oluşturuluyor, birazdan burada...',
+            loadingImage: true,
             timestamp: startStamp + 1
         });
         const placeholderIndex = promptChat.messages.length - 1;
@@ -3482,8 +3506,13 @@
         msgDiv.className = `message ${sender}`;
         
         if (sender === 'ai') {
-            msgDiv.innerHTML = renderMarkdown(sanitizeAiText(text));
             const attachments = messageData || {};
+            if (attachments.loadingImage) {
+                msgDiv.classList.add('image-generation-status');
+                msgDiv.setAttribute('role', 'status');
+                msgDiv.setAttribute('aria-live', 'polite');
+            }
+            msgDiv.innerHTML = renderMarkdown(sanitizeAiText(text));
             (attachments.images || []).forEach((image, imageIndex) => {
                 if (!image.base64 && !image.url) return;
                 const imageEl = document.createElement('img');
