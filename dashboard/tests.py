@@ -814,29 +814,14 @@ class ImageGenerationTests(TestCase):
         self.client.force_login(self.user)
 
     def test_dedicated_image_api_returns_embedded_generated_image(self):
-        image_response = Mock()
-        image_response.status_code = 200
-        image_response.json.return_value = {
-            "candidates": [{
-                "content": {
-                    "parts": [{
-                        "inlineData": {
-                            "data": "cG5nLWJ5dGVz",
-                            "mimeType": "image/png",
-                        },
-                    }],
-                },
-            }],
-        }
-        image_response.raise_for_status.return_value = None
-
-        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
-            "dashboard.views.requests.post",
-            return_value=image_response,
-        ) as post:
+        prompt = "Arka planı siyah olan yeşil bir daire oluştur"
+        with patch(
+            "dashboard.views.generate_image_with_hf_space",
+            return_value="data:image/png;base64,cG5nLWJ5dGVz",
+        ) as generate:
             response = self.client.post(
                 reverse("api_image_generate"),
-                data=json.dumps({"prompt": "Fotogerçekçi bir uçak"}),
+                data=json.dumps({"prompt": prompt}),
                 content_type="application/json",
             )
 
@@ -845,77 +830,34 @@ class ImageGenerationTests(TestCase):
             response.json()["image_url"],
             "data:image/png;base64,cG5nLWJ5dGVz",
         )
-        self.assertEqual(
-            post.call_args.kwargs["params"]["key"],
-            "test-key",
+        generate.assert_called_once_with(prompt)
+
+    def test_hugging_face_space_receives_turkish_prompt_and_returns_its_image_path(self):
+        prompt = "Masada duran kırmızı bir mousepad, gerçekçi ürün fotoğrafı"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "generated.png"
+            image_path.write_bytes(b"fake-png-data")
+            with patch("dashboard.views.Client") as client_class:
+                client_class.return_value.predict.return_value = {
+                    "path": str(image_path),
+                    "mime_type": "image/png",
+                }
+
+                image_url = views.generate_image_with_hf_space(prompt)
+
+        client_class.assert_called_once_with(
+            "CEObeY/aslan-parcasi-ai_gorsel_olusturma_istasyonu",
+            verbose=False,
+        )
+        client_class.return_value.predict.assert_called_once_with(
+            prompt,
+            api_name="/generate_image",
         )
         self.assertEqual(
-            post.call_args.args[0],
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image:generateContent",
+            image_url,
+            "data:image/png;base64,"
+            + base64.b64encode(b"fake-png-data").decode("ascii"),
         )
-        self.assertEqual(
-            post.call_args.kwargs["json"]["generationConfig"]["imageConfig"]["imageSize"],
-            "4K",
-        )
-        image_prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
-        self.assertIn("uçak", image_prompt)
-        self.assertIn("ultra-photorealistic", image_prompt)
-        self.assertIn("4K UHD", image_prompt)
-
-    def test_simple_red_circle_is_rendered_exactly_without_an_image_provider(self):
-        with patch("dashboard.views.get_api_keys", return_value=[]), patch(
-            "dashboard.views.generate_image_with_retry"
-        ) as image_provider:
-            response = self.client.post(
-                reverse("api_image_generate"),
-                data=json.dumps({"prompt": "Kırmızı bir daire"}),
-                content_type="application/json",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        image_url = response.json()["image_url"]
-        self.assertTrue(image_url.startswith("data:image/svg+xml;base64,"))
-        svg = base64.b64decode(image_url.split(",", 1)[1]).decode("utf-8")
-        self.assertIn('<circle cx="2048" cy="2048" r="1200" fill="#ff0000"/>', svg)
-        self.assertIn('width="4096" height="4096"', svg)
-        self.assertNotIn("linearGradient", svg)
-        image_provider.assert_not_called()
-
-    def test_shape_colors_and_background_are_parsed_independently(self):
-        prompts = (
-            ("Arka planı siyah olan yeşil bir daire oluştur", "#008000", "#000000"),
-            ("Siyah arka plan üzerinde yeşil bir daire oluştur", "#008000", "#000000"),
-            ("Draw a green circle on a black background", "#008000", "#000000"),
-            ("Kırmızı bir daire", "#ff0000", "#ffffff"),
-        )
-        for prompt, expected_shape_color, expected_background in prompts:
-            with self.subTest(prompt=prompt):
-                image_url = views.generate_simple_geometric_image(prompt)
-                svg = base64.b64decode(image_url.split(",", 1)[1]).decode("utf-8")
-                self.assertIn(
-                    f'<rect width="4096" height="4096" fill="{expected_background}"/>',
-                    svg,
-                )
-                self.assertIn(
-                    f'<circle cx="2048" cy="2048" r="1200" fill="{expected_shape_color}"/>',
-                    svg,
-                )
-
-    def test_mousepad_prompt_requires_a_realistic_undistorted_4k_product_photo(self):
-        for user_prompt in (
-            "Gerçekçi bir mousepad oluştur",
-            "Masamda duran siyah mouse pad fotoğrafı",
-            "Create an ultra realistic mouse mat product photo",
-        ):
-            with self.subTest(user_prompt=user_prompt):
-                image_prompt = views.enhance_image_prompt(user_prompt)
-
-                self.assertIn("4K UHD", image_prompt)
-                self.assertIn("rectangular", image_prompt)
-                self.assertIn("stitched perimeter", image_prompt)
-                self.assertIn("geometrically straight and undistorted", image_prompt)
-                self.assertIn("bright light-gray tabletop", image_prompt)
-                self.assertIn("Exclude the computer mouse device", image_prompt)
 
     def test_generated_image_displays_with_aslan_parcasi_branding(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
@@ -980,7 +922,7 @@ class ImageGenerationTests(TestCase):
         source_image = {"mime_type": "image/jpeg", "data": "c291cmNl"}
 
         with patch("dashboard.views.requests.post", return_value=image_response) as post:
-            views.generate_image_with_gemini(
+            views.edit_image_with_gemini(
                 prompt,
                 "gemini-3-pro-image",
                 "test-key",
@@ -997,7 +939,7 @@ class ImageGenerationTests(TestCase):
         self.assertNotIn("Photographic translation", parts[1]["text"])
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
-        with patch("dashboard.views.generate_image_with_retry") as generate:
+        with patch("dashboard.views.generate_image_with_hf_space") as generate:
             response = self.client.post(
                 reverse("api_image_generate"),
                 data=json.dumps({"prompt": "Görsel oluştur asdfghjkl"}),
@@ -1008,46 +950,10 @@ class ImageGenerationTests(TestCase):
         self.assertIn("anlaşılır görünmüyor", response.json()["error"])
         generate.assert_not_called()
 
-    def test_legacy_image_fallback_uses_supported_one_k_resolution(self):
-        image_response = Mock()
-        image_response.status_code = 200
-        image_response.json.return_value = {
-            "candidates": [{
-                "content": {"parts": [{"inlineData": {
-                    "data": "cG5nLWJ5dGVz",
-                    "mimeType": "image/png",
-                }}]},
-            }],
-        }
-        with patch("dashboard.views.requests.post", return_value=image_response) as post:
-            views.generate_image_with_gemini(
-                "Bir kedi", "gemini-2.5-flash-image", "test-key"
-            )
-
-        self.assertEqual(
-            post.call_args.kwargs["json"]["generationConfig"]["imageConfig"]["imageSize"],
-            "1K",
-        )
-
-    def test_missing_image_credentials_returns_a_specific_error(self):
-        with (
-            patch.dict("os.environ", {"HF_API_TOKEN": "", "HUGGINGFACE_API_TOKEN": ""}),
-            patch(
-                "dashboard.views.generate_image_with_pollinations",
-                side_effect=RuntimeError("fallback unavailable"),
-            ),
-            self.assertRaisesRegex(views.ImageUnavailableError, "API anahtarı tanımlı değil"),
-        ):
-            views.generate_image_with_retry("Bir dağ manzarası", api_keys=[])
-
-    def test_image_api_explains_missing_server_credentials(self):
-        with (
-            patch.dict("os.environ", {"HF_API_TOKEN": "", "HUGGINGFACE_API_TOKEN": ""}),
-            patch("dashboard.views.get_api_keys", return_value=[]),
-            patch(
-                "dashboard.views.generate_image_with_pollinations",
-                side_effect=RuntimeError("fallback unavailable"),
-            ),
+    def test_image_api_reports_hugging_face_space_failure(self):
+        with patch(
+            "dashboard.views.generate_image_with_hf_space",
+            side_effect=views.ImageUnavailableError("Space unavailable"),
         ):
             response = self.client.post(
                 reverse("api_image_generate"),
@@ -1056,138 +962,13 @@ class ImageGenerationTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertIn("API anahtarı tanımlı değil", response.json()["error"])
-
-    def test_image_api_explains_model_access_denial(self):
-        with (
-            patch.dict("os.environ", {
-                "GEMINI_API_KEY": "test-key",
-                "HF_API_TOKEN": "",
-                "HUGGINGFACE_API_TOKEN": "",
-            }),
-            patch("dashboard.views.get_api_keys", return_value=["test-key"]),
-            patch("dashboard.views.ordered_keys", return_value=["test-key"]),
-            patch("dashboard.views.key_is_available", return_value=True),
-            patch(
-                "dashboard.views.generate_image_with_gemini",
-                side_effect=views.UpstreamHTTPError(403, "model access denied"),
-            ),
-            patch(
-                "dashboard.views.generate_image_with_pollinations",
-                side_effect=RuntimeError("fallback unavailable"),
-            ),
-        ):
-            response = self.client.post(
-                reverse("api_image_generate"),
-                data=json.dumps({"prompt": "Bir dağ manzarası"}),
-                content_type="application/json",
-            )
-
-        self.assertEqual(response.status_code, 503)
-        self.assertIn("modele erişemiyor", response.json()["error"])
-
-    def test_configured_image_fallback_runs_after_gemini_rejects_access(self):
-        with (
-            patch.dict("os.environ", {"HF_API_TOKEN": "test-token"}),
-            patch("dashboard.views.get_api_keys", return_value=["test-key"]),
-            patch("dashboard.views.ordered_keys", return_value=["test-key"]),
-            patch("dashboard.views.key_is_available", return_value=True),
-            patch(
-                "dashboard.views.generate_image_with_gemini",
-                side_effect=views.UpstreamHTTPError(403, "model access denied"),
-            ),
-            patch(
-                "dashboard.views.generate_image_with_flux_hf",
-                return_value="data:image/png;base64,backup",
-            ) as flux,
-        ):
-            result = views.generate_image_with_retry("Bir dağ manzarası")
-
-        self.assertEqual(result, "data:image/png;base64,backup")
-        flux.assert_called_once_with("Bir dağ manzarası")
-
-    def test_keyless_image_fallback_returns_only_image_data(self):
-        with (
-            patch.dict("os.environ", {"HF_API_TOKEN": "", "HUGGINGFACE_API_TOKEN": ""}),
-            patch("dashboard.views.get_api_keys", return_value=[]),
-            patch(
-                "dashboard.views.generate_image_with_pollinations",
-                return_value="data:image/jpeg;base64,backup",
-            ) as fallback,
-        ):
-            result = views.generate_image_with_retry(
-                "Bir dağ manzarası",
-                api_keys=[],
-            )
-
-        self.assertEqual(result, "data:image/jpeg;base64,backup")
-        fallback.assert_called_once_with("Bir dağ manzarası")
-
-    def test_pollinations_fallback_disables_unrequested_prompt_enhancement(self):
-        response = Mock()
-        response.status_code = 200
-        response.headers = {"Content-Type": "image/png"}
-        response.content = b"png"
-
-        with patch("dashboard.views.requests.get", return_value=response) as get:
-            image_url = views.generate_image_with_pollinations("Gerçekçi bir mousepad oluştur")
-
-        self.assertTrue(image_url.startswith("data:image/png;base64,"))
-        self.assertEqual(get.call_args.kwargs["params"]["nologo"], "true")
-        self.assertEqual(get.call_args.kwargs["params"]["enhance"], "false")
-        self.assertIn(
-            "exclude the computer mouse device",
-            unquote(get.call_args.args[0]).lower(),
-        )
-
-    def test_explicit_illustration_style_is_not_forced_into_photorealism(self):
-        prompt = views.enhance_image_prompt("Bir çizim: kedi")
-
-        self.assertIn("çizim", prompt)
-        self.assertNotIn("photorealistic", prompt)
-
-    def test_geometric_prompt_preserves_the_requested_shape_and_suppresses_people(self):
-        prompt = views.enhance_image_prompt("Kırmızı bir daire")
-
-        self.assertIn("red", prompt.lower())
-        self.assertIn("circle", prompt.lower())
-        self.assertIn("exact shape", prompt.lower())
-        self.assertIn("no people", prompt.lower())
-        self.assertNotIn("photorealistic", prompt.lower())
-
-    def test_gemini_geometric_image_prompt_does_not_add_photographic_subjects(self):
-        image_response = Mock()
-        image_response.status_code = 200
-        image_response.json.return_value = {
-            "candidates": [{
-                "content": {"parts": [{"inlineData": {
-                    "data": "cG5nLWJ5dGVz",
-                    "mimeType": "image/png",
-                }}]},
-            }],
-        }
-        with patch("dashboard.views.requests.post", return_value=image_response) as post:
-            views.generate_image_with_gemini("Kırmızı bir daire", "gemini-3-pro-image", "key")
-
-        prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"].lower()
-        self.assertIn("red", prompt)
-        self.assertIn("circle", prompt)
-        self.assertIn("no people", prompt)
-        self.assertNotIn("photorealistic", prompt)
-        self.assertNotIn("natural anatomy", prompt)
-
-    def test_branded_drink_prompt_preserves_specific_packaging(self):
-        prompt = views.enhance_image_prompt("Gerçekçi Aslan markalı kırmızı içecek kutusu")
-
-        self.assertIn("branded product packaging", prompt)
-        self.assertIn("readable label", prompt)
-        self.assertIn("not a generic cup", prompt)
+        self.assertEqual(response.json()["error"], "Space unavailable")
 
     def test_repeated_image_requests_are_throttled(self):
         with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
             "dashboard.views.time.monotonic",
             return_value=100,
-        ), patch("dashboard.views.generate_image_with_gemini", return_value="data:image/png;base64,x"):
+        ), patch("dashboard.views.generate_image_with_hf_space", return_value="data:image/png;base64,x"):
             first = self.client.post(
                 reverse("api_image_generate"),
                 data=json.dumps({"prompt": "Bir şehir"}),
