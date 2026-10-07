@@ -157,6 +157,20 @@ HF_IMAGE_MODEL = os.getenv("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-dev")
 _TURKISH_PROMPT_MAP = {
     "kedi": "cat",
     "köpek": "dog",
+    "daire": "circle",
+    "çember": "circle",
+    "kare": "square",
+    "dikdörtgen": "rectangle",
+    "üçgen": "triangle",
+    "kırmızı": "red",
+    "kirmizi": "red",
+    "mavi": "blue",
+    "yeşil": "green",
+    "yesil": "green",
+    "sarı": "yellow",
+    "sari": "yellow",
+    "siyah": "black",
+    "beyaz": "white",
     "uçak": "airplane",
     "araba": "car",
     "şehir": "city",
@@ -193,6 +207,119 @@ _TURKISH_PROMPT_MAP = {
     "kötü": "bad",
     "kotu": "bad",
 }
+
+GEOMETRIC_SHAPE_RE = re.compile(
+    r"\b(circle|square|rectangle|triangle|ellipse|oval|line|dot|shape|"
+    r"daire|çember|kare|dikdörtgen|ucgen|üçgen|oval|çizgi|nokta|şekil|sekil)\b",
+    re.I,
+)
+OTHER_SUBJECT_RE = re.compile(
+    r"\b(person|woman|man|girl|boy|child|people|cat|dog|bird|horse|car|house|"
+    r"tree|flower|face|human|kadın|erkek|çocuk|insan|kedi|köpek|kuş|at|araba|"
+    r"ev|ağaç|çiçek|yüz)\b",
+    re.I,
+)
+SIMPLE_GEOMETRIC_SHAPES = {
+    "circle": "circle",
+    "daire": "circle",
+    "çember": "circle",
+    "square": "square",
+    "kare": "square",
+    "rectangle": "rectangle",
+    "dikdörtgen": "rectangle",
+    "triangle": "triangle",
+    "üçgen": "triangle",
+    "oval": "oval",
+    "ellipse": "oval",
+}
+IMAGE_COLOR_HEX = {
+    "red": "#ff0000",
+    "kırmızı": "#ff0000",
+    "blue": "#0000ff",
+    "mavi": "#0000ff",
+    "green": "#008000",
+    "yeşil": "#008000",
+    "yellow": "#ffff00",
+    "sarı": "#ffff00",
+    "black": "#000000",
+    "siyah": "#000000",
+    "white": "#ffffff",
+    "beyaz": "#ffffff",
+    "orange": "#ff8c00",
+    "turuncu": "#ff8c00",
+    "purple": "#800080",
+    "mor": "#800080",
+    "pink": "#ff69b4",
+    "pembe": "#ff69b4",
+}
+IMAGE_COLOR_RE = re.compile(
+    r"\b(" + "|".join(sorted(map(re.escape, IMAGE_COLOR_HEX), key=len, reverse=True)) + r")\b",
+    re.I,
+)
+
+
+def is_simple_geometric_prompt(prompt):
+  """Keep a minimal shape request literal instead of adding photographic subjects."""
+  return bool(
+      GEOMETRIC_SHAPE_RE.search(prompt or "")
+      and not OTHER_SUBJECT_RE.search(prompt or "")
+      and not re.search(
+          r"\b(photo(?:graph)?|photorealistic|realistic|watercolor|oil painting|"
+          r"anime|manga|cartoon|logo|poster|fotoğraf|fotogerçekçi|suluboya|"
+          r"yağlı boya|karikatür|afiş)\b",
+          prompt or "",
+          re.I,
+      )
+  )
+
+
+def generate_simple_geometric_image(prompt):
+  """Render a single, plain geometric shape exactly instead of sampling an image model."""
+  text = translate_prompt_to_english(prompt)
+  shape_matches = list(re.finditer(
+      r"\b(circle|square|rectangle|triangle|ellipse|oval|daire|çember|kare|"
+      r"dikdörtgen|üçgen)\b",
+      text,
+      re.I,
+  ))
+  if (
+      not is_simple_geometric_prompt(prompt)
+      or len(shape_matches) != 1
+      or re.search(r"\b(two|three|four|iki|üç|dört|birkaç|multiple|several)\b", text, re.I)
+  ):
+    return None
+
+  shape = SIMPLE_GEOMETRIC_SHAPES.get(shape_matches[0].group(0).casefold())
+  colors = list(IMAGE_COLOR_RE.finditer(text))
+  fill_color = IMAGE_COLOR_HEX[colors[0].group(0).casefold()] if colors else "#000000"
+  background_color = "#ffffff"
+  background_match = re.search(r"(?:background|arka\s+plan|zemin)\b(.{0,30})", text, re.I)
+  if background_match:
+    background_color_match = IMAGE_COLOR_RE.search(background_match.group(1))
+    if background_color_match:
+      background_color = IMAGE_COLOR_HEX[background_color_match.group(0).casefold()]
+
+  elements = []
+  if not re.search(r"\btransparent\b|şeffaf", text, re.I):
+    elements.append(f'<rect width="1024" height="1024" fill="{background_color}"/>')
+  if shape == "circle":
+    elements.append(f'<circle cx="512" cy="512" r="300" fill="{fill_color}"/>')
+  elif shape == "square":
+    elements.append(f'<rect x="212" y="212" width="600" height="600" fill="{fill_color}"/>')
+  elif shape == "rectangle":
+    elements.append(f'<rect x="132" y="312" width="760" height="400" fill="{fill_color}"/>')
+  elif shape == "triangle":
+    elements.append(f'<path d="M512 170 880 820H144Z" fill="{fill_color}"/>')
+  elif shape == "oval":
+    elements.append(f'<ellipse cx="512" cy="512" rx="360" ry="240" fill="{fill_color}"/>')
+  else:
+    return None
+  svg = (
+      '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" '
+      'viewBox="0 0 1024 1024">' + "".join(elements) + "</svg>"
+  )
+  encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+  return f"data:image/svg+xml;base64,{encoded}"
 
 
 def translate_prompt_to_english(prompt):
@@ -234,6 +361,13 @@ def enhance_image_prompt(prompt):
       re.IGNORECASE,
   ):
     return topic
+  if is_simple_geometric_prompt(raw):
+    return (
+        "A clean, simple, flat geometric illustration. Show only the exact shape, "
+        "color, and count requested in this brief. Center it on a plain uncluttered "
+        "background. No people, faces, animals, objects, text, or extra shapes. "
+        f"Exact user brief: {topic}"
+    )
 
   if re.search(
       r"\b(brand(?:ed)?|bottle|can|soda|cola|şişe\w*|kutu\w*|ambalaj\w*|"
@@ -1201,7 +1335,7 @@ ARTICLE_BLOCK_RE = re.compile(
     r"[^>]*>.*?</\1>",
     re.S | re.I,
 )
-ARTICLE_SENTENCE_RE = re.compile(r"(?<=[.!?…])\s+")
+ARTICLE_SENTENCE_RE = re.compile(r"(?<=[.!?…])(?<!\d\.)\s+")
 ARTICLE_NOISE_SENTENCE_RE = re.compile(
     r"(uygulamayı\s+aç|uygulamayi\s+ac|web'de\s+devam|kaynak\s+ekle|abone\s+ol|"
     r"bilgi\s+rehberi|reklam|çerez|cerez|gizlilik|kvkk|bizi\s+takip|"
@@ -1233,7 +1367,7 @@ def _decode_html_body(response):
 def _article_excerpt(url, tokens, timeout=6, limit=900):
     """Real article text: news feeds carry only a date, so scorers went missing."""
     target = (url or "").strip()
-    if not target.startswith("http") or "news.google.com" in target:
+    if not target.startswith("http"):
         return ""
     try:
         response = requests.get(
@@ -1504,6 +1638,55 @@ def web_search(query, num_results=5, *, duckduckgo_only=False, deadline=None,
     return {"error": f"Web search failed: {last_error}", "results": [], "query": clean_query}
 
 
+def web_search_multi(query, num_results=5, *, deadline=None, recency_days=None, enrich=2):
+    """Combine independent news and web indexes under one bounded time budget."""
+    news_query = bool(NEWS_HINT_RE.search(query or "") or _sports_club_names(query))
+    engines = (
+        ("haber-rss", "bing-haber-rss", "ddg-html", "bing")
+        if news_query
+        else ("ddg-html", "bing", "vikipedi-tr", "vikipedi-en")
+    )
+    search_deadline = deadline or time.monotonic() + 18
+    results = []
+    seen = set()
+    found_engines = []
+    tokens = _query_tokens(query)
+    for engine in engines:
+        if time.monotonic() >= search_deadline:
+            break
+        context = web_search(
+            query,
+            num_results,
+            deadline=search_deadline,
+            recency_days=recency_days,
+            only_engines=(engine,),
+        )
+        if context.get("results"):
+            found_engines.append(context.get("engine") or engine)
+        for item in context.get("results") or []:
+            url = str(item.get("url") or "").strip()
+            parsed_url = urlparse(url)
+            key = (
+                f"{(parsed_url.hostname or '').lower()}{parsed_url.path.rstrip('/')}"
+                if parsed_url.hostname
+                else str(item.get("title") or "").strip().casefold()
+            )
+            if key and key not in seen:
+                seen.add(key)
+                results.append({**item, "source_engine": context.get("engine") or engine})
+    results.sort(key=lambda item: _relevance(item, tokens), reverse=True)
+    if recency_days:
+        results.sort(key=lambda item: str(item.get("published") or ""), reverse=True)
+    if results:
+        _enrich_results(results, tokens, enrich, search_deadline)
+    return {
+        "query": query,
+        "results": results[:max(1, min(int(num_results) * 2, 10))],
+        "engine": ", ".join(dict.fromkeys(found_engines)),
+        "engines": list(dict.fromkeys(found_engines)),
+    }
+
+
 SEARCH_FILLER_RE = re.compile(
     r"\b(bana|bir|acaba|lütfen|söyle|söyler\s+misin|bilir\s+misin|yapar\s+mısın|"
     r"araştır|araştırır\s+mısın|bul|bulabilir\s+misin|öğrenmek\s+istiyorum|"
@@ -1720,9 +1903,15 @@ SPORTS_CLUB_RE = re.compile(
 
 def _sports_club_names(text):
   """Club names in the order the user wrote them, deduplicated."""
-  return list(dict.fromkeys(
-      match.group(0).strip() for match in SPORTS_CLUB_RE.finditer(text or "")
-  ))
+  clubs = []
+  seen = set()
+  for match in SPORTS_CLUB_RE.finditer(text or ""):
+    club = match.group(0).strip()
+    marker = _ascii_fold(club).casefold()
+    if marker not in seen:
+      seen.add(marker)
+      clubs.append(club)
+  return clubs
 
 
 def build_live_search_queries(text, history=None):
@@ -1734,17 +1923,11 @@ def build_live_search_queries(text, history=None):
       match_terms = _compact_sports_match_terms(previous_question)
       queries = []
       if match_terms:
-        hints = _previous_assistant_match_hints(history)
-        score_hint = next((hint for hint in hints if SPORTS_SCORE_RE.fullmatch(hint)), "")
-        date_hint = next((hint for hint in hints if SPORTS_DATE_RE.fullmatch(hint)), "")
-        match_key = " ".join(part for part in (match_terms, score_hint) if part)
         queries.extend((
-          " ".join(part for part in (match_key, "golleri kim attı", date_hint) if part),
+          " ".join(part for part in (match_terms, "golleri kim attı") if part),
           " ".join(part for part in (
-            match_key,
+            match_terms,
             "gol atan oyuncular",
-            date_hint,
-            "golleri" if date_hint else "",
           ) if part),
         ))
       queries.append(build_search_query(f"{previous_question} {current}"))
@@ -1775,6 +1958,7 @@ def _sports_result_rank(item, clubs, tokens):
 
 def search_live_sports(queries, num_results, *, followup=False, deadline=None, enrich=2):
   """Newest fixture first, with the article's own words so scorers are present."""
+  deadline = deadline or time.monotonic() + 25
   combined = []
   seen = set()
   engine = ""
@@ -1784,7 +1968,13 @@ def search_live_sports(queries, num_results, *, followup=False, deadline=None, e
     for query in queries:
       if deadline is not None and time.monotonic() >= deadline:
         break
-      found = web_search(query, num_results, recency_days=recency, deadline=deadline)
+      found = web_search_multi(
+          query,
+          num_results,
+          recency_days=recency,
+          deadline=deadline,
+          enrich=0,
+      )
       for item in found.get("results") or []:
         key = str(item.get("url") or item.get("title") or "").strip().casefold()
         if key and key not in seen:
@@ -1796,35 +1986,26 @@ def search_live_sports(queries, num_results, *, followup=False, deadline=None, e
     if len(combined) >= 2:
       break
   clubs = [_ascii_fold(club).lower() for club in _sports_club_names(" ".join(queries))]
+  def matches_requested_clubs(item):
+    text = _ascii_fold(
+        f"{item.get('title', '')} {item.get('snippet', '')} {item.get('excerpt', '')}"
+    ).lower()
+    # A named fixture must match both teams; a single-team hit can be another match.
+    return (
+        all(club in text for club in clubs)
+        if len(clubs) > 1
+        else any(club in text for club in clubs)
+    )
+
   if clubs:
-    # "Fenerbahçe maçı" sorusuna millî maç haberi gelmesin.
-    combined = [
-        item for item in combined
-        if any(club in _ascii_fold(
-            f"{item.get('title', '')} {item.get('snippet', '')}"
-        ).lower() for club in clubs)
-    ]
+    combined = [item for item in combined if matches_requested_clubs(item)]
   if not combined:
     return {"results": [], "engine": engine, "query": " | ".join(queries)}
-  # Besleme bağlantıları açılamıyor; gerçek adresi veren motor ayrıca sorulur.
-  direct = web_search(
-      queries[0], num_results, recency_days=recency_plan[0], deadline=deadline,
-      only_engines=("bing-haber-rss", "ddg-html", "ddg-lite", "bing"),
-  )
-  for item in direct.get("results") or []:
-    key = str(item.get("url") or "").strip().casefold()
-    if not key or key in seen:
-      continue
-    text = _ascii_fold(f"{item.get('title', '')} {item.get('snippet', '')}").lower()
-    if clubs and not any(club in text for club in clubs):
-      continue
-    seen.add(key)
-    combined.append(item)
   tokens = _query_tokens(queries[0])
   combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
   _enrich_results(combined, tokens, enrich, deadline)
   combined.sort(key=lambda item: _sports_result_rank(item, clubs, tokens), reverse=True)
-  return {"results": combined, "engine": engine or direct.get("engine") or "",
+  return {"results": combined, "engine": engine,
           "query": used_query or queries[0]}
 
 
@@ -1841,7 +2022,7 @@ def should_retry_live_search_with_general_results(question, live_context):
 
 
 def summarize_sourced_match_score(results):
-    """Report only scorelines found in search excerpts, with their source links."""
+    """Report only scorelines found in independent source excerpts."""
     score_sources = {}
     for result in results or []:
         if not isinstance(result, dict):
@@ -1851,7 +2032,8 @@ def summarize_sourced_match_score(results):
         url = str(result.get("url") or "").strip()
         if not is_brand_safe(f"{title} {snippet} {url}"):
             continue
-        source_text = f"{title} {snippet}"
+        excerpt = str(result.get("excerpt") or "").strip()
+        source_text = f"{title} {snippet} {excerpt}"
         source_text = re.sub(r"\b\d{1,2}[./-]\d{1,2}[./-](?:20)?\d{2}\b", " ", source_text)
         scores = {
             re.sub(r"\s+", "", match.group(0)).replace("–", "-").replace(":", "-")
@@ -1878,65 +2060,138 @@ def summarize_sourced_match_score(results):
         if len(sources) >= 2
     }
     if len(corroborated) == 1 and len(score_sources) == 1:
-        score, sources = next(iter(corroborated.items()))
-        links = "\n".join(f"- {source['title']}: {source['url']}" for source in sources.values())
-        return f"İki farklı alan adındaki arama sonucu maç skorunu {score} olarak bildiriyor:\n{links}"
+        score, _sources = next(iter(corroborated.items()))
+        return f"İki bağımsız kaynak maç skorunu {score} olarak doğruluyor."
     if len(score_sources) > 1:
         lines = [
             "Canlı arama sonuçlarında farklı skorlar bulundu; doğrulanmış tek bir sonuç gibi sunmuyorum:"
         ]
-        for score, sources in score_sources.items():
-            for source in sources.values():
-                lines.append(f"- {score} — {source['title']}: {source['url']}")
+        lines.extend(f"- {score}" for score in score_sources)
         return "\n".join(lines)
     score, sources = next(iter(score_sources.items()))
-    source = next(iter(sources.values()))
     return (
-        f"Bir arama sonucu skoru {score} olarak bildiriyor, ancak bunu ikinci bağımsız "
-        f"kaynaktan doğrulayamadım: {source['title']} ({source['url']})"
+        f"Bir canlı arama sonucu skoru {score} olarak bildiriyor; bunu bağımsız bir "
+        "kaynakla doğrulayamadığım için kesin bilgi olarak sunmuyorum."
     )
 
 
 def summarize_sourced_match_details(results):
-    """Show search excerpts for match details without letting a model invent players."""
+    """Summarize article evidence, preferring article text over search snippets."""
     lines = []
     seen = set()
+    scorer_evidence = re.compile(
+        r"\b(gol\w*|golcü\w*|golcu\w*|attı|atti|kaydetti|penaltı|penalti|"
+        r"dakika|skorer|asist\w*|goals?|scored|scorer)\b|fileleri\s+buldu",
+        re.I,
+    )
     for result in results or []:
         if not isinstance(result, dict):
             continue
         title = str(result.get("title") or "").strip()
         snippet = str(result.get("snippet") or "").strip()
-        url = str(result.get("url") or "").strip()
-        if not title and not snippet:
+        excerpt = str(result.get("excerpt") or "").strip()
+        detail = excerpt or snippet
+        if not title and not detail:
             continue
-        if not is_brand_safe(f"{title} {snippet} {url}"):
+        if not is_brand_safe(f"{title} {snippet} {excerpt}"):
             continue
-        key = url or f"{title}\n{snippet}"
-        if key in seen:
-            continue
-        seen.add(key)
-        line = f"- {title}"
-        if snippet and snippet.casefold() != title.casefold():
-            line += f": {snippet}"
-        if url:
-            line += f" ({url})"
-        lines.append(line)
-        if len(lines) == 5:
+        for sentence in ARTICLE_SENTENCE_RE.split(detail):
+            sentence = re.sub(r"https?://\S+", "", sentence).strip(" \t-:;()")
+            key = re.sub(r"\s+", " ", sentence).casefold()
+            if (
+                sentence
+                and key not in seen
+                and scorer_evidence.search(sentence)
+                and not ARTICLE_NOISE_SENTENCE_RE.search(sentence)
+            ):
+                seen.add(key)
+                lines.append(sentence)
+                if len(lines) == 3:
+                    break
+        if len(lines) == 3:
             break
     if not lines:
         return "Arama sonuçlarında doğrulanabilir maç ayrıntısı bulamadım; oyuncu veya gol dakikası uydurmayacağım."
     return (
-        "Golcü ve maç ayrıntıları için bulduğum arama kaynağı özetleri "
-        "(ayrıntıları bağlantılardan doğrulayabilirsin):\n" + "\n".join(lines)
+        "Maç raporlarında gol ve oyuncu ayrıntıları şöyle geçiyor:\n" + "\n".join(lines)
     )
 
 
 TIME_INTENT_RE = re.compile(
-    r"(saat\s+kaç|saat\s+kaçtır|şu\s+an\s+saat|saati\s+söyle|tarih\s+(ne|kaç)|"
+    r"(saat\s+kaç|saat\s+kaçtır|şu\s+an\s+saat|saati\s+söyle|"
+    r"tarih\s+(ne|kaç)|"
     r"bugün\s+(ayın\s+kaçı|ne\s+günü|hangi\s+gün)|günlerden\s+(ne|hangi)|"
     r"hangi\s+gündeyiz|bugün\s+günlerden)",
     re.I,
 )
+TIME_LOCATION_PATTERNS = (
+    r"(?P<place>[\wÇĞİÖŞÜçğıöşü .'-]+?)['’]?(?:de|da|te|ta|nde|nda|nte|nta)"
+    r"\s+(?:şu\s+an\s+)?saat\s+kaç",
+    r"(?P<place>[\wÇĞİÖŞÜçğıöşü .'-]+?)\s+(?:şu\s+an\s+)?saat\s+kaç",
+    r"saat\s+kaç(?:tır)?\s+(?P<place>[\wÇĞİÖŞÜçğıöşü .'-]+)",
+)
+TIME_LOCATION_ALIASES = {
+    "cin": ("Şanghay", "Asia/Shanghai"),
+    "china": ("Shanghai", "Asia/Shanghai"),
+    "japonya": ("Tokyo", "Asia/Tokyo"),
+    "japan": ("Tokyo", "Asia/Tokyo"),
+}
+WEEKDAY_NAMES_TR = (
+    "Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar",
+)
+
+
+def detect_time_location(text):
+  for pattern in TIME_LOCATION_PATTERNS:
+    match = re.search(pattern, text or "", re.I)
+    if not match:
+      continue
+    place = _strip_locative(match.group("place").strip(" ?!.,'’\""))
+    if place and place.casefold() not in {"şu an", "şimdi", "bugün"}:
+      return place
+  return None
+
+
+def get_location_time(place, now=None):
+  """Resolve a city to its IANA timezone and return its current local time."""
+  cleaned = _strip_locative((place or "").strip(" ?!.,'’\""))
+  alias = TIME_LOCATION_ALIASES.get(_ascii_fold(cleaned).casefold())
+  if alias:
+    city_name, timezone_name = alias
+  else:
+    try:
+      location = _geocode_city(cleaned, country="")
+    except (requests.RequestException, ValueError, TypeError) as error:
+      logger.warning("Local-time geocoding failed for %s: %s", cleaned, error)
+      return {"error": "Şehrin saat dilimine şu anda ulaşılamadı."}
+    if not location:
+      return {"not_found": True, "error": f"'{cleaned}' için saat dilimi bulunamadı."}
+    city_name = location.get("name") or cleaned
+    timezone_name = location.get("timezone")
+  if not timezone_name:
+    return {"error": f"'{cleaned}' için saat dilimi bulunamadı."}
+  try:
+    zone = ZoneInfo(timezone_name)
+  except (KeyError, ValueError):
+    return {"error": f"'{cleaned}' için geçerli saat dilimi bulunamadı."}
+  local_now = (now or timezone.now()).astimezone(zone)
+  return {
+      "city": city_name,
+      "time": local_now.strftime("%H:%M"),
+      "date": local_now.strftime("%d.%m.%Y"),
+      "day": WEEKDAY_NAMES_TR[local_now.weekday()],
+      "timezone": timezone_name,
+      "utc_offset": local_now.strftime("%z"),
+  }
+
+
+def format_location_time_answer(time_data):
+  offset = time_data.get("utc_offset") or ""
+  offset = f" (UTC{offset[:3]}:{offset[3:]})" if len(offset) == 5 else ""
+  return (
+      f"{time_data['city']} için saat {time_data['time']}, "
+      f"{time_data['date']} {time_data['day']}{offset}."
+  )
 WEATHER_INTENT_RE = re.compile(
     r"(hava\s+durumu|hava\s+nasıl|havası\s+nasıl|kaç\s+derece|sıcaklık\s+kaç|hava\s+kaç\s+derece)",
     re.I,
@@ -2133,6 +2388,36 @@ class ModelOutputStreamSanitizer:
     return sanitize_model_output(line)
 
 
+LIVE_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(\s*https?://[^)\s]+\s*\)", re.I)
+LIVE_URL_RE = re.compile(r"https?://\S+", re.I)
+
+
+def strip_live_answer_links(text):
+  text = LIVE_MARKDOWN_LINK_RE.sub(r"\1", text or "")
+  text = LIVE_URL_RE.sub("", text)
+  text = re.sub(r"[ \t]{2,}", " ", text)
+  text = re.sub(r"\(\s*\)|\[\s*\]", "", text)
+  return re.sub(r"[ \t]+([,.;!?])", r"\1", text).strip()
+
+
+class LiveAnswerLinkSanitizer:
+  """Buffer complete lines so URLs split across model chunks are removed."""
+
+  def __init__(self):
+    self.pending = ""
+
+  def feed(self, text, final=False):
+    self.pending += text or ""
+    output = []
+    while "\n" in self.pending:
+      line, self.pending = self.pending.split("\n", 1)
+      output.append(strip_live_answer_links(line) + "\n")
+    if final and self.pending:
+      output.append(strip_live_answer_links(self.pending))
+      self.pending = ""
+    return "".join(output)
+
+
 def image_usage_today(user_id):
   """How many images this user generated today (resets at midnight, in memory)."""
   today = timezone.localdate().isoformat()
@@ -2152,7 +2437,11 @@ def record_image_usage(user_id):
 def generate_image_with_gemini(prompt, image_model, api_key):
   """Generate an image through the generateContent endpoint."""
   image_size = "1K" if image_model == "gemini-2.5-flash-image" else "4K"
-  image_prompt = (
+  refined_prompt = enhance_image_prompt(prompt)
+  if is_simple_geometric_prompt(prompt):
+    image_prompt = refined_prompt
+  else:
+    image_prompt = (
       "Create exactly one exceptionally detailed image that follows the user's brief. "
       "Unless the brief explicitly requests an illustration, cartoon, logo, or another "
       "non-photographic style, render it as an ultra-photorealistic photograph captured "
@@ -2166,8 +2455,8 @@ def generate_image_with_gemini(prompt, image_model, api_key):
         "brief: "
         + prompt
         + "\nPhotographic translation and detail cues: "
-        + enhance_image_prompt(prompt)
-  )
+        + refined_prompt
+    )
   response = requests.post(
       f"https://generativelanguage.googleapis.com/v1beta/models/{image_model}:generateContent",
       headers={
@@ -2844,7 +3133,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
   seen_lines = set()
 
   def report_sources(result, per_engine_limit=5):
-    """Show only brand-safe, not-yet-seen sources; returns how many were new."""
+    """Track distinct sources without exposing links in the user-facing research UI."""
     fresh = 0
     for line in format_source_lines(result, per_engine_limit * 2):
       if line in seen_lines:
@@ -2852,7 +3141,7 @@ def deep_think_events(client, messages, seconds, temperature, max_tokens):
       seen_lines.add(line)
       fresh += 1
       if fresh <= per_engine_limit:
-        yield ("reason", f"SRC:🌐 Kaynak: {line}")
+        yield ("reason", "SRC:🌐 Kaynak: farklı bir yayın kontrol ediliyor")
 
   def search_with_fallback(query, num_results, enrich=2):
     result = web_search(
@@ -3351,7 +3640,9 @@ def api_image_generate(request):
       }, status=429)
 
     try:
-      image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_keys)
+      image_url = generate_simple_geometric_image(prompt)
+      if image_url is None:
+        image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_keys)
       record_image_usage(request.user.pk)
       return JsonResponse({"status": "success", "image_url": image_url})
     except ImageUnavailableError as img_error:
@@ -3453,11 +3744,6 @@ def api_chat(request):
         full_message = "Dosya gönderildi: " + ", ".join(file_names)
 
     api_keys = get_api_keys()
-    if not get_chat_endpoints("normal"):
-        return JsonResponse(
-            {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
-            status=503,
-        )
 
     if voice_encoded and not voice_transcript:
         try:
@@ -3469,6 +3755,37 @@ def api_chat(request):
                 {"error": "Aslan Parçası ses kaydını metne çeviremedi. Lütfen kaydı yeniden deneyin veya mesajınızı yazın."},
                 status=400,
             )
+
+    question_text = user_message or voice_transcript
+    if TIME_INTENT_RE.search(question_text or ""):
+      time_location = detect_time_location(question_text)
+      if time_location:
+        local_time = get_location_time(time_location)
+        if local_time.get("time"):
+          answer = format_location_time_answer(local_time)
+        else:
+          answer = (
+              f"{local_time.get('error', 'Bu yerin saat dilimini bulamadım.')}"
+              " Lütfen şehir adını veya ülkeyi daha açık yaz."
+          )
+      else:
+        current_time = get_current_time()
+        current_time.update({
+            "city": "İstanbul",
+            "day": WEEKDAY_NAMES_TR[timezone.localtime().weekday()],
+            "utc_offset": timezone.localtime().strftime("%z"),
+        })
+        answer = format_location_time_answer(current_time)
+      return StreamingHttpResponse(
+          (answer,),
+          content_type="text/plain; charset=utf-8",
+      )
+
+    if not get_chat_endpoints("normal"):
+      return JsonResponse(
+          {"error": "Aslan Parçası'nın beyin bağlantısı kurulmamış. Sunucu anahtarını kontrol edin."},
+          status=503,
+      )
 
     tz = timezone.get_current_timezone()
     now_local = timezone.now().astimezone(tz)
@@ -3599,19 +3916,6 @@ def api_chat(request):
 
     messages = [{"role": "system", "content": system_instruction}]
 
-    question_text = user_message or voice_transcript
-    clock_data = None
-    if TIME_INTENT_RE.search(question_text or ""):
-      clock_data = get_current_time()
-      messages.insert(1, {
-          "role": "system",
-          "content": (
-              "Sunucunun kesin saati (Europe/Istanbul): "
-              + json.dumps(clock_data, ensure_ascii=False)
-              + ". Kullanıcı saat/tarih sordu; bu veriyi kullanarak doğrudan ve kısa yanıtla."
-          ),
-      })
-
     weather_data = None
     weather_city = None
     asked_weather = bool(WEATHER_INTENT_RE.search(question_text or ""))
@@ -3676,14 +3980,22 @@ def api_chat(request):
             live_search_queries,
             3 if mode == "fast" else 5,
             followup=sports_followup,
-            enrich=0 if mode == "fast" else 2,
+            enrich=(
+                3 if SPORTS_SCORER_RE.search(question_text or "")
+                else 0 if mode == "fast"
+                else 2
+            ),
         )
       else:
         combined_results = []
         seen_result_keys = set()
         first_context = None
         for search_query in live_search_queries:
-          search_context = web_search(search_query, 3 if mode == "fast" else 5, enrich=2)
+          search_context = web_search_multi(
+              search_query,
+              3 if mode == "fast" else 5,
+              enrich=2,
+          )
           first_context = first_context or search_context
           for item in search_context.get("results") or []:
             key = str(item.get("url") or item.get("title") or "").strip().casefold()
@@ -3707,14 +4019,16 @@ def api_chat(request):
             content_type="text/plain; charset=utf-8",
         )
       if sports_question and not live_context.get("results"):
-        messages.insert(1, {
-            "role": "system",
-            "content": (
-                "Bu maç için canlı arama sonucu döndürmedi. Skor, golcü, dakika veya kadro "
-                "UYDURMA; kaynağa şu an ulaşamadığını tek cümleyle söyle ve kullanıcıdan "
-                "maçın tarihini veya rakibini yazmasını iste."
-            ),
-        })
+        def unverifiable_sports_stream():
+          yield (
+              "Bu maç için güncel ve ilgili bir kaynak bulamadım. Yanlış skor veya "
+              "oyuncu adı vermemek için kesin yanıt uydurmayacağım."
+          )
+
+        return StreamingHttpResponse(
+            unverifiable_sports_stream(),
+            content_type="text/plain; charset=utf-8",
+        )
       elif sports_question and SPORTS_SCORE_ASK_RE.search(question_text or ""):
         def sourced_score_stream():
           yield summarize_sourced_match_score(live_context["results"])
@@ -3738,8 +4052,9 @@ def api_chat(request):
                 "role": "system",
                 "content": (
                     "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
-                    "Kullanıcının sorusunun cevabı büyük olasılıkla bu sonuçlardadır: önce bunları "
-                    "oku, somut bilgiyi (skor, isim, tarih, sayı) doğrudan aktar ve kaynağı belirt. "
+                    "Bu sonuçları birlikte karşılaştırıp kullanıcıya doğrudan, doğal ve öz bir yanıt "
+                    "ver; ham arama sonuçlarını sıralama. Bağlantı, URL, markdown linki veya kaynak "
+                    "listesi gösterme; kaynakları yalnızca cevabı doğrulamak için kullan. "
                     "Arama sorgusu şudur: " + live_search_query + ". 'excerpt' alanı haberin "
                     "kendi metnidir; golcü, dakika ve oyuncu bilgisini önce orada ara. "
                     "Sonuçlar tarih sıralıdır: 'son maç' sorusunda en yeni tarihli olanı kullan. "
@@ -3753,11 +4068,6 @@ def api_chat(request):
         )
 
     fallback_parts = []
-    if clock_data:
-      fallback_parts.append(
-          f"🕒 Şu anki saat: {clock_data.get('time')} · tarih: {clock_data.get('date')} "
-          f"{clock_data.get('day')} (Europe/Istanbul)."
-      )
     if weather_data and weather_data.get("temperature") is not None:
       fallback_parts.append(
           f"🌤 {weather_data.get('city')} için güncel hava durumu: {weather_data.get('temperature')}°C "
@@ -3766,12 +4076,20 @@ def api_chat(request):
           f"Kaynak: Open-Meteo ({weather_data.get('observed_at')})."
       )
     if live_context and live_context.get("results"):
-      source_lines = format_source_lines(live_context, 8, with_snippets=True)
-      if source_lines:
-        lines = [f"🔎 \"{live_context.get('query')}\" için canlı web araştırması sonuçları:"]
-        for index, line in enumerate(source_lines, 1):
-          lines.append(f"{index}. {line}")
-        fallback_parts.append("\n".join(lines))
+      seen_findings = set()
+      findings = []
+      for item in live_context.get("results") or []:
+        if not isinstance(item, dict):
+          continue
+        finding = str(item.get("excerpt") or item.get("snippet") or item.get("title") or "").strip()
+        finding = strip_live_answer_links(finding)
+        if finding and finding.casefold() not in seen_findings and is_brand_safe(finding):
+          seen_findings.add(finding.casefold())
+          findings.append(finding)
+        if len(findings) >= 3:
+          break
+      if findings:
+        fallback_parts.append("Canlı arama bulguları: " + " ".join(findings))
     deterministic_fallback = "\n\n".join(fallback_parts) if fallback_parts else None
 
     if deep_think:
@@ -3832,9 +4150,17 @@ def api_chat(request):
     def generate():
       answered = False
       errored = False
+      link_sanitizer = (
+          LiveAnswerLinkSanitizer() if live_context and live_context.get("results") else None
+      )
       scrubber = NameScrubber(
           chat_user_name, enabled=not FOUNDER_ASK_RE.search(question_text or "")
       )
+
+      def prepare_answer(text, final=False):
+        if link_sanitizer is not None:
+          text = link_sanitizer.feed(text, final=final)
+        return scrubber.feed(text)
 
       if deep_think:
         output_sanitizer = ModelOutputStreamSanitizer()
@@ -3854,11 +4180,15 @@ def api_chat(request):
               clean_text = output_sanitizer.feed(text)
               if clean_text:
                 answered = True
-                yield scrubber.feed(clean_text)
+                visible_text = prepare_answer(clean_text)
+                if visible_text:
+                  yield visible_text
           clean_text = output_sanitizer.feed("", final=True)
           if clean_text:
             answered = True
-            yield scrubber.feed(clean_text)
+            visible_text = prepare_answer(clean_text)
+            if visible_text:
+              yield visible_text
         except Exception as error:
           if not answered:
             errored = True
@@ -3900,7 +4230,9 @@ def api_chat(request):
                   clean_piece = output_sanitizer.feed(piece)
                   if clean_piece:
                     answered = True
-                    yield scrubber.feed(clean_piece)
+                    visible_text = prepare_answer(clean_piece)
+                    if visible_text:
+                      yield visible_text
             except Exception as error:
               if answered:
                 break
@@ -3914,7 +4246,9 @@ def api_chat(request):
             clean_tail = output_sanitizer.feed("", final=True)
             if clean_tail:
               answered = True
-              yield scrubber.feed(clean_tail)
+              visible_text = prepare_answer(clean_tail)
+              if visible_text:
+                yield visible_text
             if str(finish_reason).lower() not in {"length", "max_tokens"} or continuation_index == 3:
               break
             continuation_messages.extend((
@@ -3936,6 +4270,11 @@ def api_chat(request):
             silent_providers.add(trace["provider"])
           if silent_providers >= all_providers:
             break
+
+      if link_sanitizer is not None:
+        visible_tail = prepare_answer("", final=True)
+        if visible_tail:
+          yield visible_tail
 
       if not answered and not errored:
         if deterministic_fallback:

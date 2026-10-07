@@ -194,8 +194,8 @@ class SearchTests(SimpleTestCase):
             "snippet": "Maç 2-0 sona erdi.",
         }])
 
-        self.assertIn("Bir arama sonucu", answer)
-        self.assertIn("ikinci bağımsız kaynaktan doğrulayamadım", answer)
+        self.assertIn("Bir canlı arama sonucu", answer)
+        self.assertIn("bağımsız bir kaynakla doğrulayamadığım", answer)
 
     def test_sourced_score_summary_requires_two_domains_to_confirm_a_score(self):
         answer = views.summarize_sourced_match_score([
@@ -211,8 +211,9 @@ class SearchTests(SimpleTestCase):
             },
         ])
 
-        self.assertIn("İki farklı alan adındaki", answer)
+        self.assertIn("İki bağımsız kaynak", answer)
         self.assertIn("2-0", answer)
+        self.assertNotIn("https://", answer)
 
     def test_sourced_score_summary_reports_disagreement(self):
         answer = views.summarize_sourced_match_score([
@@ -261,10 +262,66 @@ class SearchTests(SimpleTestCase):
         self.assertTrue(views.is_sports_followup("Golleri kim attı?", history))
         self.assertGreaterEqual(len(queries), 2)
         self.assertIn("fenerbahce eyupspor", normalized[0])
-        self.assertIn("8-0", normalized[0])
         self.assertIn("golleri kim atti", normalized[0])
         self.assertIn("fenerbahce", normalized[1])
+        self.assertNotIn("8-0", " ".join(normalized))
         self.assertNotIn("dogrulanmamis", " ".join(normalized))
+
+    def test_match_details_prefer_article_excerpt_and_hide_source_links(self):
+        answer = views.summarize_sourced_match_details([
+            {
+                "title": "Turan Tovuz 0-2 Fenerbahçe maç raporu",
+                "url": "https://sports.example/report",
+                "snippet": "Maç raporu.",
+                "excerpt": (
+                    "Fenerbahçe'yi galibiyete taşıyan golleri 23. dakikada "
+                    "Cengiz Ünder ve 78. dakikada Edin Džeko kaydetti."
+                ),
+            },
+        ])
+
+        self.assertIn("Cengiz Ünder", answer)
+        self.assertIn("Edin Džeko", answer)
+        self.assertNotIn("https://", answer)
+        self.assertNotIn("Enner Valencia", answer)
+
+    def test_match_details_extract_goal_sentences_from_noisy_article_text(self):
+        answer = views.summarize_sourced_match_details([
+            {
+                "title": "Fenerbahçe maç raporu",
+                "snippet": "Maç raporu.",
+                "excerpt": (
+                    "Son dakika haberleri ve diğer gelişmeler. Uygulamayı açın. "
+                    "23. dakikada Cengiz Ünder golü kaydetti. "
+                    "Maçta toplam 18 korner kullanıldı."
+                ),
+            },
+        ])
+
+        self.assertIn("23. dakikada Cengiz Ünder golü kaydetti.", answer)
+        self.assertNotIn("Son dakika", answer)
+        self.assertNotIn("Uygulamayı açın", answer)
+        self.assertNotIn("korner", answer)
+
+    def test_scorer_followup_never_reuses_an_unverified_assistant_score(self):
+        history = [
+            {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
+            {"sender": "ai", "text": "8-0; Enner Valencia iki gol attı."},
+        ]
+
+        queries = views.build_live_search_queries("Golleri kim attı?", history)
+
+        self.assertTrue(all("8-0" not in query for query in queries))
+        self.assertTrue(all("valencia" not in query.lower() for query in queries))
+
+    def test_live_answer_link_sanitizer_removes_markdown_and_split_urls(self):
+        sanitizer = views.LiveAnswerLinkSanitizer()
+        first = sanitizer.feed("Güncel sonuç 2-0. Ayrıntı: [haber](https://spor")
+        second = sanitizer.feed("x.example/mac)\n")
+        final = sanitizer.feed("", final=True)
+
+        self.assertEqual(first, "")
+        self.assertEqual(second + final, "Güncel sonuç 2-0. Ayrıntı: haber\n")
 
     def test_google_news_rss_keeps_the_article_link(self):
         article_url = "https://news.google.com/rss/articles/example?oc=5"
@@ -351,6 +408,25 @@ class SearchTests(SimpleTestCase):
         self.assertIn("son maç", queries[-1])
         self.assertIn("fenerbahce", views._ascii_fold(queries[-1]).lower())
 
+    def test_live_search_combines_independent_search_indexes(self):
+        def fake_search(query, num_results=5, **kwargs):
+            engine = kwargs["only_engines"][0]
+            return {
+                "engine": engine,
+                "results": [{
+                    "title": f"Fenerbahçe maç raporu {engine}",
+                    "url": f"https://{engine}.example/report",
+                    "snippet": f"Maç raporu bulundu ({engine}).",
+                }],
+            }
+
+        with patch("dashboard.views.web_search", side_effect=fake_search) as search:
+            result = views.web_search_multi("Fenerbahçe maç raporu", 3, enrich=0)
+
+        self.assertGreaterEqual(len(result["engines"]), 2)
+        self.assertGreaterEqual(len(result["results"]), 2)
+        self.assertEqual(search.call_count, 4)
+
     def test_reliable_feeds_are_tried_before_the_blocked_scrapers(self):
         order = [engine for engine, *_ in views._search_attempts("evren nasıl oluştu")]
 
@@ -422,8 +498,6 @@ class SearchTests(SimpleTestCase):
 
     def test_sports_results_without_the_asked_club_are_dropped(self):
         def fake_search(query, num_results=5, **kwargs):
-            if kwargs.get("only_engines"):
-                return {"results": [], "engine": "bing-haber-rss"}
             return {
                 "engine": "haber-rss",
                 "results": [
@@ -440,8 +514,69 @@ class SearchTests(SimpleTestCase):
         self.assertEqual(len(result["results"]), 1)
         self.assertIn("Fenerbahçe", result["results"][0]["title"])
 
+    def test_specific_fixture_search_requires_both_named_clubs(self):
+        def fake_search(query, num_results=5, **kwargs):
+            return {
+                "engine": "haber-rss",
+                "results": [
+                    {
+                        "title": "Fenerbahçe başka rakibini 3-0 yendi",
+                        "url": "https://example.org/wrong",
+                        "snippet": "Fenerbahçe karşılaşma sonucu 3-0.",
+                    },
+                    {
+                        "title": "Turan Tovuz 0-2 Fenerbahçe maç sonucu",
+                        "url": "https://example.org/right",
+                        "snippet": "Turan Tovuz ve Fenerbahçe karşılaşması 0-2 sona erdi.",
+                    },
+                ],
+            }
+
+        with patch("dashboard.views.web_search", side_effect=fake_search):
+            result = views.search_live_sports(
+                ["Fenerbahçe Turan Tovuz maç sonucu"],
+                5,
+                enrich=0,
+            )
+
+        self.assertEqual(len(result["results"]), 1)
+        self.assertIn("Turan Tovuz", result["results"][0]["title"])
+
 
 class AppClockTests(TestCase):
+    def test_world_time_location_is_detected_for_cities_and_countries(self):
+        for question, expected in (
+            ("Çin'de saat kaç?", "Çin"),
+            ("Tokyoda saat kaç?", "Tokyo"),
+            ("Saat kaç Londra'da?", "Londra"),
+            ("New York saat kaç?", "New York"),
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(views.detect_time_location(question), expected)
+
+    def test_location_time_uses_the_geocoded_iana_timezone(self):
+        geocoded = {
+            "name": "Tokyo",
+            "timezone": "Asia/Tokyo",
+        }
+        now = dt.datetime(2026, 10, 7, 12, 0, tzinfo=dt.timezone.utc)
+        with patch("dashboard.views._geocode_city", return_value=geocoded) as geocode:
+            result = views.get_location_time("Tokyo", now=now)
+
+        geocode.assert_called_once_with("Tokyo", country="")
+        self.assertEqual(result["time"], "21:00")
+        self.assertEqual(result["date"], "07.10.2026")
+        self.assertEqual(result["timezone"], "Asia/Tokyo")
+
+    def test_country_alias_uses_china_standard_time(self):
+        now = dt.datetime(2026, 10, 7, 12, 0, tzinfo=dt.timezone.utc)
+
+        result = views.get_location_time("Çin'de", now=now)
+
+        self.assertEqual(result["city"], "Şanghay")
+        self.assertEqual(result["time"], "20:00")
+        self.assertEqual(result["timezone"], "Asia/Shanghai")
+
     def test_clock_persists_the_current_istanbul_date(self):
         clock = views.sync_app_clock()
 
@@ -507,6 +642,31 @@ class ImageGenerationTests(TestCase):
         image_prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("uçak", image_prompt)
         self.assertIn("ultra-photorealistic", image_prompt)
+
+    def test_simple_red_circle_is_rendered_exactly_without_an_image_provider(self):
+        with patch("dashboard.views.get_api_keys", return_value=[]), patch(
+            "dashboard.views.generate_image_with_retry"
+        ) as image_provider:
+            response = self.client.post(
+                reverse("api_image_generate"),
+                data=json.dumps({"prompt": "Kırmızı bir daire"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        image_url = response.json()["image_url"]
+        self.assertTrue(image_url.startswith("data:image/svg+xml;base64,"))
+        svg = base64.b64decode(image_url.split(",", 1)[1]).decode("utf-8")
+        self.assertIn('<circle cx="512" cy="512" r="300" fill="#ff0000"/>', svg)
+        self.assertNotIn("linearGradient", svg)
+        image_provider.assert_not_called()
+
+    def test_generated_image_is_displayed_without_automatic_branding(self):
+        template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("addGeneratedImageBranding", template)
+        self.assertIn("images: [{ url: data.image_url, name: prompt }]", template)
 
     def test_legacy_image_fallback_uses_supported_one_k_resolution(self):
         image_response = Mock()
@@ -629,6 +789,36 @@ class ImageGenerationTests(TestCase):
         self.assertIn("çizim", prompt)
         self.assertNotIn("photorealistic", prompt)
 
+    def test_geometric_prompt_preserves_the_requested_shape_and_suppresses_people(self):
+        prompt = views.enhance_image_prompt("Kırmızı bir daire")
+
+        self.assertIn("red", prompt.lower())
+        self.assertIn("circle", prompt.lower())
+        self.assertIn("exact shape", prompt.lower())
+        self.assertIn("no people", prompt.lower())
+        self.assertNotIn("photorealistic", prompt.lower())
+
+    def test_gemini_geometric_image_prompt_does_not_add_photographic_subjects(self):
+        image_response = Mock()
+        image_response.status_code = 200
+        image_response.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"inlineData": {
+                    "data": "cG5nLWJ5dGVz",
+                    "mimeType": "image/png",
+                }}]},
+            }],
+        }
+        with patch("dashboard.views.requests.post", return_value=image_response) as post:
+            views.generate_image_with_gemini("Kırmızı bir daire", "gemini-3-pro-image", "key")
+
+        prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"].lower()
+        self.assertIn("red", prompt)
+        self.assertIn("circle", prompt)
+        self.assertIn("no people", prompt)
+        self.assertNotIn("photorealistic", prompt)
+        self.assertNotIn("natural anatomy", prompt)
+
     def test_branded_drink_prompt_preserves_specific_packaging(self):
         prompt = views.enhance_image_prompt("Gerçekçi Aslan markalı kırmızı içecek kutusu")
 
@@ -699,6 +889,87 @@ class ChatFeatureTests(TestCase):
         self.assertIn(content, sent_content[0]["text"])
         self.assertFalse(any(part.get("type") == "file" for part in sent_content))
         self.assertFalse(any(part.get("type") == "input_audio" for part in sent_content))
+
+    def test_world_clock_question_uses_the_requested_timezone_without_model_guessing(self):
+        user = self.user
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        local_time = {
+            "city": "Tokyo",
+            "time": "21:00",
+            "date": "07.10.2026",
+            "day": "Çarşamba",
+            "timezone": "Asia/Tokyo",
+            "utc_offset": "+0900",
+        }
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.get_location_time", return_value=local_time) as get_time,
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Tokyoda saat kaç?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Tokyo için saat 21:00", answer)
+        self.assertIn("Asia/Tokyo", get_time.return_value["timezone"])
+        get_time.assert_called_once_with("Tokyo")
+        model_call.assert_not_called()
+
+    def test_world_clock_question_does_not_require_a_chat_provider(self):
+        local_time = {
+            "city": "Shanghai",
+            "time": "20:00",
+            "date": "07.10.2026",
+            "day": "Çarşamba",
+            "timezone": "Asia/Shanghai",
+            "utc_offset": "+0800",
+        }
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[]) as endpoints,
+            patch("dashboard.views.get_location_time", return_value=local_time),
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Çin'de saat kaç?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Shanghai için saat 20:00", answer)
+        endpoints.assert_not_called()
+
+    def test_live_answer_is_synthesized_without_exposing_search_urls(self):
+        chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Güncel açıklama burada. Kaynak: [haber](https://news.example/article)"),
+            finish_reason="stop",
+        )])
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.safe_model_call", return_value=iter([chunk])),
+            patch("dashboard.views.web_search", return_value={
+                "results": [{
+                    "title": "Güncel haber",
+                    "url": "https://news.example/article",
+                    "snippet": "Gelişmenin özeti.",
+                }],
+            }),
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Bugün yeni gelişme ne oldu?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertIn("Güncel açıklama burada.", answer)
+        self.assertIn("haber", answer)
+        self.assertNotIn("https://", answer)
 
     def test_chat_accepts_a_photo_sent_with_a_text_question(self):
         chunk = SimpleNamespace(choices=[SimpleNamespace(
@@ -812,7 +1083,8 @@ class ChatFeatureTests(TestCase):
             answer = b"".join(response.streaming_content).decode("utf-8")
 
         self.assertIn("2-0", answer)
-        self.assertIn("İki farklı alan adındaki", answer)
+        self.assertIn("İki bağımsız kaynak", answer)
+        self.assertNotIn("https://", answer)
         model_call.assert_not_called()
 
     def test_deep_research_calls_search_tools_before_final_answer(self):
@@ -1079,6 +1351,9 @@ class ChatFeatureTests(TestCase):
                 "title": "Fenerbahçe Eyüpspor maç raporu ve golleri",
                 "url": "https://sports.example/report",
                 "snippet": "Golleri atan oyuncular maç raporunda.",
+                "excerpt": (
+                    "Fenerbahçe'nin gollerini Edin Džeko ve İrfan Can Kahveci kaydetti."
+                ),
             },
         ]}
 
@@ -1098,14 +1373,15 @@ class ChatFeatureTests(TestCase):
             answer = b"".join(response.streaming_content).decode("utf-8")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(search.call_count, 4)
+        self.assertGreaterEqual(search.call_count, 8)
         self.assertIn("golleri kim attı", search.call_args_list[0].args[0].lower())
-        self.assertIn("gol atan oyuncular", search.call_args_list[1].args[0].lower())
+        self.assertIn("gol atan oyuncular", search.call_args_list[4].args[0].lower())
         self.assertFalse(
             any(call.kwargs.get("duckduckgo_only") for call in search.call_args_list)
         )
-        self.assertIn("arama kaynağı özetleri", answer)
-        self.assertIn("Golleri atan oyuncular maç raporunda.", answer)
+        self.assertIn("Maç raporlarında", answer)
+        self.assertIn("Edin Džeko", answer)
+        self.assertNotIn("https://", answer)
         model_call.assert_not_called()
 
     def test_sanitize_output_strips_reasoning_leaks(self):
@@ -1260,14 +1536,11 @@ class ChatFeatureTests(TestCase):
         self.assertNotIn("Hangi şehir", answer)
         model_call.assert_not_called()
 
-    def test_sports_followup_without_sources_still_answers_without_inventing(self):
+    def test_sports_followup_without_sources_never_uses_model_memory(self):
         history = [
             {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
             {"sender": "ai", "text": "8-0; Valencia 2 gol attı."},
         ]
-        chunk = SimpleNamespace(choices=[SimpleNamespace(
-            delta=SimpleNamespace(content="Canlı kaynağa şu an ulaşamadım.", tool_calls=None),
-        )])
         endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
         with (
             patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
@@ -1276,7 +1549,7 @@ class ChatFeatureTests(TestCase):
                 "engine": "ddg-html",
                 "results": [],
             }) as search,
-            patch("dashboard.views.safe_model_call", Mock(return_value=iter([chunk]))) as model_call,
+            patch("dashboard.views.safe_model_call") as model_call,
         ):
             response = self.client.post(
                 reverse("api_chat"),
@@ -1289,15 +1562,10 @@ class ChatFeatureTests(TestCase):
             answer = b"".join(response.streaming_content).decode("utf-8")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("ulaşamadım", answer)
+        self.assertIn("kaynak bulamadım", answer)
         self.assertNotIn("Valencia", answer)
-        self.assertIn("eyupspor", views._ascii_fold(search.call_args.args[0]).lower())
-        system_text = "\n".join(
-            str(message.get("content") or "")
-            for message in model_call.call_args.args[1]
-            if message.get("role") == "system"
-        )
-        self.assertIn("UYDURMA", system_text)
+        self.assertIn("eyupspor", views._ascii_fold(search.call_args_list[0].args[0]).lower())
+        model_call.assert_not_called()
 
     def test_sports_answer_prompt_rejects_unverified_prior_assistant_details(self):
         chunk = SimpleNamespace(choices=[SimpleNamespace(
