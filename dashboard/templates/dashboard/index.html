@@ -710,6 +710,43 @@
             z-index: 100;
         }
 
+        .image-edit-mode {
+            max-width: 900px;
+            margin: 0 auto 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #f3e5bf;
+            font-size: 13px;
+        }
+
+        .image-edit-mode span { flex: 1; }
+
+        .image-edit-cancel-btn {
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            padding: 5px 10px;
+            color: inherit;
+            background: rgba(255, 255, 255, 0.06);
+            cursor: pointer;
+        }
+
+        .image-edit-continue-btn {
+            display: block;
+            margin: 8px 0 4px;
+            padding: 8px 12px;
+            border: 1px solid rgba(214, 181, 109, 0.55);
+            border-radius: 9px;
+            color: #f3e5bf;
+            background: rgba(214, 181, 109, 0.12);
+            cursor: pointer;
+        }
+
+        .image-edit-continue-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
         .think-settings {
             position: absolute;
             right: 54px;
@@ -1529,6 +1566,15 @@
         <div class="chat-input-wrapper">
             <input type="file" id="hiddenAvatarInput" accept="image/*" style="display: none;" onchange="handleAvatarFile(this)">
 
+            <div class="image-edit-mode" id="imageEditMode" style="display: none;">
+                <span id="imageEditModeLabel"></span>
+                <button type="button" class="image-edit-cancel-btn" onclick="cancelImageEdit()">İptal</button>
+            </div>
+
+            <div class="image-edit-mode" id="imageEditMode" style="display: none;">
+                <span id="imageEditModeLabel"></span>
+                <button type="button" class="image-edit-cancel-btn" onclick="cancelImageEdit()">İptal</button>
+            </div>
             <div class="chat-input-container">
                 <div class="media-buttons" id="mediaButtons">
                     <button class="media-btn media-menu-trigger" onclick="toggleMediaMenu(event)" title="Ek seçenekler" aria-label="Ek seçenekler" aria-expanded="false">
@@ -1726,6 +1772,7 @@
     let activeRequestController = null;
     let imageRequestController = null;
     let imageGenerating = false;
+    let pendingImageEdit = null;
     let streamBusy = false;
     let selectedVoiceType = 'audio/webm';
     let reasoningLines = [];
@@ -2013,7 +2060,7 @@
     }
 
     function setMode(mode) {
-        if (streamBusy || imageGenerating) return;
+        if (streamBusy || imageGenerating || pendingImageEdit) return;
         if (currentMode === mode) return;
         currentMode = mode;
 
@@ -2050,7 +2097,7 @@
     }
 
     function createNewChat(customTitle = 'Yeni Sohbet', saveImmediate = false) {
-        if (streamBusy || imageGenerating) return;
+        if (streamBusy || imageGenerating || pendingImageEdit) return;
         const chatId = Date.now();
         const newChat = {
             id: chatId,
@@ -2156,7 +2203,7 @@
     const expandedAiMessages = new Set();
 
     function selectChat(chatId) {
-        if (streamBusy || imageGenerating) return;
+        if (streamBusy || imageGenerating || pendingImageEdit) return;
         activeChatId = chatId;
         expandedAiMessages.clear();
         const chat = chats.find(c => c.id === chatId);
@@ -2788,22 +2835,178 @@
             avatarSize
         );
         context.restore();
-        context.fillStyle = '#f3e5bf';
-        context.font = `700 ${Math.max(13, Math.round(footerHeight * 0.3))}px Arial, sans-serif`;
-        context.textBaseline = 'middle';
-        context.fillText(
-            'ASLAN PARÇASI AI',
-            inset + avatarSize + Math.round(footerHeight * 0.16),
-            footerTop + footerHeight / 2
-        );
-
         return canvas.toDataURL('image/jpeg', 0.96);
+    }
+
+    function updateImageEditMode() {
+        const mode = document.getElementById('imageEditMode');
+        const label = document.getElementById('imageEditModeLabel');
+        const input = document.getElementById('userInput');
+        const generateButton = document.getElementById('imageGenBtn');
+        const sendButton = document.getElementById('sendBtn');
+        const editing = !!pendingImageEdit;
+
+        if (mode) mode.style.display = editing ? 'flex' : 'none';
+        if (label) {
+            label.textContent = editing
+                ? `Düzenleme modu: ${pendingImageEdit.name || 'seçilen görsel'}`
+                : '';
+        }
+        if (input) {
+            input.placeholder = editing
+                ? 'Bu görselde neyi değiştireyim?'
+                : 'Bir şeyler yazın...';
+        }
+        if (generateButton) {
+            generateButton.disabled = editing;
+            generateButton.setAttribute('aria-disabled', String(editing));
+            generateButton.title = editing
+                ? 'Önce görsel düzenleme modunu iptal et'
+                : 'Görsel oluştur';
+        }
+        if (sendButton) {
+            sendButton.title = editing ? 'Görsel düzenleme isteğini gönder' : 'Gönder';
+            sendButton.setAttribute(
+                'aria-label',
+                editing ? 'Görsel düzenleme isteğini gönder' : 'Gönder'
+            );
+        }
+    }
+
+    function startImageEdit(messageIndex, imageIndex) {
+        if (imageGenerating || streamBusy) return;
+        if (selectedImages.length || selectedFiles.length || selectedVoiceBlob) {
+            alert('Önce ekli görsel, dosya veya ses kaydını kaldırıp sonra düzenlemeyi başlat.');
+            return;
+        }
+        const chat = chats.find(item => item.id === activeChatId);
+        const message = chat && chat.messages[messageIndex];
+        const image = message && message.images && message.images[imageIndex];
+        const sourceImage = image && (image.source_url || image.url);
+        if (!image || !sourceImage || !sourceImage.startsWith('data:image/')) {
+            alert('Bu görselin düzenlenebilir kaynak verisine ulaşılamadı.');
+            return;
+        }
+
+        pendingImageEdit = {
+            chatId: activeChatId,
+            messageIndex,
+            imageIndex,
+            sourceImage,
+            name: image.name || 'seçilen görsel'
+        };
+        updateImageEditMode();
+        renderMessages();
+        document.getElementById('userInput').focus();
+    }
+
+    function cancelImageEdit() {
+        if (imageGenerating) return;
+        pendingImageEdit = null;
+        updateImageEditMode();
+        renderMessages();
+    }
+
+    async function continueEditingImage(customPrompt = null) {
+        const inputEl = document.getElementById('userInput');
+        const prompt = customPrompt !== null ? String(customPrompt).trim() : inputEl.value.trim();
+        if (!pendingImageEdit) return;
+        if (!prompt) {
+            alert('Düzenlemek istediğin değişikliği yaz; örneğin "arka planı açık mavi yap".');
+            inputEl.focus();
+            return;
+        }
+        if (selectedImages.length || selectedFiles.length || selectedVoiceBlob) {
+            alert('Düzenleme isteğinde yalnızca metin kullan. Ekli görsel veya dosyaları kaldırıp tekrar gönder.');
+            return;
+        }
+
+        const editing = pendingImageEdit;
+        const currentChat = chats.find(chat => chat.id === editing.chatId);
+        if (!currentChat || activeChatId !== editing.chatId) {
+            alert('Düzenlenecek sohbet artık açık değil. Lütfen görselin altındaki düzenleme düğmesine yeniden bas.');
+            cancelImageEdit();
+            return;
+        }
+
+        const startStamp = Date.now();
+        currentChat.messages.push({ sender: 'user', text: prompt, timestamp: startStamp });
+        currentChat.messages.push({
+            sender: 'ai',
+            text: 'Seçtiğin görsel, yazdığın isteğe göre düzenleniyor…',
+            timestamp: startStamp + 1
+        });
+        const placeholderIndex = currentChat.messages.length - 1;
+        inputEl.value = '';
+        saveToStorage();
+        renderChatList();
+        renderMessages();
+        imageGenerating = true;
+        imageRequestController = new AbortController();
+        setSendButtonBusy(true);
+        updateImageEditMode();
+
+        const finishPlaceholder = (message) => {
+            const chat = chats.find(item => item.id === editing.chatId);
+            if (!chat) return;
+            chat.messages[placeholderIndex] = message;
+            saveToStorage();
+            renderChatList();
+            renderMessages();
+        };
+
+        try {
+            const response = await fetch('{% url "api_image_generate" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken()
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    prompt,
+                    source_image: editing.sourceImage
+                }),
+                signal: imageRequestController.signal
+            });
+            const data = await response.json();
+            if (!response.ok || data.status !== 'success' || !data.image_url) {
+                throw new Error(data.error || `Görsel düzenlenemedi (HTTP ${response.status}).`);
+            }
+
+            const brandedImage = await addGeneratedImageBranding(data.image_url);
+            pendingImageEdit = null;
+            finishPlaceholder({
+                sender: 'ai',
+                text: 'Düzenlediğim görsel:',
+                images: [{
+                    url: brandedImage,
+                    name: editing.name,
+                    generated: true
+                }],
+                timestamp: Date.now()
+            });
+        } catch (error) {
+            finishPlaceholder({
+                sender: 'ai',
+                text: error.name === 'AbortError'
+                    ? 'Görsel düzenleme durduruldu.'
+                    : `Görsel düzenleme başarısız: ${error.message}`,
+                timestamp: Date.now()
+            });
+        } finally {
+            imageGenerating = false;
+            imageRequestController = null;
+            setSendButtonBusy(false);
+            updateImageEditMode();
+        }
     }
 
     async function generateImage() {
         const inputEl = document.getElementById('userInput');
         const prompt = inputEl.value.trim();
 
+        if (pendingImageEdit) return;
         if (imageGenerating) {
             if (imageRequestController) imageRequestController.abort();
             return;
@@ -2877,7 +3080,7 @@
                 finishPlaceholder({
                     sender: 'ai',
                     text: 'İşte istediğin görsel:',
-                    images: [{ url: brandedImage, name: prompt }],
+                    images: [{ url: brandedImage, name: prompt, generated: true }],
                     timestamp: Date.now()
                 });
             } else {
@@ -2959,6 +3162,10 @@
     async function sendMessage(customText = null) {
         const inputEl = document.getElementById('userInput');
         const text = customText !== null ? customText : inputEl.value.trim();
+
+        if (pendingImageEdit) {
+            return continueEditingImage(text);
+        }
 
         // Stopping and sending in the same interaction must wait for MediaRecorder.onstop.
         if (isRecording) {
@@ -3277,13 +3484,26 @@
         if (sender === 'ai') {
             msgDiv.innerHTML = renderMarkdown(sanitizeAiText(text));
             const attachments = messageData || {};
-            (attachments.images || []).forEach((image) => {
+            (attachments.images || []).forEach((image, imageIndex) => {
                 if (!image.base64 && !image.url) return;
                 const imageEl = document.createElement('img');
                 imageEl.className = 'message-attachment generated-image';
                 imageEl.alt = image.name || 'Oluşturulan görsel';
                 imageEl.src = image.url || `data:${image.type || 'image/png'};base64,${image.base64}`;
                 msgDiv.appendChild(imageEl);
+                if (
+                    image.generated &&
+                    image.url &&
+                    /^data:image\/(?:png|jpeg|webp);base64,/i.test(image.url)
+                ) {
+                    const editButton = document.createElement('button');
+                    editButton.type = 'button';
+                    editButton.className = 'image-edit-continue-btn';
+                    editButton.textContent = 'Bu fotoğrafı düzenlemeye devam et';
+                    editButton.disabled = !!pendingImageEdit;
+                    editButton.onclick = () => startImageEdit(msgIndex, imageIndex);
+                    msgDiv.appendChild(editButton);
+                }
             });
             if (window.hljs) {
                 msgDiv.querySelectorAll('pre code').forEach((block) => {

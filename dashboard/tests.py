@@ -466,6 +466,19 @@ class SearchTests(SimpleTestCase):
         self.assertFalse(views.should_fetch_live_context("Selam"))
         self.assertFalse(views.should_fetch_live_context("Nasılsın?"))
 
+    def test_detailed_research_searches_multiple_current_and_topic_facets(self):
+        queries = views.build_detailed_research_queries(
+            "Türkiye'de yenilenebilir enerjiyi araştır"
+        )
+
+        self.assertEqual(len(queries), 4)
+        self.assertEqual(queries[0], views.build_search_query(
+            "Türkiye'de yenilenebilir enerjiyi araştır"
+        ))
+        self.assertIn(str(timezone.localdate().year), queries[1])
+        self.assertIn("etkileri", queries[2])
+        self.assertIn("uzman", queries[3])
+
     def test_sports_live_search_retries_on_ddg_block_or_weak_result(self):
         self.assertTrue(
             views.should_retry_live_search_with_general_results(
@@ -816,10 +829,93 @@ class ImageGenerationTests(TestCase):
     def test_generated_image_displays_with_aslan_parcasi_branding(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
         template = template_path.read_text(encoding="utf-8")
+        branding = template.split("async function addGeneratedImageBranding", 1)[1].split(
+            "function updateImageEditMode", 1
+        )[0]
 
         self.assertIn("addGeneratedImageBranding", template)
         self.assertIn("const brandedImage = await addGeneratedImageBranding(data.image_url)", template)
-        self.assertIn("ASLAN PARÇASI AI", template)
+        self.assertNotIn("ASLAN PARÇASI AI", branding)
+        self.assertNotIn("fillText(", branding)
+
+    def test_generated_images_offer_continuation_edit_without_switching_tools(self):
+        template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertIn("Bu fotoğrafı düzenlemeye devam et", template)
+        self.assertIn("source_image: editing.sourceImage", template)
+        self.assertIn("generateButton.disabled = editing", template)
+        self.assertIn("if (pendingImageEdit) {", template)
+        self.assertIn("return continueEditingImage(text);", template)
+
+    def test_image_edit_api_passes_the_selected_source_image_to_the_edit_provider(self):
+        prompt = "Sadece arka planı açık mavi yap; nesneye dokunma."
+        encoded = "cG5nLWJ5dGVz"
+        with (
+            patch("dashboard.views.get_api_keys", return_value=["test-key"]),
+            patch(
+                "dashboard.views.generate_edited_image_with_retry",
+                return_value="data:image/png;base64,bmV3",
+            ) as edit,
+        ):
+            response = self.client.post(
+                reverse("api_image_generate"),
+                data=json.dumps({
+                    "prompt": prompt,
+                    "source_image": f"data:image/png;base64,{encoded}",
+                }),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        edit.assert_called_once_with(
+            prompt,
+            {"mime_type": "image/png", "data": encoded},
+            ["test-key"],
+        )
+
+    def test_image_edit_provider_receives_original_image_and_exact_edit_request(self):
+        image_response = Mock()
+        image_response.status_code = 200
+        image_response.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"inlineData": {
+                    "data": "bmV3LWltYWdl",
+                    "mimeType": "image/png",
+                }}]},
+            }],
+        }
+        prompt = "Sadece gökyüzünü gün batımına çevir, diğer her şey aynı kalsın."
+        source_image = {"mime_type": "image/jpeg", "data": "c291cmNl"}
+
+        with patch("dashboard.views.requests.post", return_value=image_response) as post:
+            views.generate_image_with_gemini(
+                prompt,
+                "gemini-3-pro-image",
+                "test-key",
+                source_image=source_image,
+            )
+
+        parts = post.call_args.kwargs["json"]["contents"][0]["parts"]
+        self.assertEqual(parts[0]["inlineData"], {
+            "mimeType": "image/jpeg",
+            "data": "c291cmNl",
+        })
+        self.assertIn(prompt, parts[1]["text"])
+        self.assertIn("Apply only the changes explicitly requested", parts[1]["text"])
+        self.assertNotIn("Photographic translation", parts[1]["text"])
+
+    def test_meaningless_image_prompt_returns_actionable_error(self):
+        with patch("dashboard.views.generate_image_with_retry") as generate:
+            response = self.client.post(
+                reverse("api_image_generate"),
+                data=json.dumps({"prompt": "Görsel oluştur asdfghjkl"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("anlaşılır görünmüyor", response.json()["error"])
+        generate.assert_not_called()
 
     def test_legacy_image_fallback_uses_supported_one_k_resolution(self):
         image_response = Mock()

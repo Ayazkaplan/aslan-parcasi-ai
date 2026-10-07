@@ -39,6 +39,7 @@ except ImportError:
 
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 3 * 1024 * 1024
+MAX_IMAGE_EDIT_BYTES = 20 * 1024 * 1024
 # Büyük dosya dökümleri yanıtı dakikalarca geciktirir; bu yüzden bilinçli olarak küçük.
 MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
@@ -1799,6 +1800,31 @@ def search_topic(text):
     return " ".join(_strip_case(word) for word in build_search_query(text).split()).strip()
 
 
+DETAILED_RESEARCH_RE = re.compile(
+    r"\b(araştır\w*|arastir\w*|incele\w*|derinlemesine|detaylı\s+araştır\w*|"
+    r"kapsamlı\s+araştır\w*|comprehensive\s+research)\b",
+    re.I,
+)
+
+
+def is_detailed_research_request(text):
+  return bool(DETAILED_RESEARCH_RE.search(text or ""))
+
+
+def build_detailed_research_queries(text):
+  """Search the requested subject from complementary angles, keeping the original first."""
+  topic = search_topic(text)[:240]
+  if not topic:
+    return (build_search_query(text)[:500],)
+  year = timezone.localdate().year
+  return tuple(dict.fromkeys((
+      build_search_query(text)[:500],
+      f"{topic} {year} güncel gelişmeler",
+      f"{topic} ayrıntılı analiz ve etkileri",
+      f"{topic} temel veriler ve uzman değerlendirmesi",
+  )))
+
+
 BRAND_LEAK_RE = re.compile(r"\b(google|gemini)\b", re.I)
 
 
@@ -2626,30 +2652,117 @@ def record_image_usage(user_id):
     _image_daily_usage[key] = _image_daily_usage.get(key, 0) + 1
 
 
-def generate_image_with_gemini(prompt, image_model, api_key):
-  """Generate an image through the generateContent endpoint."""
-  image_size = "1K" if image_model == "gemini-2.5-flash-image" else "4K"
-  refined_prompt = enhance_image_prompt(prompt)
-  if is_simple_geometric_prompt(prompt):
-    image_prompt = refined_prompt
-  else:
-    image_prompt = (
-        "Create exactly one exceptionally detailed 4K UHD image that follows the user's brief. "
-      "Unless the brief explicitly requests an illustration, cartoon, logo, or another "
-      "non-photographic style, render it as an ultra-photorealistic photograph captured "
-      "with a professional full-frame camera. Use physically plausible light, natural "
-      "skin and material textures, accurate anatomy and perspective, realistic depth of "
-      "field, crisp focus on the subject, nuanced shadows, and restrained true-to-life "
-      "color grading. Preserve the requested subject, count, action, and composition; "
-        "render all colors, backgrounds, shapes, and products exactly as requested; do not "
-        "invent unrelated objects. Do not add text, signatures, logos, borders, or provider "
-        "branding in the image itself unless explicitly requested. Follow any "
-          "style explicitly requested by the user instead of forcing photorealism. Exact user "
-        "brief: "
-        + prompt
-        + "\nPhotographic translation and detail cues: "
-        + refined_prompt
+IMAGE_PROMPT_FILLER_WORDS = frozenset({
+    "bir", "ve", "ile", "icin", "lütfen", "lutfen", "görsel", "gorsel",
+    "resim", "oluştur", "olustur", "üret", "uret", "çiz", "ciz", "yap",
+    "create", "generate", "draw", "image", "picture", "please", "make",
+    "daha", "güzel", "guzel", "iyi", "şey", "sey", "rastgele",
+    "kırmızı", "kirmizi", "mavi", "yeşil", "yesil", "siyah", "beyaz",
+    "sarı", "sari", "mor", "pembe", "turuncu", "renkli",
+    "red", "blue", "green", "black", "white", "yellow", "purple", "pink",
+    "orange", "colorful", "realistic", "photorealistic", "ultra", "detailed",
+})
+IMAGE_PROMPT_WORD_RE = re.compile(r"[a-zA-ZçğıöşüÇĞİÖŞÜ]+|\d+")
+
+
+def validate_image_prompt(prompt):
+  """Reject empty, command-only, and obvious keyboard-mash prompts with guidance."""
+  text = (prompt or "").strip()
+  if not text:
+    return "Ne oluşturulacağını anlayamadım. Görselde olmasını istediğin konu veya nesneyi yaz."
+  if len(text) > 4000:
+    return "Görsel açıklaması çok uzun. Lütfen isteğini en fazla 4000 karakterle anlat."
+
+  words = IMAGE_PROMPT_WORD_RE.findall(text)
+  normalized_words = [_ascii_fold(word).lower() for word in words]
+  meaningful = [
+      word for word in normalized_words
+      if len(word) >= 3
+      and word not in IMAGE_PROMPT_FILLER_WORDS
+      and not word.isdigit()
+  ]
+  if not meaningful:
+    return (
+        "Ne oluşturulacağını anlayamadım. Bir konu veya nesne belirt; örneğin "
+        "'kırmızı bir daire' ya da 'masada duran gerçekçi bir mousepad'."
     )
+  if any(
+      len(word) >= 6 and not re.search(r"[aeıioöuü]", word)
+      for word in meaningful
+  ) or re.search(r"(asdf|qwer|zxcv|hjkl)", " ".join(normalized_words)):
+    return (
+        "İsteğin anlaşılır görünmüyor. Görselde görmek istediğin nesneyi, sahneyi "
+        "ve varsa renk veya düzen ayrıntılarını açıkça yaz."
+    )
+  return None
+
+
+def parse_image_data_url(image_url):
+  """Validate a generated data URL before passing its image bytes to a model."""
+  if not isinstance(image_url, str):
+    raise ValueError("Düzenlenecek görsel verisi bulunamadı.")
+  match = re.fullmatch(
+      r"data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})",
+      image_url.strip(),
+      re.I,
+  )
+  if not match:
+    raise ValueError("Düzenlenecek görsel JPEG, PNG veya WebP biçiminde olmalı.")
+  encoded = match.group(2)
+  try:
+    image_bytes = base64.b64decode(encoded, validate=True)
+  except (ValueError, base64.binascii.Error) as error:
+    raise ValueError("Düzenlenecek görsel verisi okunamadı.") from error
+  if not image_bytes:
+    raise ValueError("Düzenlenecek görsel boş.")
+  if len(image_bytes) > MAX_IMAGE_EDIT_BYTES:
+    raise ValueError("Düzenlenecek görsel 20 MB sınırını aşıyor.")
+  return {"mime_type": match.group(1).lower(), "data": encoded}
+
+
+def generate_image_with_gemini(prompt, image_model, api_key, source_image=None):
+  """Generate a new image or edit the supplied image through generateContent."""
+  image_size = "1K" if image_model == "gemini-2.5-flash-image" else "4K"
+  if source_image:
+    image_prompt = (
+        "Edit the supplied image itself. Apply only the changes explicitly requested "
+        "below; preserve every unmentioned subject, object, identity, color, layout, "
+        "camera angle, and background. Do not replace the scene or add anything "
+        "unrequested. Follow the user's exact wording and all listed constraints. "
+        "Exact user edit instructions:\n" + prompt
+    )
+    parts = [
+        {
+            "inlineData": {
+                "mimeType": source_image["mime_type"],
+                "data": source_image["data"],
+            }
+        },
+        {"text": image_prompt},
+    ]
+  else:
+    refined_prompt = enhance_image_prompt(prompt)
+    if is_simple_geometric_prompt(prompt):
+      image_prompt = refined_prompt
+    else:
+      image_prompt = (
+          "Create exactly one exceptionally detailed 4K UHD image that follows the user's brief. "
+        "Unless the brief explicitly requests an illustration, cartoon, logo, or another "
+        "non-photographic style, render it as an ultra-photorealistic photograph captured "
+        "with a professional full-frame camera. Use physically plausible light, natural "
+        "skin and material textures, accurate anatomy and perspective, realistic depth of "
+        "field, crisp focus on the subject, nuanced shadows, and restrained true-to-life "
+        "color grading. Preserve the requested subject, count, action, and composition; "
+          "render all colors, backgrounds, shapes, and products exactly as requested; do not "
+          "invent unrelated objects. Do not add text, signatures, logos, borders, or provider "
+          "branding in the image itself unless explicitly requested. Follow any "
+          "style explicitly requested by the user instead of forcing photorealism. Exact user "
+          "brief: "
+          + prompt
+          + "\nPhotographic translation and detail cues: "
+          + refined_prompt
+      )
+    parts = [{"text": image_prompt}]
   response = requests.post(
       f"https://generativelanguage.googleapis.com/v1beta/models/{image_model}:generateContent",
       headers={
@@ -2657,9 +2770,7 @@ def generate_image_with_gemini(prompt, image_model, api_key):
       },
       params={"key": api_key},
       json={
-          "contents": [{
-            "parts": [{"text": image_prompt}],
-          }],
+          "contents": [{"parts": parts}],
           "generationConfig": {
             "responseModalities": ["IMAGE"],
               "imageConfig": {"imageSize": image_size},
@@ -2677,6 +2788,51 @@ def generate_image_with_gemini(prompt, image_model, api_key):
         media_type = inline_data.get("mimeType") or inline_data.get("mime_type") or "image/png"
         return f"data:{media_type};base64,{inline_data['data']}"
   raise ValueError("Görsel servisi yanıtında görsel verisi bulunamadı.")
+
+
+def generate_edited_image_with_retry(prompt, source_image, api_keys=None):
+  """Edit an existing image; never fall back to a text-to-image-only provider."""
+  configured_keys = list(api_keys if api_keys is not None else get_api_keys())
+  keys = ordered_keys(configured_keys)
+  if not keys:
+    raise ImageUnavailableError(
+        "Görsel düzenleme için sunucuda Gemini görsel anahtarı tanımlı değil."
+    )
+
+  models = tuple(dict.fromkeys((
+      GEMINI_IMAGE_MODEL,
+      *GEMINI_IMAGE_FALLBACK_MODELS,
+  )))
+  last_error = None
+  for key in keys:
+    if not key_is_available(key):
+      continue
+    for model in models:
+      try:
+        result = generate_image_with_gemini(
+            prompt, model, key, source_image=source_image
+        )
+        mark_key_ok(key)
+        return result
+      except Exception as error:
+        last_error = error
+        status = getattr(error, "status_code", None)
+        if is_daily_quota_error(error):
+          mark_key_daily(key, error)
+          break
+        if status == 429:
+          mark_key_rate(key, error, _retry_after(error))
+          break
+        if status in (401, 403):
+          mark_key_invalid(key, error)
+          break
+
+  if last_error:
+    logger.warning("Image editing provider failed: %s", last_error)
+  raise ImageUnavailableError(
+      "Görsel şu anda düzenlenemedi. Görsel sağlayıcısına erişim veya kota ayarlarını "
+      "kontrol edip tekrar dene."
+  ) from last_error
 
 
 def generate_image_with_flux_hf(prompt, seed=None):
@@ -3807,10 +3963,27 @@ def api_refresh_clock(request):
 def api_image_generate(request):
   try:
     data = json.loads(request.body or "{}")
-    prompt = (data.get("prompt") or "").strip()
+    if not isinstance(data, dict):
+      return JsonResponse({"error": "Görsel isteği geçersiz."}, status=400)
+    prompt = data.get("prompt")
+    if not isinstance(prompt, str):
+      return JsonResponse({
+          "error": "Görsel açıklaması metin olarak gönderilmeli."
+      }, status=400)
+    prompt = prompt.strip()
+    prompt_error = validate_image_prompt(prompt)
+    if prompt_error:
+      return JsonResponse({"error": prompt_error}, status=400)
 
-    if not prompt:
-      return JsonResponse({"error": "Prompt boş olamaz."}, status=400)
+    source_image_url = data.get("source_image")
+    try:
+      source_image = (
+          parse_image_data_url(source_image_url)
+          if source_image_url is not None
+          else None
+      )
+    except ValueError as image_error:
+      return JsonResponse({"error": str(image_error)}, status=400)
 
     api_keys = get_api_keys()
 
@@ -3834,8 +4007,13 @@ def api_image_generate(request):
       }, status=429)
 
     try:
-      image_url = generate_simple_geometric_image(prompt)
-      if image_url is None:
+      if source_image:
+        image_url = generate_edited_image_with_retry(
+            prompt, source_image, api_keys
+        )
+      else:
+        image_url = generate_simple_geometric_image(prompt)
+      if not source_image and image_url is None:
         image_url = generate_image_with_retry(prompt, GEMINI_IMAGE_MODEL, api_keys)
       record_image_usage(request.user.pk)
       return JsonResponse({"status": "success", "image_url": image_url})
@@ -4164,7 +4342,12 @@ def api_chat(request):
       )
 
     live_context = None
-    live_search_queries = build_live_search_queries(question_text, history)
+    detailed_research = is_detailed_research_request(question_text)
+    live_search_queries = (
+        build_detailed_research_queries(question_text)
+        if detailed_research
+        else build_live_search_queries(question_text, history)
+    )
     live_search_query = live_search_queries[0]
     sports_followup = is_sports_followup(question_text, history)
     sports_question = is_sports_question(question_text) or sports_followup
@@ -4189,7 +4372,8 @@ def api_chat(request):
           search_context = web_search_multi(
               search_query,
               3 if mode == "fast" else 5,
-              enrich=2,
+              recency_days=365 if detailed_research else None,
+              enrich=3 if detailed_research else 2,
           )
           first_context = first_context or search_context
           for item in search_context.get("results") or []:
@@ -4249,7 +4433,15 @@ def api_chat(request):
             {
                 "role": "system",
                 "content": (
-                    "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
+                    (
+                        "Kullanıcı ayrıntılı araştırma istedi. Farklı arama açılarını "
+                        "birlikte sentezle; kaynakların yayın tarihlerini karşılaştır, en "
+                        "güncel bilgileri öncele, önemli farklılıkları ve belirsizlikleri "
+                        "açıkla. Ham arama sonuçlarını sıralama. "
+                        if detailed_research
+                        else ""
+                    )
+                    + "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
                     "Bu sonuçları birlikte karşılaştırıp kullanıcıya doğrudan, doğal ve öz bir yanıt "
                     "ver; ham arama sonuçlarını sıralama. Bağlantı, URL, markdown linki veya kaynak "
                     "listesi gösterme; kaynakları yalnızca cevabı doğrulamak için kullan. "
