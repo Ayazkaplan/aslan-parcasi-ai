@@ -450,6 +450,14 @@ def enhance_image_prompt(prompt):
   ):
     topic = f"{topic}, clearly visible branded product packaging, readable label, actual bottle/can design, not a generic cup, centered in frame"
 
+  if re.search(
+      r"\b(brand(?:ed)?|bottle|can|soda|cola|şişe\w*|kutu\w*|ambalaj\w*|"
+      r"markalı|markali|packaging|label)\b",
+      raw,
+      re.IGNORECASE,
+  ):
+    topic = f"{topic}, clearly visible branded product packaging, readable label, actual bottle/can design, not a generic cup, centered in frame"
+
   descriptors = [
       "ultra-photorealistic 4K UHD photograph",
       "crisp lifelike detail",
@@ -4453,6 +4461,10 @@ def api_chat(request):
             ))
           if errored:
             break
+          clean_tail = output_sanitizer.feed("", final=True)
+          if clean_tail:
+            answered = True
+            yield scrubber.feed(clean_tail)
           if answered:
             break
           # Boş akış dönen sağlayıcıyı bir daha deneme; sıra diğer beyinde.
