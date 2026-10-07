@@ -175,6 +175,61 @@ class WeatherTests(TestCase):
 
 
 class SearchTests(SimpleTestCase):
+    def test_weather_city_is_detected_when_question_puts_city_after_weather(self):
+        for question in (
+            "Hava kaç derece Erdek için?",
+            "Erdek için hava durumu",
+            "Erdek'te hava kaç derece?",
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(views.detect_weather_city(question), "Erdek")
+
+    def test_sourced_score_summary_attributes_a_single_source(self):
+        answer = views.summarize_sourced_match_score([{
+            "title": "Fenerbahçe maçı 2-0 kazandı",
+            "url": "https://sports.example/match",
+            "snippet": "Maç 2-0 sona erdi.",
+        }])
+
+        self.assertIn("Bir arama sonucu", answer)
+        self.assertIn("ikinci bağımsız kaynaktan doğrulayamadım", answer)
+
+    def test_sourced_score_summary_requires_two_domains_to_confirm_a_score(self):
+        answer = views.summarize_sourced_match_score([
+            {
+                "title": "Fenerbahçe maçı 2-0 kazandı",
+                "url": "https://one.example/match",
+                "snippet": "Fenerbahçe karşılaşması 2-0 sona erdi.",
+            },
+            {
+                "title": "Fenerbahçe maç sonucu 2-0",
+                "url": "https://two.example/match",
+                "snippet": "Skor 2-0 olarak kaydedildi.",
+            },
+        ])
+
+        self.assertIn("İki farklı alan adındaki", answer)
+        self.assertIn("2-0", answer)
+
+    def test_sourced_score_summary_reports_disagreement(self):
+        answer = views.summarize_sourced_match_score([
+            {
+                "title": "Fenerbahçe maçı 2-0 kazandı",
+                "url": "https://one.example/match",
+                "snippet": "2-0 sona erdi.",
+            },
+            {
+                "title": "Fenerbahçe maçı 1-0 kazandı",
+                "url": "https://two.example/match",
+                "snippet": "1-0 sona erdi.",
+            },
+        ])
+
+        self.assertIn("farklı skorlar", answer)
+        self.assertIn("2-0", answer)
+        self.assertIn("1-0", answer)
+        self.assertIn("doğrulanmış tek bir sonuç gibi sunmuyorum", answer)
+
     def test_sports_followup_search_uses_the_previous_user_question_only(self):
         history = [
             {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
@@ -279,7 +334,7 @@ class SearchTests(SimpleTestCase):
                 {"engine": "weak-match", "results": []},
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             views.should_retry_live_search_with_general_results(
                 "Merhaba nasıl gidiyor?",
                 {"blocked": True, "engine": "ddg-html", "results": []},
@@ -546,6 +601,121 @@ class ChatFeatureTests(TestCase):
         self.assertFalse(any(part.get("type") == "file" for part in sent_content))
         self.assertFalse(any(part.get("type") == "input_audio" for part in sent_content))
 
+    def test_chat_accepts_a_photo_sent_with_a_text_question(self):
+        chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Fotoğrafta bir kedi var.", tool_calls=None),
+            finish_reason="stop",
+        )])
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        model_call = Mock(return_value=iter([chunk]))
+
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]) as get_endpoints,
+            patch("dashboard.views.safe_model_call", model_call),
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({
+                    "message": "Bu fotoğrafta ne var?",
+                    "images": [{
+                        "name": "photo.webp",
+                        "type": "image/webp",
+                        "base64": "cG5nLWJ5dGVz",
+                    }],
+                }),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("kedi", answer)
+        self.assertTrue(any(call.kwargs.get("need_vision") for call in get_endpoints.call_args_list))
+        sent_content = model_call.call_args.args[1][-1]["content"]
+        self.assertEqual(sent_content[0]["text"], "Bu fotoğrafta ne var?")
+        self.assertEqual(
+            sent_content[1]["image_url"]["url"],
+            "data:image/webp;base64,cG5nLWJ5dGVz",
+        )
+
+    def test_chat_continues_when_the_provider_truncates_a_long_answer(self):
+        first_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="İlk bölüm.", tool_calls=None),
+            finish_reason="length",
+        )])
+        second_chunk = SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="Devamı tamamlandı.", tool_calls=None),
+            finish_reason="stop",
+        )])
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        model_call = Mock(side_effect=[iter([first_chunk]), iter([second_chunk])])
+
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.safe_model_call", model_call),
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Uzun bir açıklama yaz."}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(answer, "İlk bölüm.Devamı tamamlandı.")
+        self.assertEqual(model_call.call_count, 2)
+        continuation = model_call.call_args_list[1].args[1]
+        self.assertEqual(continuation[-2]["content"], "İlk bölüm.")
+        self.assertIn("Kaldığın yerden devam et", continuation[-1]["content"])
+
+    def test_live_question_does_not_fall_back_to_an_unverified_model_answer(self):
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.web_search", return_value={"results": [], "error": "blocked"}),
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Bugün son dakika gelişmesi ne oldu?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("doğrulayamadım", answer)
+        model_call.assert_not_called()
+
+    def test_match_score_answer_is_grounded_in_independent_search_sources(self):
+        endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
+            patch("dashboard.views.web_search", return_value={
+                "engine": "bing",
+                "results": [
+                    {
+                        "title": "Fenerbahçe maçı 2-0 kazandı",
+                        "url": "https://one.example/match",
+                        "snippet": "Fenerbahçe karşılaşması 2-0 sona erdi.",
+                    },
+                    {
+                        "title": "Fenerbahçe maç sonucu 2-0",
+                        "url": "https://two.example/match",
+                        "snippet": "Skor 2-0 olarak kaydedildi.",
+                    },
+                ],
+            }),
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Fenerbahçe maçı kaç kaç?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertIn("2-0", answer)
+        self.assertIn("İki farklı alan adındaki", answer)
+        model_call.assert_not_called()
+
     def test_deep_research_calls_search_tools_before_final_answer(self):
         tool_call = SimpleNamespace(
             id="search-1",
@@ -777,9 +947,6 @@ class ChatFeatureTests(TestCase):
         ))
 
     def test_scorer_followup_searches_context_and_specific_queries(self):
-        chunk = SimpleNamespace(choices=[SimpleNamespace(
-            delta=SimpleNamespace(content="Kaynakta belirtilen golcü bilgisi.", tool_calls=None),
-        )])
         endpoint = views.Endpoint("test", "key", object(), (views.GEMINI_MODEL,), None)
         history = [
             {"sender": "user", "text": "Fenerbahçe Eyüpspor maçı kaç kaç bitti?"},
@@ -801,7 +968,7 @@ class ChatFeatureTests(TestCase):
         with (
             patch("dashboard.views.get_chat_endpoints", return_value=[endpoint]),
             patch("dashboard.views.web_search", return_value=search_result) as search,
-            patch("dashboard.views.safe_model_call", return_value=iter([chunk])) as model_call,
+            patch("dashboard.views.safe_model_call") as model_call,
         ):
             response = self.client.post(
                 reverse("api_chat"),
@@ -811,15 +978,16 @@ class ChatFeatureTests(TestCase):
                 }),
                 content_type="application/json",
             )
-            b"".join(response.streaming_content)
+            answer = b"".join(response.streaming_content).decode("utf-8")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(search.call_count, 3)
         self.assertIn("golleri kim attı", search.call_args_list[0].args[0].lower())
         self.assertIn("gol atan oyuncular", search.call_args_list[1].args[0].lower())
         self.assertTrue(all(call.kwargs["duckduckgo_only"] for call in search.call_args_list))
-        sent_context = model_call.call_args.args[1][1]["content"]
-        self.assertIn("Fenerbahçe Eyüpspor maç raporu ve golleri", sent_context)
+        self.assertIn("arama kaynağı özetleri", answer)
+        self.assertIn("Golleri atan oyuncular maç raporunda.", answer)
+        model_call.assert_not_called()
 
     def test_sanitize_output_strips_reasoning_leaks(self):
         raw = "Here's a thinking process:\n1. Analyze user input\n2. Search\nFinal answer: Fenerbahçe 2-1 kazandı."
@@ -944,6 +1112,32 @@ class ChatFeatureTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("12°C", answer)
         self.assertNotIn("19.4", answer)
+        model_call.assert_not_called()
+
+    def test_weather_question_with_city_at_the_end_fetches_weather_directly(self):
+        weather = {
+            "city": "Erdek",
+            "temperature": 17,
+            "feels_like": 16,
+            "description": "Açık",
+            "source": "Open-Meteo",
+            "observed_at": "2026-10-07T12:00:00+03:00",
+        }
+        with (
+            patch("dashboard.views.get_chat_endpoints", return_value=[object()]),
+            patch("dashboard.views.get_weather", return_value=weather) as get_weather,
+            patch("dashboard.views.safe_model_call") as model_call,
+        ):
+            response = self.client.post(
+                reverse("api_chat"),
+                data=json.dumps({"message": "Hava kaç derece Erdek için?"}),
+                content_type="application/json",
+            )
+            answer = b"".join(response.streaming_content).decode("utf-8")
+
+        get_weather.assert_called_once_with("Erdek")
+        self.assertIn("17°C", answer)
+        self.assertNotIn("Hangi şehir", answer)
         model_call.assert_not_called()
 
     def test_sports_followup_fails_closed_when_ddg_cannot_verify_match_details(self):

@@ -38,6 +38,7 @@ except ImportError:
 
 
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
+MAX_CHAT_IMAGE_BYTES = 3 * 1024 * 1024
 # Büyük dosya dökümleri yanıtı dakikalarca geciktirir; bu yüzden bilinçli olarak küçük.
 MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
@@ -1436,6 +1437,10 @@ SPORTS_SCORER_RE = re.compile(
     r"asist\w*|dakika\w*|oyuncu\w*)\b",
     re.I,
 )
+SPORTS_SCORE_ASK_RE = re.compile(
+    r"\b(kaç\s*kaç|skor|sonuç|sonuc|bitti|kazandı|kazandi|ne\s+oldu)\b",
+    re.I,
+)
 SPORTS_SCORE_RE = re.compile(r"\b\d{1,2}\s*[-–:]\s*\d{1,2}\b")
 SPORTS_DATE_RE = re.compile(
     r"\b\d{1,2}\s+(?:ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|"
@@ -1535,8 +1540,8 @@ def build_live_search_query(text, history=None):
 
 
 def should_retry_live_search_with_general_results(question, live_context):
-    """Sports and live-search asks should not fail hard when DDG is blocked."""
-    if not is_sports_question(question) or not isinstance(live_context, dict):
+    """Retry weak or blocked search results before answering a live-data question."""
+    if not isinstance(live_context, dict):
         return False
     if live_context.get("blocked"):
         return True
@@ -1544,6 +1549,97 @@ def should_retry_live_search_with_general_results(question, live_context):
         return True
     results = live_context.get("results") or []
     return not results
+
+
+def summarize_sourced_match_score(results):
+    """Report only scorelines found in search excerpts, with their source links."""
+    score_sources = {}
+    for result in results or []:
+        if not isinstance(result, dict):
+            continue
+        title = str(result.get("title") or "").strip()
+        snippet = str(result.get("snippet") or "").strip()
+        url = str(result.get("url") or "").strip()
+        if not is_brand_safe(f"{title} {snippet} {url}"):
+            continue
+        source_text = f"{title} {snippet}"
+        source_text = re.sub(r"\b\d{1,2}[./-]\d{1,2}[./-](?:20)?\d{2}\b", " ", source_text)
+        scores = {
+            re.sub(r"\s+", "", match.group(0)).replace("–", "-").replace(":", "-")
+            for match in SPORTS_SCORE_RE.finditer(source_text)
+        }
+        if not scores:
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            continue
+        for score in scores:
+            score_sources.setdefault(score, {})[host] = {
+                "title": title,
+                "url": url,
+            }
+
+    if not score_sources:
+        return (
+            "Arama sonuçlarında maç skoru açıkça yer almıyor. Yanlış skor uydurmamak "
+            "için kesin bir sonuç vermiyorum."
+        )
+    corroborated = {
+        score: sources for score, sources in score_sources.items()
+        if len(sources) >= 2
+    }
+    if len(corroborated) == 1 and len(score_sources) == 1:
+        score, sources = next(iter(corroborated.items()))
+        links = "\n".join(f"- {source['title']}: {source['url']}" for source in sources.values())
+        return f"İki farklı alan adındaki arama sonucu maç skorunu {score} olarak bildiriyor:\n{links}"
+    if len(score_sources) > 1:
+        lines = [
+            "Canlı arama sonuçlarında farklı skorlar bulundu; doğrulanmış tek bir sonuç gibi sunmuyorum:"
+        ]
+        for score, sources in score_sources.items():
+            for source in sources.values():
+                lines.append(f"- {score} — {source['title']}: {source['url']}")
+        return "\n".join(lines)
+    score, sources = next(iter(score_sources.items()))
+    source = next(iter(sources.values()))
+    return (
+        f"Bir arama sonucu skoru {score} olarak bildiriyor, ancak bunu ikinci bağımsız "
+        f"kaynaktan doğrulayamadım: {source['title']} ({source['url']})"
+    )
+
+
+def summarize_sourced_match_details(results):
+    """Show search excerpts for match details without letting a model invent players."""
+    lines = []
+    seen = set()
+    for result in results or []:
+        if not isinstance(result, dict):
+            continue
+        title = str(result.get("title") or "").strip()
+        snippet = str(result.get("snippet") or "").strip()
+        url = str(result.get("url") or "").strip()
+        if not title and not snippet:
+            continue
+        if not is_brand_safe(f"{title} {snippet} {url}"):
+            continue
+        key = url or f"{title}\n{snippet}"
+        if key in seen:
+            continue
+        seen.add(key)
+        line = f"- {title}"
+        if snippet and snippet.casefold() != title.casefold():
+            line += f": {snippet}"
+        if url:
+            line += f" ({url})"
+        lines.append(line)
+        if len(lines) == 5:
+            break
+    if not lines:
+        return "Arama sonuçlarında doğrulanabilir maç ayrıntısı bulamadım; oyuncu veya gol dakikası uydurmayacağım."
+    return (
+        "Golcü ve maç ayrıntıları için bulduğum arama kaynağı özetleri "
+        "(ayrıntıları bağlantılardan doğrulayabilirsin):\n" + "\n".join(lines)
+    )
 
 
 TIME_INTENT_RE = re.compile(
@@ -1559,6 +1655,7 @@ WEATHER_INTENT_RE = re.compile(
 CITY_PATTERNS = (
     r"([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)['’]?(?:de|da|te|ta|nde|nda|nte|nta)\s+(?:için\s+)?hava",
     r"([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)\s+(?:için\s+)?hava\s+durumu",
+    r"hava(?:\s+\w+){0,4}\s+([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)['’]?\s+için\b",
     r"([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)\s+hava\s+nasıl",
     r"hava\s+durumu\s+([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)",
     r"hava\s+durumu\s+nedir\s+([A-Za-zÇĞİÖŞÜçğıöşü\-\.]+)",
@@ -3016,6 +3113,17 @@ def api_chat(request):
       deep_think_seconds = 300
     images = data.get("images", [])
     files = data.get("files", [])
+    if not isinstance(images, list) or len(images) > 10:
+      return JsonResponse({"error": "En fazla 10 görsel gönderebilirsiniz."}, status=400)
+    for image in images:
+      if not isinstance(image, dict):
+        return JsonResponse({"error": "Görsel yüklemesi geçersiz."}, status=400)
+      encoded_image = image.get("base64")
+      if isinstance(encoded_image, str) and len(encoded_image) > 4 * ((MAX_CHAT_IMAGE_BYTES + 2) // 3):
+        return JsonResponse(
+            {"error": "Görsel çok büyük. Lütfen daha küçük bir görsel seçin."},
+            status=413,
+        )
     voice_transcript = (data.get("voice_transcript") or "").strip()
     voice = data.get("voice") or {}
     voice_encoded = ""
@@ -3115,7 +3223,7 @@ def api_chat(request):
         )
         model = GEMINI_MODEL
         temperature = 0.6
-        max_tokens = 1536
+        max_tokens = 4096
         history_limit = 16
 
     elif mode == "code":
@@ -3134,7 +3242,7 @@ def api_chat(request):
         )
         model = GEMINI_MODEL
         temperature = 0.4
-        max_tokens = 2048
+        max_tokens = 4096
         history_limit = 12
 
     elif mode == "fast":
@@ -3151,7 +3259,7 @@ def api_chat(request):
         )
         model = GEMINI_FAST_MODEL
         temperature = 0.2
-        max_tokens = 512
+        max_tokens = 1024
         history_limit = 6
 
     else:
@@ -3163,6 +3271,10 @@ def api_chat(request):
 
     chat_user_name = (request.user.get_full_name() or "").strip() or request.user.username
     system_instruction += (
+        " YANIT KALİTESİ: İsteği dikkatle çözümle, gerekli bağlamı kullan ve eksik "
+        "önemli ayrıntıları uydurma. Güncel veya doğrulanabilir olguları yalnızca sağlanan "
+        "kaynaklara dayandır; emin olmadığın noktayı kısa ve açıkça belirt. Yanıtı kullanıcının "
+        "dilinde, amaca uygun ayrıntı düzeyinde ve tutarlı biçimde tamamla. "
         " ÖRNEK VERİ KURALI (kod, tablo, form, JSON, makale, dilekçe ve her türlü örnek için geçerli): "
         "Kurucunun adı olan 'Ayaz Kaplan' ifadesini örneklerde, değişkenlerde, yorumlarda veya örnek "
         "çıktılarda ASLA kullanma; bu adı yalnızca kullanıcı açıkça kurucunu sorarsa söylersin. "
@@ -3269,7 +3381,12 @@ def api_chat(request):
         or is_sports_followup(question_text, history)
     )
     if should_fetch_live_context(question_text) or (
-      sports_question and live_search_query != build_search_query(question_text)
+      sports_question
+      and (
+        live_search_query != build_search_query(question_text)
+        or SPORTS_SCORE_ASK_RE.search(question_text or "")
+        or SPORTS_SCORER_RE.search(question_text or "")
+      )
     ):
       live_contexts = []
       combined_results = []
@@ -3299,22 +3416,40 @@ def api_chat(request):
           "query": " | ".join(live_search_queries),
           "results": combined_results,
       }
-      if sports_question and not live_context.get("results"):
-        def unverifiable_sports_stream():
+      if not live_context.get("results"):
+        def unverifiable_live_stream():
           yield (
-              "Bu maç ayrıntılarını canlı kaynaklarda doğrulayamadım. "
-              "Oyuncu, golcü veya maç akışı uydurmak yerine doğrulanabilir kaynak bekliyorum."
+              "Bu güncel bilgiyi canlı kaynaklardan doğrulayamadım. Yanlış bilgi "
+              "uydurmamak için kesin bir yanıt vermiyorum; lütfen biraz sonra tekrar dene."
           )
 
-        return StreamingHttpResponse(unverifiable_sports_stream(), content_type="text/plain")
+        return StreamingHttpResponse(unverifiable_live_stream(), content_type="text/plain; charset=utf-8")
+      if sports_question and SPORTS_SCORE_ASK_RE.search(question_text or ""):
+        sourced_score = summarize_sourced_match_score(live_context["results"])
+        def sourced_score_stream():
+          yield sourced_score
+
+        return StreamingHttpResponse(
+            sourced_score_stream(),
+            content_type="text/plain; charset=utf-8",
+        )
+      if sports_question and SPORTS_SCORER_RE.search(question_text or ""):
+        def sourced_match_details_stream():
+          yield summarize_sourced_match_details(live_context["results"])
+
+        return StreamingHttpResponse(
+            sourced_match_details_stream(),
+            content_type="text/plain; charset=utf-8",
+        )
       messages.insert(
           1,
           {
               "role": "system",
               "content": (
-                  "Canlı web araştırması sonucu aşağıdadır (gerçek arama motorundan geldi). "
-                  "Kullanıcının sorusunun cevabı büyük olasılıkla bu sonuçlardadır: önce bunları "
-                  "oku, somut bilgiyi (skor, isim, tarih, sayı) doğrudan aktar ve kaynağı belirt. "
+                  "Canlı web araştırması sonucu aşağıdadır. Yalnızca başlık ve snippet içinde "
+                  "açıkça bulunan bilgileri aktar; bunlardan çıkarılamayan skor, isim, tarih, "
+                  "golcü veya olay ayrıntısı ekleme. En az bir ilgili kaynağı bağlantısıyla belirt. "
+                  "Kaynaklar çelişiyorsa çelişkiyi açıkça göster ve tek bir doğruymuş gibi seçme. "
                   "Arama sorgusu şudur: " + live_search_query + ". Özellikle spor sorularında "
                   "kaynakta açıkça yazmayan golcü, oyuncu, dakika, kadro veya maç akışı UYDURMA. "
                   "Önceki asistan yanıtlarını doğrulanmış bilgi sayma. Sonuçlar soruyla ilgisizse veya boşsa güncel bilgi UYDURMA; bunu bir cümleyle "
@@ -3441,44 +3576,66 @@ def api_chat(request):
           if answered or errored:
             break
           trace = {}
-          output_sanitizer = ModelOutputStreamSanitizer()
-          try:
-            completion = safe_model_call(
-                clients,
-                messages,
-                model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                timeout=120,
-                skip_providers=silent_providers,
-                trace=trace,
-            )
-            for chunk in completion:
-              choices = getattr(chunk, "choices", None)
-              if not choices:
-                continue
-              delta = getattr(choices[0], "delta", None)
-              piece = getattr(delta, "content", None) if delta else None
-              if piece:
-                clean_piece = output_sanitizer.feed(piece)
-                if clean_piece:
-                  answered = True
-                  yield scrubber.feed(clean_piece)
-          except Exception as error:
-            if answered:
+          continuation_messages = list(messages)
+          for continuation_index in range(4):
+            output_sanitizer = ModelOutputStreamSanitizer()
+            segment_parts = []
+            finish_reason = None
+            try:
+              completion = safe_model_call(
+                  clients,
+                  continuation_messages,
+                  model,
+                  temperature=temperature,
+                  max_tokens=max_tokens,
+                  stream=True,
+                  timeout=120,
+                  skip_providers=silent_providers,
+                  trace=trace,
+              )
+              for chunk in completion:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                  continue
+                choice = choices[0]
+                if getattr(choice, "finish_reason", None):
+                  finish_reason = choice.finish_reason
+                delta = getattr(choice, "delta", None)
+                piece = getattr(delta, "content", None) if delta else None
+                if piece:
+                  segment_parts.append(piece)
+                  clean_piece = output_sanitizer.feed(piece)
+                  if clean_piece:
+                    answered = True
+                    yield scrubber.feed(clean_piece)
+            except Exception as error:
+              if answered:
+                break
+              if deterministic_fallback:
+                answered = True
+                yield deterministic_fallback + "\n\n" + fallback_note(error)
+              else:
+                errored = True
+                yield friendly_api_error(error)
               break
-            if deterministic_fallback:
+            clean_tail = output_sanitizer.feed("", final=True)
+            if clean_tail:
               answered = True
-              yield deterministic_fallback + "\n\n" + fallback_note(error)
-            else:
-              errored = True
-              yield friendly_api_error(error)
+              yield scrubber.feed(clean_tail)
+            if str(finish_reason).lower() not in {"length", "max_tokens"} or continuation_index == 3:
+              break
+            continuation_messages.extend((
+                {"role": "assistant", "content": "".join(segment_parts)},
+                {
+                    "role": "user",
+                    "content": (
+                        "Önceki yanıtın uzunluk sınırı nedeniyle tamamlanmadan kesildi. "
+                        "Kaldığın yerden devam et; önceki kısmı tekrarlama ve yanıtı tamamla."
+                    ),
+                },
+            ))
+          if errored:
             break
-          clean_tail = output_sanitizer.feed("", final=True)
-          if clean_tail:
-            answered = True
-            yield scrubber.feed(clean_tail)
           if answered:
             break
           # Boş akış dönen sağlayıcıyı bir daha deneme; sıra diğer beyinde.

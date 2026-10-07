@@ -19,6 +19,8 @@ Kullanıcı adı, profil fotoğrafı, tema ve arka plan deseni `UserProfile` tab
 Sohbet geçmişleri `ChatHistory` tablosunda kullanıcı hesabına bağlı saklanır; aynı hesapla açılan cihazlar sohbetleri ve profil ayarlarını sunucudan senkronize eder.
 Giriş ekranında kullanıcı adı veya e-posta adresiyle giriş yapılabilir. Kullanıcı kayıtları `DATABASE_URL` ile bağlı kalıcı veritabanında tutulur; veritabanı sıfırlanırsa eski hesaplar otomatik olarak geri getirilemez.
 Sohbet eklerinde dosya sınırı 50 MB'dır. Metin, PDF ve DOCX dosyalarının içeriği yapay zekâ isteğine aktarılır; ses kaydı tarayıcıda Türkçe metne çevrilip sohbet isteğine gönderilir.
+Sohbete eklenen büyük görseller tarayıcıda küçültülüp sıkıştırılır; böylece fotoğrafla birlikte yazılan mesajlar istek boyutu sınırına takılmadan görsel anlayabilen modele gönderilir. Uzun yanıt akışı model bir parçada keserse kaldığı yerden devam ettirilir.
+Canlı web araması sonuç vermediğinde güncel bilgi uydurmak yerine doğrulama yapılamadığı açıkça belirtilir. Maç skoru en az iki farklı alan adında uyuşmuyorsa kaynaklar arasındaki fark gösterilir; golcü ve dakika sorularında modelin ekleme yapması yerine arama sonuçlarının kaynak özetleri sunulur.
 
 `AppClock` tablosu Europe/Istanbul tarihini saklar. Uygulama her kullanıldığında tarihi kontrol eder; kapalı uygulamada da güncellemek için saatlik harici scheduler şu komutu çalıştırmalıdır:
 
